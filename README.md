@@ -151,8 +151,9 @@ same way this trim was derived).
   placement.
 - Basemap uses OpenStreetMap's standard tile server (the GIS4WRF plugin's
   Stamen-based basemap is dead - Stamen's tile servers were shut down).
-- Only linear domain nesting (domain 0 nested in 1 nested in 2, ...) is
-  supported - a namelist where two domains share the same parent (siblings)
-  is rejected at import. See `PLAN_TREE_DOMAINS.md` for the plan to fix
-  this - it's a real architectural change (the domain data model, not a
-  small patch), not yet started.
+- Namelist import/export supports arbitrary domain trees, including two
+  domains sharing a parent (siblings) - see `PLAN_TREE_DOMAINS.md`. The
+  interactive UI (the domain wizard form itself) doesn't yet: it can only
+  display/edit a single linear chain, and gives a clear error rather than
+  silently doing the wrong thing if you import a namelist with siblings.
+  Building the tree-editing UI is Phase 2 of that plan, not yet started.

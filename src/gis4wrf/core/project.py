@@ -218,29 +218,147 @@ class Project(object):
                     center_lonlat: LonLat,
                     truelat1: float=None, truelat2: float=None, stand_lon: float=None,
                     parent_domains: List[dict]=[]) -> None:
-        self.data['domains'] = [{
-            "map_proj": map_proj,
-            "center_lonlat" : [center_lonlat.lon, center_lonlat.lat],
-            "cell_size": [cell_size[0], cell_size[1]],
-            "domain_size": [domain_size[0], domain_size[1]]
-        }] + parent_domains
+        """Convenience for the linear-nesting-chain case (the only shape the
+        interactive UI currently produces): `parent_domains` is ordered
+        innermost-adjacent-first (index 0 = immediate parent of the leaf
+        domain described by the other arguments, index -1 = outermost/root
+        domain), matching DomainForm's existing calling convention. Each
+        entry needs 'parent_cell_size_ratio' and optionally
+        'padding_left'/'padding_right'/'padding_bottom'/'padding_top'
+        (default 0) describing how much extra margin to add around its
+        child, snapped up to a multiple of its own ratio - domain_size for
+        every ancestor is auto-derived from this, exactly as before.
 
-        main_domain = self.data['domains'][0]
-        if map_proj == 'lat-lon':
-            # hard-coded as we don't support rotation
-            main_domain['stand_lon'] = 0.0
+        The underlying storage (self.data['domains']) is WPS-native: a list
+        ordered root-first with an explicit 'parent_id' per domain (see
+        fill_domains()), which - unlike this convenience wrapper - can
+        represent arbitrary trees (domains sharing a parent), not just a
+        single chain. For general tree construction (e.g. importing a
+        namelist with sibling domains), build self.data['domains'] directly
+        instead - see wps_namelist_to_project.py's
+        convert_nml_to_project_domains for the canonical example.
+        """
+        # Leaf-first chain, index 0 = the domain directly described by the
+        # cell_size/domain_size/center_lonlat arguments.
+        chain = [{
+            'center_lonlat': [center_lonlat.lon, center_lonlat.lat],
+            'cell_size': [cell_size[0], cell_size[1]],
+            'domain_size': [domain_size[0], domain_size[1]],
+            'padding_left': 0, 'padding_right': 0, 'padding_bottom': 0, 'padding_top': 0,
+        }] + [dict(d) for d in parent_domains]  # copy so we don't mutate the caller's dicts
+        for domain in chain[1:]:
+            domain.setdefault('padding_left', 0)
+            domain.setdefault('padding_right', 0)
+            domain.setdefault('padding_bottom', 0)
+            domain.setdefault('padding_top', 0)
 
-        if map_proj in ['lambert', 'mercator', 'polar']:
-            main_domain['truelat1'] = truelat1
+        # Auto-derive the "core" size of every ancestor to snugly contain its
+        # child (+ padding), snapped up to a multiple of its own
+        # parent_cell_size_ratio. Unchanged from the pre-tree-support version
+        # of this method.
+        for idx in range(1, len(chain)):
+            domain = chain[idx]
+            child = chain[idx - 1]
+            child_padded = (
+                child['domain_size'][0] + child['padding_left'] + child['padding_right'],
+                child['domain_size'][1] + child['padding_bottom'] + child['padding_top'],
+            )
+            ratio = domain['parent_cell_size_ratio']
+            new_padded = [
+                int(ceil(child_padded[axis] / ratio)) * ratio if child_padded[axis] % ratio != 0 else child_padded[axis]
+                for axis in (0, 1)
+            ]
+            if idx == 1:
+                child['domain_size'] = new_padded
+            else:
+                child['padding_right'] += new_padded[0] - child_padded[0]
+                child['padding_top'] += new_padded[1] - child_padded[1]
+            domain['domain_size'] = [new_padded[0] // ratio, new_padded[1] // ratio]
 
+        # Compute bboxes bottom-up (leaf outward) in a throwaway CRS - only
+        # relative geometry (deltas) matters for this pass, so the choice of
+        # coordinate origin is arbitrary as long as it's used consistently
+        # within it. (The real, self-consistent CRS - self.projection, whose
+        # Lambert origin is the *root's* actual center - only becomes
+        # available once the root's center_lonlat is known, which is what
+        # this pass computes; hence the bootstrapping via a throwaway one.)
         if map_proj == 'lambert':
-            main_domain['truelat2'] = truelat2
+            temp_crs = CRS.create_lambert(truelat1, truelat2, LonLat(lon=stand_lon or 0.0, lat=0.0))
+        elif map_proj == 'mercator':
+            temp_crs = CRS.create_mercator(truelat1, 0.0)
+        elif map_proj == 'polar':
+            temp_crs = CRS.create_polar(truelat1, stand_lon or 0.0)
+        elif map_proj == 'lat-lon':
+            temp_crs = CRS.create_lonlat()
+        else:
+            assert False, f'invalid projection: {map_proj}'
 
+        leaf_xy = temp_crs.to_xy(center_lonlat)
+        chain[0]['bbox'] = get_bbox_from_grid_spec(
+            leaf_xy.x, leaf_xy.y, chain[0]['cell_size'], chain[0]['domain_size'][0], chain[0]['domain_size'][1])
+        for idx in range(1, len(chain)):
+            domain = chain[idx]
+            child = chain[idx - 1]
+            ratio = domain['parent_cell_size_ratio']
+            domain['cell_size'] = [child['cell_size'][0] * ratio, child['cell_size'][1] * ratio]
+            child_center_x, child_center_y = get_bbox_center(child['bbox'])
+            domain['bbox'] = get_parent_bbox_from_child_grid_spec(
+                child_center_x=child_center_x, child_center_y=child_center_y,
+                child_cell_size=child['cell_size'],
+                child_cols=child['domain_size'][0] + child['padding_left'] + child['padding_right'],
+                child_rows=child['domain_size'][1] + child['padding_top'] + child['padding_bottom'],
+                child_parent_res_ratio=ratio,
+                parent_left_padding=domain['padding_left'], parent_right_padding=domain['padding_right'],
+                parent_bottom_padding=domain['padding_bottom'], parent_top_padding=domain['padding_top'])
+
+        root_chain_entry = chain[-1]
+        root_center_x, root_center_y = get_bbox_center(root_chain_entry['bbox'])
+        root_center_lonlat = temp_crs.to_lonlat(Coordinate2D(x=root_center_x, y=root_center_y))
+
+        # Translate the (leaf-first, "core size" + separate "margin"
+        # semantics) chain into the WPS-native (root-first, explicit
+        # parent_id, single real domain_size per domain) representation
+        # fill_domains() expects. Real/final domain_size and placement
+        # (padding_left/padding_bottom, i.e. WPS's i_parent_start-1/
+        # j_parent_start-1) are derived directly from each entry's already-
+        # correctly-computed bbox instead of re-deriving them from the
+        # padding bookkeeping above, to avoid subtle reindexing mistakes:
+        # the bbox already reflects every padding/snapping effect.
+        wps_ordered = list(reversed(chain))  # root first, leaf last
+
+        root = {
+            'map_proj': map_proj,
+            'parent_id': 1,
+            'cell_size': root_chain_entry['cell_size'],
+            'center_lonlat': [root_center_lonlat.lon, root_center_lonlat.lat],
+            'domain_size': _domain_size_from_bbox(root_chain_entry['bbox'], root_chain_entry['cell_size']),
+        }
+        if map_proj == 'lat-lon':
+            root['stand_lon'] = 0.0
+        if map_proj in ['lambert', 'mercator', 'polar']:
+            root['truelat1'] = truelat1
+        if map_proj == 'lambert':
+            root['truelat2'] = truelat2
         if map_proj in ['lambert', 'polar']:
-            main_domain['stand_lon'] = stand_lon
+            root['stand_lon'] = stand_lon
 
+        new_domains = [root]
+        for k in range(1, len(wps_ordered)):
+            entry = wps_ordered[k]
+            parent_entry = wps_ordered[k - 1]
+            ratio = round(parent_entry['cell_size'][0] / entry['cell_size'][0])
+            new_domains.append({
+                'parent_id': k,  # wps_ordered[k-1] is WPS domain number k
+                'parent_cell_size_ratio': ratio,
+                'padding_left': round((entry['bbox'].minx - parent_entry['bbox'].minx) / parent_entry['cell_size'][0]),
+                'padding_bottom': round((entry['bbox'].miny - parent_entry['bbox'].miny) / parent_entry['cell_size'][1]),
+                'domain_size': _domain_size_from_bbox(entry['bbox'], entry['cell_size']),
+                # padding_right/padding_top get (re-)computed by
+                # fill_domains(), called below.
+            })
+
+        self.data['domains'] = new_domains
         self.fill_domains()
-
         self.save()
 
     @property
@@ -272,97 +390,80 @@ class Project(object):
         return [domain['bbox'] for domain in self.data['domains']]
 
     def fill_domains(self):
-        ''' Updated computed fields in each domain object like cell size. '''
+        ''' Updates computed fields in each domain object (bbox, cell_size,
+        center_lonlat, parent_start).
+
+        self.data['domains'] is WPS-native: a list ordered root-first (index
+        0 = WPS domain 1), where every domain except the root carries an
+        explicit 'parent_id' (the 1-based WPS domain number of its parent -
+        matching gis4wrf.core.readers namelist convention, WPS requires
+        parent_id < the domain's own number). This directly supports
+        arbitrary trees, including domains that share a parent (siblings) -
+        unlike the pre-tree-support version of this method, which assumed
+        each domain's parent was always exactly the next list entry and
+        could not represent that.
+
+        Because WPS requires every domain's parent_id to refer to an
+        earlier-numbered domain, a single forward pass over the list (root
+        first) is already in a valid computation order: by the time we reach
+        any given domain, its parent has already been computed.
+        '''
         domains = self.data.get('domains')
-        if domains is None:
+        if not domains:
             raise UserError('Domains are not configured yet')
 
-        innermost_domain = domains[0]
-        outermost_domain = domains[-1]
-        innermost_domain['padding_left'] = 0
-        innermost_domain['padding_right'] = 0
-        innermost_domain['padding_bottom'] = 0
-        innermost_domain['padding_top'] = 0
-        outermost_domain['parent_start'] = [1, 1]
+        root = domains[0]
+        if root.get('parent_id', 1) != 1:
+            raise UserError('The first domain in the list must be the root domain (parent_id 1)')
 
-        # compute and adjust domain sizes
-        for idx, domain in enumerate(domains):
-            if idx == 0:
-                continue
-            child_domain = domains[idx-1]
+        projection = self.projection
 
-            # We need to make sure that the number of columns in the child domain is an integer multiple
-            # of the nest's parent domain. As we calculate the inner most domain before calculating the outermost one,
-            # we need to amend the value for the number of columns or rows for the inner most domain in the case the
-            # dividend obtained by dividing the number of inner domain's columns by the user's inner-to-outer resolution ratio
-            # in the case where is not an integer value.
-            
-            child_domain_size_padded = (
-                child_domain['domain_size'][0] + child_domain['padding_left'] + child_domain['padding_right'],
-                child_domain['domain_size'][1] + child_domain['padding_bottom'] + child_domain['padding_top'],
-            )
-            if (child_domain_size_padded[0] % domain['parent_cell_size_ratio']) != 0:
-                new_cols = int(ceil(child_domain_size_padded[0] / domain['parent_cell_size_ratio']))
-                new_child_domain_padded_x = new_cols * domain['parent_cell_size_ratio']
-            else:
-                new_child_domain_padded_x = child_domain_size_padded[0]
+        center_xy = projection.to_xy(LonLat(lon=root['center_lonlat'][0], lat=root['center_lonlat'][1]))
+        cols, rows = root['domain_size']
+        root['bbox'] = get_bbox_from_grid_spec(center_xy.x, center_xy.y, root['cell_size'], cols, rows)
 
-            if (child_domain_size_padded[1] % domain['parent_cell_size_ratio']) != 0:
-                new_rows = int(ceil(child_domain_size_padded[1] / domain['parent_cell_size_ratio']))
-                new_child_domain_padded_y = new_rows * domain['parent_cell_size_ratio']
-            else:
-                new_child_domain_padded_y = child_domain_size_padded[1]
+        by_number = {1: root}
+        for domain_number, domain in enumerate(domains[1:], start=2):
+            parent_id = domain['parent_id']
+            if not (1 <= parent_id < domain_number):
+                raise UserError(
+                    f'Domain {domain_number} has an invalid parent_id ({parent_id}): it must refer '
+                    'to an earlier, already-defined domain')
+            parent = by_number[parent_id]
 
-            if idx == 1:
-                child_domain['domain_size'] = [new_child_domain_padded_x, new_child_domain_padded_y]
-            else:
-                child_domain['padding_right'] += new_child_domain_padded_x - child_domain_size_padded[0]
-                child_domain['padding_top'] += new_child_domain_padded_y - child_domain_size_padded[1]
+            ratio = domain['parent_cell_size_ratio']
+            domain['cell_size'] = [parent['cell_size'][0] / ratio, parent['cell_size'][1] / ratio]
 
-            assert new_child_domain_padded_x % domain['parent_cell_size_ratio'] == 0
-            assert new_child_domain_padded_y % domain['parent_cell_size_ratio'] == 0
+            cols, rows = domain['domain_size']
+            min_x = parent['bbox'].minx + domain['padding_left'] * parent['cell_size'][0]
+            min_y = parent['bbox'].miny + domain['padding_bottom'] * parent['cell_size'][1]
+            domain['bbox'] = BoundingBox2D(
+                minx=min_x, miny=min_y,
+                maxx=min_x + cols * domain['cell_size'][0],
+                maxy=min_y + rows * domain['cell_size'][1])
 
-            domain['domain_size'] = [
-                new_child_domain_padded_x // domain['parent_cell_size_ratio'],
-                new_child_domain_padded_y // domain['parent_cell_size_ratio']]
+            center_x, center_y = get_bbox_center(domain['bbox'])
+            center_lonlat = projection.to_lonlat(Coordinate2D(x=center_x, y=center_y))
+            domain['center_lonlat'] = [center_lonlat.lon, center_lonlat.lat]
 
-        # compute bounding boxes, cell sizes, center lonlat, parent start
-        for idx, domain in enumerate(domains):
-            size_x, size_y = domain['domain_size']
-            padded_size_x = size_x + domain['padding_left'] + domain['padding_right']
-            padded_size_y = size_y + domain['padding_bottom'] + domain['padding_top']
-            domain['domain_size_padded'] = [padded_size_x, padded_size_y]
+            # padding_right/padding_top aren't needed for WPS placement
+            # (i_parent_start/j_parent_start, i.e. padding_left/
+            # padding_bottom, are the only WPS-native placement fields) but
+            # are kept as display values for DomainForm's "Padding" UI
+            # fields, computed here (rather than only in set_domains()'s
+            # convenience shim) so they're populated regardless of whether
+            # this project came from a namelist import or interactive
+            # editing.
+            domain['padding_right'] = round((parent['bbox'].maxx - domain['bbox'].maxx) / parent['cell_size'][0])
+            domain['padding_top'] = round((parent['bbox'].maxy - domain['bbox'].maxy) / parent['cell_size'][1])
 
-            if idx == 0:
-                center_lon, center_lat = domain['center_lonlat']
-                center_xy = self.projection.to_xy(LonLat(lon=center_lon, lat=center_lat))
+            by_number[domain_number] = domain
 
-                domain['bbox'] = get_bbox_from_grid_spec(center_xy.x, center_xy.y, domain['cell_size'], size_x, size_y)
-            else:
-                child_domain = domains[idx-1]
-
-                domain['cell_size'] = [child_domain['cell_size'][0] * domain['parent_cell_size_ratio'],
-                                       child_domain['cell_size'][1] * domain['parent_cell_size_ratio']]
-
-                child_center_x, child_center_y = get_bbox_center(child_domain['bbox'])
-
-                domain['bbox'] = get_parent_bbox_from_child_grid_spec(
-                    child_center_x=child_center_x, child_center_y=child_center_y,
-                    child_cell_size=child_domain['cell_size'],
-                    child_cols=child_domain['domain_size'][0] + child_domain['padding_left'] + child_domain['padding_right'],
-                    child_rows=child_domain['domain_size'][1] + child_domain['padding_top'] + child_domain['padding_bottom'],
-                    child_parent_res_ratio=domain['parent_cell_size_ratio'],
-                    parent_left_padding=domain['padding_left'], parent_right_padding=domain['padding_right'],
-                    parent_bottom_padding=domain['padding_bottom'], parent_top_padding=domain['padding_top'])
-                
-                center_x, center_y = get_bbox_center(domain['bbox'])
-                center_lonlat = self.projection.to_lonlat(Coordinate2D(x=center_x, y=center_y))
-                domain['center_lonlat'] = [center_lonlat.lon, center_lonlat.lat]
-
-            if idx < len(domains) - 1:
-                parent_domain = domains[idx + 1]
-                domain['parent_start'] = [parent_domain['padding_left'] + 1, 
-                                          parent_domain['padding_bottom'] + 1]
+        # WPS's i_parent_start/j_parent_start for each domain, kept on the
+        # domain itself for direct export (padding_left/bottom are 0-based,
+        # i_parent_start/j_parent_start are 1-based).
+        for domain in domains[1:]:
+            domain['parent_start'] = [domain['padding_left'] + 1, domain['padding_bottom'] + 1]
 
     def update_wps_namelist(self):
         # deferred import to resolve circular dependency on Project type
@@ -548,4 +649,15 @@ def get_bbox_center(bbox: BoundingBox2D) -> Tuple[float,float]:
     center_x = (bbox.minx + bbox.maxx) / 2
     center_y = (bbox.miny + bbox.maxy) / 2
     return center_x, center_y
+
+def _domain_size_from_bbox(bbox: BoundingBox2D, cell_size: Tuple[float,float]) -> List[int]:
+    """Real/final domain_size (matching WPS's e_we-1/e_sn-1) derived
+    directly from a bbox and cell size, rather than tracked separately
+    through padding bookkeeping - used by Project.set_domains() to convert
+    its internal "core size + margin" working representation into the
+    single real size the WPS-native schema stores."""
+    return [
+        round((bbox.maxx - bbox.minx) / cell_size[0]),
+        round((bbox.maxy - bbox.miny) / cell_size[1]),
+    ]
 

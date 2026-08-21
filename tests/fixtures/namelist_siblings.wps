@@ -1,0 +1,35 @@
+&share
+ wrf_core = 'ARW',
+ max_dom = 4
+ start_date = '2019-06-01_00:00:00','2019-06-01_00:00:00','2019-06-01_00:00:00','2019-06-01_00:00:00',
+ end_date   = '2019-06-01_03:00:00','2019-06-01_03:00:00','2019-06-01_03:00:00','2019-06-01_03:00:00',
+ interval_seconds = 10800,
+ io_form_geogrid = 2,
+ opt_output_from_geogrid_path = '/nas/SWICE/D01D02/',
+ debug_level = 0,
+/
+
+&geogrid
+parent_id = 1, 1, 2, 2,
+parent_grid_ratio = 1, 5, 5, 5,
+i_parent_start = 1, 21,138,77
+j_parent_start = 1, 21,135,77
+e_we = 91, 251, 201, 201,
+e_sn = 92, 256, 206, 206,
+map_proj = 'lambert',
+dx = 6250.0,
+dy = 6250.0,
+ref_lon = 6.621600000000001,
+ref_lat = 46.518789854710775,
+geog_data_res = 'default', 'default', 'ASTER+corine_modis+default','ASTER+corine_modis+default',
+geog_data_path = '/data/WRF_DATA/WPS_GEOG/',
+opt_geogrid_tbl_path= '/nas/SWICE/D01D02',
+truelat1 = 46.4963,
+truelat2 = 46.4963,
+stand_lon = 6.6216,
+/
+
+&ungrib
+ out_format = 'WPS',
+ prefix = 'FILE',
+/

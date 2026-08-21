@@ -14,7 +14,7 @@ Differences from the QGIS-plugin version:
 """
 
 from math import ceil
-from typing import Optional
+from typing import Dict, List, Optional
 
 from osgeo import osr
 from PyQt6.QtCore import QMetaObject, Qt, pyqtSignal, pyqtSlot
@@ -220,18 +220,38 @@ class DomainForm(QWidget):
         except KeyError:
             return
 
-        main_domain = domains[0]
-        map_proj = main_domain['map_proj']
+        # self.data['domains'] is stored WPS-native (root-first, each domain
+        # after the first identified by 'parent_id') to support arbitrary
+        # domain trees, including domains that share a parent (siblings) -
+        # see PLAN_TREE_DOMAINS.md. This form's UI, however, only knows how
+        # to display a single linear chain (one leaf, its parent, its
+        # parent's parent, ...): reduce the tree back to that shape here, or
+        # tell the user clearly why we can't if it doesn't fit, rather than
+        # silently displaying the wrong domain's values or crashing on a
+        # missing field.
+        chain = _linear_chain_leaf_first(domains)
+        # cell_size/bbox/center_lonlat/padding_right/padding_top on every
+        # domain but the root are computed, not given directly (e.g. right
+        # after a namelist import) - make sure they're actually populated
+        # before reading any of them below.
+        project.fill_domains()
+        main_domain = chain[0]
+        # map_proj/truelat1/truelat2/stand_lon are project-wide (WPS defines
+        # one projection regardless of nesting shape) and live only on the
+        # root domain (domains[0]) now, unlike the pre-tree-support schema
+        # where every domain carried its own copy.
+        root_domain = domains[0]
+        map_proj = root_domain['map_proj']
 
         idx = self.projection.findData(map_proj)
         self.projection.setCurrentIndex(idx)
 
         if map_proj in ['lambert', 'mercator', 'polar']:
-            self.truelat1.set_value(main_domain['truelat1'])
+            self.truelat1.set_value(root_domain['truelat1'])
         if map_proj == 'lambert':
-            self.truelat2.set_value(main_domain['truelat2'])
+            self.truelat2.set_value(root_domain['truelat2'])
         if map_proj in ['lambert', 'polar']:
-            self.stand_lon.set_value(main_domain['stand_lon'])
+            self.stand_lon.set_value(root_domain['stand_lon'])
 
         self.resolution.set_value(main_domain['cell_size'][0])
 
@@ -243,23 +263,30 @@ class DomainForm(QWidget):
         self.rows.set_value(rows)
         self.cols.set_value(cols)
 
-        if len(domains) > 1:
+        if len(chain) > 1:
             self.group_box_parent_domain.setChecked(True)
-            self.parent_spin.setValue(len(domains) - 1)
-            self.on_parent_spin_valueChanged(len(domains) - 1)
+            self.parent_spin.setValue(len(chain) - 1)
+            self.on_parent_spin_valueChanged(len(chain) - 1)
 
-            for idx, parent_domain in enumerate(domains[1:]):
+            # chain[1:] includes the root domain as its last entry (chain[-1]).
+            # Every other entry has real ratio/padding (it has an actual
+            # parent it's placed relative to), but the root has none - there's
+            # nothing "more outer" for it to be derived from, unlike the old
+            # schema where the outermost domain still carried leftover ratio/
+            # padding fields used only to compute its own size. Default those
+            # to sensible values (ratio 1, no padding) when displaying it.
+            field_to_key_and_default = {
+                'ratio': ('parent_cell_size_ratio', 1),
+                'top': ('padding_top', 0),
+                'left': ('padding_left', 0),
+                'right': ('padding_right', 0),
+                'bottom': ('padding_bottom', 0),
+            }
+            for idx, parent_domain in enumerate(chain[1:]):
                 fields, _ = self.parent_domains[idx]
                 fields = fields['inputs']
-                field_to_key = {
-                    'ratio': 'parent_cell_size_ratio',
-                    'top': 'padding_top',
-                    'left': 'padding_left',
-                    'right': 'padding_right',
-                    'bottom': 'padding_bottom',
-                }
-                for field_name, key in field_to_key.items():
-                    fields[field_name].set_value(parent_domain[key])
+                for field_name, (key, default) in field_to_key_and_default.items():
+                    fields[field_name].set_value(parent_domain.get(key, default))
 
         self.draw_bbox_and_grids(zoom_out=True)
 
@@ -517,6 +544,42 @@ class DomainForm(QWidget):
             bounds = domain_lonlat_bounds(project)
             if bounds is not None:
                 self.map_widget.fit_bounds(*bounds)
+
+
+def _linear_chain_leaf_first(domains: List[dict]) -> List[dict]:
+    """Reduces a WPS-native (root-first, each non-root domain identified by
+    'parent_id') domain tree to a single leaf-first chain (index 0 = the
+    unique leaf domain, index -1 = the root), for display in this form's
+    single-chain UI. Raises UserError if the tree isn't actually a simple
+    chain, i.e. some domain has more than one nested (child) domain."""
+    by_number = {i + 1: domain for i, domain in enumerate(domains)}
+    children_of = {}  # type: Dict[int, List[int]]
+    for i, domain in enumerate(domains):
+        domain_number = i + 1
+        if domain_number == 1:
+            continue
+        children_of.setdefault(domain['parent_id'], []).append(domain_number)
+
+    for parent_number, child_numbers in children_of.items():
+        if len(child_numbers) > 1:
+            raise UserError(
+                f'Domain {parent_number} has {len(child_numbers)} nested domains '
+                f'({", ".join(str(c) for c in child_numbers)}) sharing it as their parent. '
+                'This isn\'t supported by the current interface yet, which can only display a '
+                'single chain of nested domains (each domain having at most one child) - '
+                'see PLAN_TREE_DOMAINS.md.')
+
+    leaves = [n for n in range(1, len(domains) + 1) if n not in children_of]
+    assert len(leaves) == 1, 'a tree with no branching must have exactly one leaf'
+
+    chain = []
+    number = leaves[0]
+    while True:
+        chain.append(by_number[number])
+        if number == 1:
+            break
+        number = by_number[number]['parent_id']
+    return chain
 
 
 def create_parent_group_box(name: str, res, unit: str, required: bool = False) -> tuple:

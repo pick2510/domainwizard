@@ -1,0 +1,55 @@
+&share
+nocolons = .true.,
+max_dom = 3,
+ wrf_core = 'ARW',
+ max_dom = 3,
+ start_date = '2024-08-21_00:00:00','2024-08-21_00:00:00','2024-08-21_00:00:00',
+ end_date   = '2024-08-31_23:00:00','2024-08-21_01:00:00','2024-08-21_01:00:00',
+ interval_seconds = 3600,
+ debug_level = 0,
+/
+&geogrid
+  parent_id = 1, 1, 2
+  parent_grid_ratio = 1, 5, 5
+  i_parent_start = 1, 51, 51
+  j_parent_start = 1, 51, 51
+  e_we = 126, 126, 121
+  e_sn = 126, 126, 121
+  map_proj = 'mercator'
+  dx = 6250.0
+  dy = 6250.0
+  ref_lon = 114.1760653966964
+  ref_lat = 22.305644023448767
+  truelat1 = 22.3
+  truelat2 = 22.3
+  stand_lon = 114.176
+  geog_data_res = 'default','hk_srtm+default','hk_srtm+hklu+default',
+  geog_data_path = '/data/WRF_DATA/WPS_GEOG',
+  opt_geogrid_tbl_path = '/mnt/DC550/HONGKONG/domain',
+/
+
+
+&metgrid
+ fg_name = 'FILE','PRES'
+ io_form_metgrid = 2,
+ opt_metgrid_tbl_path='.'
+/
+
+&mod_levs
+ press_pa = 201300 , 200100 , 100000 ,
+             95000 ,  90000 ,
+             85000 ,  80000 ,
+             75000 ,  70000 ,
+             65000 ,  60000 ,
+             55000 ,  50000 ,
+             45000 ,  40000 ,
+             35000 ,  30000 ,
+             25000 ,  20000 ,
+             15000 ,  10000 ,
+              5000 ,   1000
+ /
+
+&ungrib
+ out_format = 'WPS',
+ prefix = 'FILE',
+/

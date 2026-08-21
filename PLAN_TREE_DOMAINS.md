@@ -1,5 +1,40 @@
 # Plan: tree-structured (branching/sibling) nested domains
 
+## Status
+
+**Phase 1: done.** `gis4wrf.core` (`project.py`, `wps_namelist_to_project.py`,
+`project_to_wps_namelist.py`) now stores domains WPS-native (root-first,
+explicit `parent_id` per domain) and correctly imports/exports namelists
+with sibling domains - verified with an exact round-trip of the real
+`parent_id = 1,1,2,2` namelist (`tests/fixtures/namelist_siblings.wps`;
+`tests/fixtures/namelist_hongkong.wps` is the linear-chain regression
+fixture). `project_to_gdal_outlines.py` needed no changes (it only ever
+iterated `project.bboxes` as a flat list).
+
+`domainform.py` (the interactive UI) was **not** redesigned (that's still
+Phase 2), but it did need two small compatibility adjustments since the
+underlying storage order flipped from leaf-first to root-first:
+- `populate_ui_from_project` now reads `map_proj`/`truelat1/2`/`stand_lon`
+  from the actual root domain (`domains[0]`) rather than assuming
+  `domains[0]` is the leaf being directly edited.
+- It reduces the (potentially tree-shaped) domain list back to a single
+  leaf-first chain for display, and raises a clear `UserError` - "Domain N
+  has M nested domains sharing it as their parent... isn't supported by the
+  current interface yet" - instead of crashing or silently displaying wrong
+  data, if the loaded project actually has siblings (only reachable via
+  namelist import right now, since the interactive form can only ever
+  construct a linear chain itself).
+
+Root's own `parent_cell_size_ratio`/padding fields no longer exist (it has
+no parent, unlike the old schema where the outermost domain still carried
+leftover derivation fields) - `populate_ui_from_project` defaults these to
+sensible values (ratio 1, no padding) when displaying the outermost "parent
+box" for a linear-chain project.
+
+**Phase 2 (tree UI), 3 (validation), 4 (broader testing): not started** -
+see below, unchanged from the original plan.
+
+
 ## Motivation
 
 `gis4wrf.core.Project` only supports a linear nest chain (domain 0 ⊂ 1 ⊂ 2 ⊂
@@ -105,6 +140,11 @@ is the larger, separate effort and can reasonably follow as its own pass.
 
 ## Test fixture for Phase 1/4 (the motivating real-world case)
 
+Saved as `tests/fixtures/namelist_siblings.wps` (with `max_dom` corrected
+to 4, see note at the end of this section). `tests/fixtures/
+namelist_hongkong.wps` is the linear-chain (non-sibling) regression
+fixture used alongside it.
+
 ```
 &share
  wrf_core = 'ARW',
@@ -144,7 +184,9 @@ stand_lon = 6.6216,
 ```
 
 Note: `max_dom = 3` in `&share` above doesn't match the 4 domains actually
-defined in `&geogrid` (arrays of length 4) - that mismatch is in the
-namelist as received and should be checked/handled (likely just needs
-`max_dom = 4`) as part of picking this back up, independent of the tree
-support work itself.
+defined in `&geogrid` (arrays of length 4) - that mismatch was in the
+namelist as received. Fixed to `max_dom = 4` in the saved fixture file.
+Separately, `wps_namelist_to_project.py` now raises a clear `UserError` if
+this happens again on some other file ("max_dom (N) does not match the
+number of domains actually defined (M)...") instead of silently
+mis-parsing or crashing confusingly.
