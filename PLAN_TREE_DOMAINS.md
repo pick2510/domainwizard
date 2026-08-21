@@ -78,8 +78,38 @@ way: removing every domain left `project.data['domains']` empty, which
 `IndexError` rather than the `UserError` every other "not configured yet"
 case already raises - fixed in both places.
 
-**Phase 3 (validation) and 4 (broader testing) beyond what's described
-above: not started.**
+**Phase 3: done**, except for one part already covered elsewhere. Of item
+11's two clauses: cascade-delete was already implemented as part of Phase
+2's "Remove Domain" confirmation dialog (deleting a domain with descendants
+asks for confirmation, then removes it and all descendants, renumbering
+survivors). The remaining "per-branch ratio/resolution consistency checks"
+clause is now enforced as a geometric containment check in
+`Project.fill_domains()` (`project.py`): after computing each non-root
+domain's bbox, it's compared against its parent's bbox (with a small
+relative floating-point tolerance), and a `UserError` naming both domains
+is raised if the child extends beyond the parent on any side. This is a
+real WPS/geogrid.exe requirement (a child's placement + extent, scaled by
+its nesting ratio, must stay within the parent's grid) that was previously
+completely unchecked - a user could set padding/ratio/size fields (via the
+UI, or a hand-edited/malformed namelist import) that placed a child outside
+its parent, and the app would silently accept it and draw an incorrect
+overlay. `domainform.py` needed no changes: every `fill_domains()` call
+site already wraps it in `try/except UserError`, either surfacing the
+message via `raise_on_invalid=True` (field edits) or silently skipping the
+redraw (`draw_bbox_and_grids`), so the new check is caught by existing
+error handling automatically.
+
+Verified: both regression fixtures (`namelist_siblings.wps`,
+`namelist_hongkong.wps`) still import and `fill_domains()` cleanly with
+this check in place (no false positives from floating-point rounding); a
+deliberately out-of-bounds domain (built both via direct `Project.data`
+manipulation and via real Qt widget interaction - clicking "Add Root
+Domain", "Add Child Domain", and setting ratio/padding/size fields through
+the actual form widgets) correctly raises the new `UserError`; the same
+child domain corrected to fit within its parent applies cleanly and
+produces a bbox properly nested inside the parent's.
+
+**Phase 4 (broader testing) beyond what's described above: not started.**
 
 
 ## Motivation

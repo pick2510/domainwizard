@@ -444,6 +444,25 @@ class Project(object):
                 maxx=min_x + cols * domain['cell_size'][0],
                 maxy=min_y + rows * domain['cell_size'][1])
 
+            # A child domain must lie entirely within its parent's grid - WPS/
+            # geogrid.exe requires this (i_parent_start/j_parent_start plus
+            # the child's extent, scaled by the nesting ratio, must not
+            # exceed the parent's e_we/e_sn), but nothing upstream of this
+            # point enforces it: padding_left/padding_bottom/domain_size/
+            # ratio are otherwise free-form fields (editable directly in the
+            # UI, or read verbatim from a hand-edited or malformed namelist
+            # import). A small relative tolerance avoids false positives
+            # from floating-point rounding in cell_size/bbox arithmetic.
+            tolerance = min(domain['cell_size'][0], domain['cell_size'][1]) * 1e-6
+            if (domain['bbox'].minx < parent['bbox'].minx - tolerance or
+                    domain['bbox'].miny < parent['bbox'].miny - tolerance or
+                    domain['bbox'].maxx > parent['bbox'].maxx + tolerance or
+                    domain['bbox'].maxy > parent['bbox'].maxy + tolerance):
+                raise UserError(
+                    f'Domain {domain_number} does not fit within its parent domain '
+                    f'{parent_id}: check its nesting ratio, position within parent, '
+                    'and size.')
+
             center_x, center_y = get_bbox_center(domain['bbox'])
             center_lonlat = projection.to_lonlat(Coordinate2D(x=center_x, y=center_y))
             domain['center_lonlat'] = [center_lonlat.lon, center_lonlat.lat]
