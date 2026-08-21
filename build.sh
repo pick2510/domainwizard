@@ -21,9 +21,21 @@
 #   Without this, CRS transforms - which the whole domain-geometry pipeline
 #   depends on - fail.
 #
-# Adjust GDAL_DATA_DIR/PROJ_DB/FLEXIBLAS_DIR below if your system's paths
-# differ (e.g. non-Fedora, or a different BLAS backend/no flexiblas at all,
-# in which case drop that --add-binary line entirely).
+# flexiblas is Fedora-specific plumbing, not something inherent to numpy -
+# it's absent entirely on other distros (confirmed: a plain manylinux_2_28
+# container has no trace of it, and numpy works there without it), so this
+# is only added if actually present on the build machine.
+#
+# - numpy.core._multiarray_umath (--hidden-import): osgeo's compiled
+#   _gdal_array extension imports this directly from within its own C code,
+#   not via any traceable Python source PyInstaller's static analysis can
+#   see, so it's missed even though PyInstaller does otherwise understand
+#   numpy (its own hook-numpy.py handles numpy's own imports fine). Without
+#   this, anything touching GDAL's numpy array integration - which
+#   gis4wrf.core.util imports unconditionally - fails with "ImportError:
+#   numpy.core.multiarray failed to import".
+#
+# Adjust GDAL_DATA_DIR/PROJ_DB below if your system's paths differ.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -34,10 +46,16 @@ FLEXIBLAS_DIR=/usr/lib64/flexiblas
 
 rm -rf build dist
 
+EXTRA_ARGS=()
+if [ -d "$FLEXIBLAS_DIR" ]; then
+  EXTRA_ARGS+=(--add-binary "${FLEXIBLAS_DIR}:flexiblas")
+fi
+
 uv run pyinstaller --onefile --name domainwizard --paths src \
-  --add-binary "${FLEXIBLAS_DIR}:flexiblas" \
+  "${EXTRA_ARGS[@]}" \
   --add-data "${GDAL_DATA_DIR}:share/gdal" \
   --add-data "${PROJ_DB}:share/proj" \
+  --hidden-import numpy.core._multiarray_umath \
   src/domainwizard/app.py
 
 echo

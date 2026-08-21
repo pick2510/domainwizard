@@ -1,0 +1,47 @@
+# Builds a portable single-file Linux executable.
+#
+# Building on a much older glibc than the target machine means every shared
+# library PyInstaller bundles (Qt, glib, GDAL, ...) only requires that older
+# glibc's symbol versions, so the result runs on any machine with glibc >=
+# the build machine's - running the same PyInstaller build on a bleeding-
+# edge host (e.g. this project's normal dev machine, glibc 2.43) produces a
+# binary that fails with "GLIBC_2.43 not found" on anything older.
+#
+# Debian 12 "bookworm" (glibc 2.36) was picked over the more conventional
+# manylinux_2_28 (glibc 2.28, AlmaLinux 8): AlmaLinux 8's packaged GDAL is
+# 3.0.4, whose setup.py predates a fix for `use_2to3`, a distutils option
+# modern setuptools no longer supports at all - it can't build with any
+# reasonably current tooling. Debian 12's GDAL 3.6.2 builds fine and its
+# glibc 2.36 still covers the overwhelming majority of currently-supported
+# Linux systems (Ubuntu 22.04+, Debian 12+, RHEL/Rocky/Alma 9+, ...) - if
+# you specifically need to support something older than that, adjust the
+# base image and expect to need a different GDAL install strategy too.
+FROM debian:12-slim
+
+# The runtime (non -dev) glib/dbus/xkbcommon/xcb packages are needed so
+# PyInstaller can find and bundle them for Qt - debian:12-slim doesn't have
+# any GUI-adjacent libraries installed by default. Without these, the build
+# still succeeds, but the resulting binary silently depends on the target
+# machine already having them installed system-wide (true for essentially
+# any Linux desktop, but not guaranteed - e.g. a minimal headless server).
+# libgl1 here is only so the *build* succeeds (Qt6Gui links against it) -
+# PyInstaller deliberately does NOT bundle GL/driver libraries (see the
+# README), so the target machine needs its own libgl1/libegl1 regardless of
+# what's installed in this image.
+RUN apt-get update -qq && apt-get install -y -qq \
+    libgdal-dev python3 python3-venv python3-dev build-essential curl ca-certificates \
+    libglib2.0-0 libxkbcommon0 libdbus-1-3 \
+    libxcb1 libx11-xcb1 libxcb-util1 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+    libxcb-render-util0 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 \
+    libxcb-xkb1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+    libgl1
+
+WORKDIR /src
+COPY . .
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+RUN uv python pin 3.11 \
+    && ./setup.sh \
+    && ./build.sh

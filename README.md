@@ -46,12 +46,43 @@ uv run domainwizard
 ./build.sh
 ```
 
-Produces a standalone single-file executable at `dist/domainwizard`
-(~167MB) - no QGIS, no Python install, and no system libraries beyond libc
-required on the target machine. See the comments in `build.sh` for why it
-needs a few things PyInstaller's automatic analysis misses (numpy's BLAS
-backend, GDAL/PROJ data files) and adjust the paths there if your system
-layout differs (it was written against Fedora).
+Produces a standalone single-file executable at `dist/domainwizard`. See
+the comments in `build.sh` for why it needs a few things PyInstaller's
+automatic analysis misses (numpy's BLAS backend, GDAL/PROJ data files,
+a numpy submodule GDAL's C extension imports in a way static analysis
+can't see) and adjust the paths there if your system layout differs.
+
+**Running `build.sh` directly only produces a binary that works on
+machines with glibc >= the build machine's.** PyInstaller bundles shared
+libraries (Qt, glib, GDAL, ...) as found on the build machine, and those
+carry that machine's glibc symbol-version requirements baked in - a binary
+built on a bleeding-edge system (this project's normal dev machine runs
+glibc 2.43) fails on anything older with an error like:
+
+```
+ImportError: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.43' not found
+```
+
+For a binary that runs on essentially any current Linux system, build
+inside the provided Docker image instead, which uses Debian 12 (glibc
+2.36) specifically because it's old enough to cover the overwhelming
+majority of currently-supported distros while still having a modern
+enough GDAL to build cleanly (see the comments in `Dockerfile.build` for
+why plain manylinux_2_28, the more conventional choice for this kind of
+thing, doesn't work here):
+
+```
+docker build -f Dockerfile.build -t domainwizard-build .
+docker create --name dw-extract domainwizard-build
+docker cp dw-extract:/src/dist/domainwizard ./dist/domainwizard
+docker rm dw-extract
+```
+
+The target machine still needs the base graphics stack essentially every
+Linux desktop already has (`libgl1`/`libegl1` or equivalent) - GL/EGL
+libraries are deliberately *not* bundled, since they're tied to the actual
+GPU driver in use; a bundled generic copy would be wrong on the target
+machine, not just redundant.
 
 ## Project layout
 
