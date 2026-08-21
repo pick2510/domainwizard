@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow, QSplitter, QWidget
 from domainwizard.tilemap import TileMapWidget
 from domainwizard.domainform import DomainForm
 from domainwizard.formhelpers import WhiteScroll
+from domainwizard import errorhandling
 
 # OpenStreetMap's standard tile server. The GIS4WRF QGIS plugin's basemap
 # (gis4wrf/plugin/geo.py, add_default_basemap()) points at Stamen, whose tile
@@ -54,6 +55,7 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    errorhandling.install()
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -40,6 +40,8 @@ from domainwizard.formhelpers import (
 
 MAX_PARENTS = 22
 DECIMALS = 50
+# See the comment at its use in set_domain_to_extent().
+MAX_REASONABLE_DIM = 5000
 LON_VALIDATOR = QDoubleValidator(-180.0, 180.0, DECIMALS)
 LAT_VALIDATOR = QDoubleValidator(-90.0, 90.0, DECIMALS)
 RESOLUTION_VALIDATOR = QDoubleValidator(0.00000000000000000001, float('+inf'), DECIMALS)
@@ -102,6 +104,16 @@ class DomainForm(QWidget):
         self.widget_proj_params = QWidget()
         self.widget_proj_params.setLayout(proj_params_grid)
         vbox_map_type.addWidget(self.widget_proj_params)
+
+        # editingFinished (see the loop below) only fires once a field loses
+        # focus, so the view only updates once every required field has been
+        # tabbed/clicked away from in turn. This button lets the user force
+        # a redraw immediately once they've filled in what's needed, without
+        # depending on field-visit order.
+        refresh_view_button = QPushButton("Refresh View")
+        refresh_view_button.setObjectName('refresh_view_button')
+        refresh_view_button.clicked.connect(lambda: self.on_change_any_field(zoom_out=True))
+        vbox_map_type.addWidget(refresh_view_button)
 
         self.group_box_map_type.setLayout(vbox_map_type)
 
@@ -321,14 +333,34 @@ class DomainForm(QWidget):
 
         xmin, xmax, ymin, ymax = domain_bbox.minx, domain_bbox.maxx, domain_bbox.miny, domain_bbox.maxy
 
+        cols = ceil((xmax - xmin) / resolution)
+        rows = ceil((ymax - ymin) / resolution)
+
+        # Guards against e.g. clicking "Set to Map View Extent" while the map
+        # is still zoomed out to (close to) the whole world: the resulting
+        # domain is thousands of km wide, which real WRF domains never are,
+        # and - for a regional projection like Lambert Conformal, whose
+        # conformality breaks down far from its standard parallels - can
+        # produce a self-intersecting, visually nonsensical outline (seen in
+        # practice: a domain spanning nearly all longitudes wrapped across
+        # the +/-180 degree antimeridian, which TileMapWidget's overlay
+        # drawing has no wraparound handling for). No real WRF domain needs
+        # anywhere near this many cells per side.
+        if cols > MAX_REASONABLE_DIM or rows > MAX_REASONABLE_DIM:
+            raise UserError(
+                f'The computed domain is {cols} x {rows} cells, which is too large to be a '
+                'real WRF domain. This usually means the map view (or the file used for '
+                '"Set from File") covers a much larger area than intended - zoom in on the map '
+                'first, or increase the horizontal grid spacing, then try again.')
+
         center_x = xmin + (xmax - xmin) / 2
         center_y = ymin + (ymax - ymin) / 2
         center_lonlat = domain_crs.to_lonlat(Coordinate2D(center_x, center_y))
         self.center_lat.set_value(center_lonlat.lat)
         self.center_lon.set_value(center_lonlat.lon)
         self.resolution.set_value(resolution)
-        self.cols.set_value(ceil((xmax - xmin) / resolution))
-        self.rows.set_value(ceil((ymax - ymin) / resolution))
+        self.cols.set_value(cols)
+        self.rows.set_value(rows)
 
         self.on_change_any_field(zoom_out=True)
 
