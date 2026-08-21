@@ -59,12 +59,28 @@ layout differs (it was written against Fedora).
 
 ## Vendored `gis4wrf.core`
 
-`src/gis4wrf/core/` is a copy of the `gis4wrf/core` subpackage from the
-[GIS4WRF repo](https://github.com/GIS4WRF/gis4wrf) (domain/CRS math,
-namelist read/write, GDAL outline generation - all QGIS-independent code).
-It's vendored rather than depended on because the GIS4WRF repo isn't a
-pip-installable package (it's zipped directly for QGIS's plugin loader, see
-its `build.py`), so there's nothing for `uv add` to point at.
+`src/gis4wrf/core/` is a **trimmed subset** of the `gis4wrf/core` subpackage
+from the [GIS4WRF repo](https://github.com/GIS4WRF/gis4wrf) (domain/CRS
+math, namelist read/write, GDAL outline generation - all QGIS-independent
+code). It's vendored rather than depended on because the GIS4WRF repo isn't
+a pip-installable package (it's zipped directly for QGIS's plugin loader,
+see its `build.py`), so there's nothing for `uv add` to point at.
+
+Only the files this app's actual import graph reaches are kept - not the
+full `gis4wrf/core` tree. `src/gis4wrf/core/__init__.py` here only imports
+the modules this app needs (`errors`, `crs`, `project`, `readers.namelist`,
+`writers.namelist`, and the three `transforms.*` conversion functions),
+unlike the real one which unconditionally imports everything in `core/`
+(downloaders, WRF/WPS-binary-to-GDAL conversion, grib/shapefile readers -
+none of which the domain wizard touches). What's dropped: `program.py`,
+`downloaders/{dist,geo,met,plugin_version,util}.py`,
+`readers/{grib_metadata,wrf_netcdf_metadata}.py`,
+`writers/{shapefile,wps_binary}.py`,
+`transforms/{categories_to_gdal,project_to_gdal_checkerboards,project_to_wrf_namelist,wps_binary_to_gdal,wrf_netcdf_to_gdal}.py`.
+Both `nml_schemas/{wps,wrf}.{json,yml}` are kept even though only the `wps`
+schema is used directly, since the vendored `Project` class still has a
+(here-unused) method that reads the `wrf` one, and shipping two small text
+files is cheaper than leaving that method silently broken.
 
 `src/gis4wrf/__init__.py` here is **not** a copy of the real
 `gis4wrf/__init__.py` - that one wires up QGIS plugin bootstrapping
@@ -72,11 +88,17 @@ its `build.py`), so there's nothing for `uv add` to point at.
 `pkg_resources`/`setuptools` for its own dependency installer. None of that
 applies here, so this package's `__init__.py` is just a docstring.
 
-To pull in upstream changes, re-sync just the `core` subtree, e.g.:
+To pull in upstream changes, re-sync the `core` subtree and re-trim, e.g.:
 
 ```
 rsync -a --exclude='__pycache__' /path/to/gis4wrf/gis4wrf/core/ src/gis4wrf/core/
+git checkout src/gis4wrf/core/__init__.py   # rsync overwrites it with the untrimmed original
 ```
+
+then re-apply whatever trimming still makes sense against the new upstream
+version (importing `gis4wrf.core` and checking `sys.modules` for
+`gis4wrf.*` after the fact confirms exactly what's actually reachable, the
+same way this trim was derived).
 
 ## Known limitations
 
