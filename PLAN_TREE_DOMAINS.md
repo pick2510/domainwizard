@@ -109,7 +109,63 @@ the actual form widgets) correctly raises the new `UserError`; the same
 child domain corrected to fit within its parent applies cleanly and
 produces a bbox properly nested inside the parent's.
 
-**Phase 4 (broader testing) beyond what's described above: not started.**
+**Phase 4: in progress.** `pytest` added as a dev dependency
+(`uv add --dev pytest`). Everything below runs with `uv run pytest`.
+
+Done: `tests/test_core_domain_tree.py` - core-level (no Qt) coverage,
+8 tests, all passing:
+- `test_siblings_import_builds_correct_tree` - imports
+  `namelist_siblings.wps`, asserts the exact parent_id tree (domains 3/4
+  both children of domain 2), asserts the two siblings' bboxes don't
+  overlap, and asserts every non-root domain fits inside its parent
+  (Phase 3's check, re-verified at the data level).
+- `test_siblings_export_round_trips` - exports that project back to a
+  namelist (via `write_namelist` to a tmp file), re-imports it, and checks
+  parent_id and bbox (tolerance 1.0, for float round-trip noise) match the
+  original for every domain. This is plan item 12.
+- `test_siblings_outlines_are_visually_distinguishable` - checks
+  `convert_project_to_gdal_outlines` produces one feature per domain (4).
+- `test_hongkong_linear_chain_still_works` / `test_hongkong_export_round_trips`
+  - same shape of checks against the linear-chain regression fixture. Plan
+  item 13.
+- `test_set_domains_linear_chain_still_works` - exercises the old
+  leaf-first convenience API (`Project.set_domains()`, still used by
+  `DomainForm`'s "Add Child Domain" auto-derivation path historically, now
+  superseded by direct dict construction but kept for API compatibility)
+  under the new WPS-native storage, confirming it still produces a child
+  properly nested inside its parent.
+- `test_child_outside_parent_is_rejected` / `test_max_dom_mismatch_is_rejected`
+  - re-assert the two `UserError` validation cases from Phase 1/3 as
+  permanent regression tests (previously only checked via throwaway
+  scripts during those phases).
+
+Not yet done (pick up here):
+- A Qt/UI-level test module (`tests/test_ui_domain_tree.py`, not yet
+  created) exercising `DomainForm` through real widget interaction
+  (`QT_QPA_PLATFORM=offscreen`), matching the rigor of the ad hoc scripts
+  used to verify Phases 2 and 3 by hand, but persisted as an actual test:
+  building a 3-domain project with two siblings entirely through the UI
+  (click "Add Root Domain", select it, "Add Child Domain" twice) and
+  confirming both children get the same `parent_id`; importing the sibling
+  namelist through `on_import_from_namelist_button_clicked` and checking
+  the resulting `QTreeWidget` shape (root -> domain 2 -> [domain 3,
+  domain 4]); partial removal of one sibling via
+  `on_remove_domain_button_clicked` and confirming correct renumbering;
+  the out-of-bounds-child case surfacing as a caught `UserError` (not a
+  crash) through `_apply_selected_domain_fields(raise_on_invalid=True)`
+  when triggered via real field edits. Relevant `DomainForm` internals
+  already located for this: `_rebuild_tree`/`on_tree_selection_changed`/
+  `_selected_domain` (tree <-> `project.data['domains']` sync),
+  `on_add_domain_button_clicked` (line ~363, first click with no domains
+  yet adds a default root; subsequent clicks add a child under whichever
+  tree item is selected), `on_remove_domain_button_clicked` (line ~395,
+  cascade-collects descendants via a `children_of` map before removing,
+  confirms via `QMessageBox` if more than one domain would be removed).
+- No dedicated color-uniqueness assertion yet for
+  `domainoverlay._pen_for_domain_number` (currently only the feature-count
+  check above touches outline rendering at the core level) - worth adding
+  once the UI test module exists, since that's where "visually
+  distinguishable on the map" is actually meaningful to check end-to-end.
 
 
 ## Motivation
