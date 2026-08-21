@@ -35,6 +35,12 @@
 #   gis4wrf.core.util imports unconditionally - fails with "ImportError:
 #   numpy.core.multiarray failed to import".
 #
+# - nml_schemas/*.json (--add-data): read_namelist()/get_namelist_schema()
+#   load these via a runtime-relative open(), not a Python import, so
+#   they're invisible to PyInstaller's import-based bundling. Without this,
+#   "Import from namelist" / "Export to namelist" fail with
+#   "FileNotFoundError: .../nml_schemas/wps.json".
+#
 # Adjust GDAL_DATA_DIR/PROJ_DB below if your system's paths differ.
 
 set -euo pipefail
@@ -55,6 +61,7 @@ uv run pyinstaller --onefile --name domainwizard --paths src \
   "${EXTRA_ARGS[@]}" \
   --add-data "${GDAL_DATA_DIR}:share/gdal" \
   --add-data "${PROJ_DB}:share/proj" \
+  --add-data "src/gis4wrf/core/readers/nml_schemas:gis4wrf/core/readers/nml_schemas" \
   --hidden-import numpy.core._multiarray_umath \
   src/domainwizard/app.py
 
