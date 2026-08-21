@@ -112,7 +112,7 @@ class DomainForm(QWidget):
         # depending on field-visit order.
         refresh_view_button = QPushButton("Refresh View")
         refresh_view_button.setObjectName('refresh_view_button')
-        refresh_view_button.clicked.connect(lambda: self.on_change_any_field(zoom_out=True))
+        refresh_view_button.clicked.connect(lambda: self.on_change_any_field(zoom_out=True, raise_on_invalid=True))
         vbox_map_type.addWidget(refresh_view_button)
 
         self.group_box_map_type.setLayout(vbox_map_type)
@@ -484,8 +484,12 @@ class DomainForm(QWidget):
             center_lonlat=center_lonlat, parent_domains=parent_domains, **proj_kwargs)
         return True
 
-    def on_change_any_field(self, zoom_out=False):
+    def on_change_any_field(self, zoom_out=False, raise_on_invalid=False):
         if not self.update_project():
+            if raise_on_invalid:
+                raise UserError(
+                    'Domain configuration invalid or incomplete - check the highlighted fields '
+                    '(red = invalid, yellow = required but empty), including any parent domains.')
             return
 
         domains = self.project.data['domains']
