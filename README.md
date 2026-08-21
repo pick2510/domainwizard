@@ -14,12 +14,25 @@ vendored - see below).
 ## Setup
 
 ```
-uv sync
+./setup.sh
 ```
 
-That's it - no separate steps needed. `GDAL` is pinned to `3.12.4` to match
-this machine's system `libgdal`; if `uv sync` fails to build it, check
-`gdal-config --version` and adjust the pin in `pyproject.toml` to match.
+`pyproject.toml`'s `gdal` pin has to match this machine's system `libgdal`
+*exactly* - GDAL's Python bindings enforce that at build time, and there's
+no version range that works across machines with different `libgdal`
+versions installed. `setup.sh` detects the local version (via
+`gdal-config`) and pins to it before syncing, so this works out of the box
+regardless of what `libgdal` version is on your system. Re-run it after
+pulling if you see a GDAL build error like:
+
+```
+Exception: Python bindings of GDAL X require at least libgdal X, but Y was found
+```
+
+That means the committed pin (set by whoever last ran `setup.sh` on their
+own machine) doesn't match yours - it's local, per-machine config, not a
+real dependency change, so don't worry about "reverting" someone else's
+pin when you fix yours.
 
 ## Run
 
