@@ -36,12 +36,19 @@ def read_namelist(path: Union[str, StringIO], schema_name: Optional[str]=None) -
     
     # If a schema is specified, use it to fix single-element lists which are parsed as
     # primitive value since there is nothing to distinguish them from each other in the namelist format.
+    # Groups/variables the schema doesn't know about (e.g. WPS's optional &mod_levs section,
+    # which isn't covered by wps.yml) are left untouched rather than raising - this is a
+    # best-effort normalization, not validation (that's verify_namelist's job).
     if schema_name:
         schema = get_namelist_schema(schema_name)
         for group_name, group in nml.items():
-            schema_group = schema[group_name]
+            schema_group = schema.get(group_name)
+            if schema_group is None:
+                continue
             for var_name, var_val in group.items():
-                schema_var = schema_group[var_name]
+                schema_var = schema_group.get(var_name)
+                if schema_var is None:
+                    continue
                 schema_type = SCHEMA_VAR_TYPES[schema_var['type']]
                 if schema_type is list and not isinstance(var_val, list):
                     group[var_name] = [var_val]
