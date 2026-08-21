@@ -363,6 +363,8 @@ class Project(object):
 
     @property
     def projection(self) -> CRS:
+        if not self.data.get('domains'):
+            raise UserError('Domains are not configured yet')
         domain = self.data['domains'][0]
         map_proj = domain['map_proj']
         if map_proj == 'lambert':

@@ -17,10 +17,28 @@ import gis4wrf.core as core
 
 from domainwizard.tilemap import LonLat, Overlay
 
-# Domain 0 (the innermost/main domain) is drawn in red, matching geo.py's
-# update_domain_outline_layers(); nested parent domains are drawn in blue.
-MAIN_DOMAIN_PEN = QPen(QColor(220, 30, 30), 2)
-PARENT_DOMAIN_PEN = QPen(QColor(30, 90, 220), 2)
+# geo.py's update_domain_outline_layers() used a fixed red-for-main/blue-for-
+# parent scheme, which relied on there being exactly one "main" domain (the
+# innermost, always domains[0] under the old leaf-first storage) and a single
+# linear chain of parents. Neither holds any more (Phase 1 of
+# PLAN_TREE_DOMAINS.md: domains[0] is now the root, and a project can have
+# several sibling domains at once that all need to be told apart) - so
+# instead every domain gets its own color from a fixed, cyclic palette,
+# assigned by its stable WPS domain number rather than by position/depth.
+_PALETTE = [
+    QColor(220, 30, 30),    # red
+    QColor(30, 90, 220),    # blue
+    QColor(30, 160, 60),    # green
+    QColor(230, 140, 20),   # orange
+    QColor(150, 40, 190),   # purple
+    QColor(20, 160, 160),   # teal
+    QColor(190, 30, 130),   # magenta
+    QColor(140, 120, 20),   # olive
+]
+
+
+def _pen_for_domain_number(domain_number: int) -> QPen:
+    return QPen(_PALETTE[(domain_number - 1) % len(_PALETTE)], 2)
 
 
 def _wgs84_srs() -> osr.SpatialReference:
@@ -57,10 +75,10 @@ def compute_domain_overlays(project: 'core.Project') -> List[Overlay]:
         ring = geom.GetGeometryRef(0)
         points: List[LonLat] = [(ring.GetX(i), ring.GetY(i)) for i in range(ring.GetPointCount())]
 
-        # idx 0 is always the innermost/main domain (see project.py: bboxes()
-        # returns domains in project.data['domains'] order, domains[0] first),
-        # matching geo.py's update_domain_outline_layers() red/blue convention.
-        pen = MAIN_DOMAIN_PEN if idx == 0 else PARENT_DOMAIN_PEN
+        # project.bboxes() (which convert_project_to_gdal_outlines() reads)
+        # returns domains in project.data['domains'] order, i.e. one feature
+        # per domain in WPS domain-number order (idx 0 = domain 1 = root).
+        pen = _pen_for_domain_number(idx + 1)
         overlays.append(Overlay(rings=[points], pen=pen, brush=QBrush(), closed=True))
 
     return overlays

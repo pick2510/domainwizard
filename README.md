@@ -151,9 +151,8 @@ same way this trim was derived).
   placement.
 - Basemap uses OpenStreetMap's standard tile server (the GIS4WRF plugin's
   Stamen-based basemap is dead - Stamen's tile servers were shut down).
-- Namelist import/export supports arbitrary domain trees, including two
-  domains sharing a parent (siblings) - see `PLAN_TREE_DOMAINS.md`. The
-  interactive UI (the domain wizard form itself) doesn't yet: it can only
-  display/edit a single linear chain, and gives a clear error rather than
-  silently doing the wrong thing if you import a namelist with siblings.
-  Building the tree-editing UI is Phase 2 of that plan, not yet started.
+- Domains are edited as a tree (a `QTreeWidget`, not a fixed chain), so two
+  domains sharing a parent (siblings) are fully supported - both for
+  namelist import/export and for building them directly in the UI (select a
+  domain, "Add Child Domain" twice for two siblings). See
+  `PLAN_TREE_DOMAINS.md`.

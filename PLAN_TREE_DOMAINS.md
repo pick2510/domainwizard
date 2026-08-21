@@ -31,8 +31,55 @@ leftover derivation fields) - `populate_ui_from_project` defaults these to
 sensible values (ratio 1, no padding) when displaying the outermost "parent
 box" for a linear-chain project.
 
-**Phase 2 (tree UI), 3 (validation), 4 (broader testing): not started** -
-see below, unchanged from the original plan.
+**Phase 2: done.** `domainform.py` was redesigned around a `QTreeWidget`
+showing the actual domain tree (one item per domain, children nested under
+their parent - so two domains sharing a parent render as two sibling tree
+items, which is exactly the case Phase 1 unlocked). Selecting a domain shows
+a properties panel that switches between "root" fields (Map Type,
+Horizontal Resolution, Center Point - shown only for domain 1) and "nested"
+fields (Nesting ratio, Position within Parent - `padding_left`/
+`padding_bottom`, i.e. `i_parent_start`/`j_parent_start` minus one) for
+everything else. "Add Child Domain" adds a domain under whichever tree item
+is selected, so clicking a domain twice (once per child) produces two
+siblings directly through the UI - no namelist round-trip needed to create
+what Phase 1 could only *read*. "Remove Domain" removes the selected domain
+and all its descendants (with a confirmation dialog if it has any),
+renumbering the remaining domains' `parent_id` references to stay
+WPS-valid. The old "linear chain of Parent N boxes + spinbox" UI and the
+`padding_right`/`padding_top` input fields it exposed are gone - those were
+specific to the old auto-derive-parent-size-from-padding convenience, which
+doesn't generalize to a parent with multiple children (whose combined
+extent would need a real union computation) and isn't needed now that
+`domain_size` is a direct, per-domain field.
+
+`domainoverlay.py`'s outline coloring changed from a fixed
+red-for-main/blue-for-parent scheme (which relied on there being exactly
+one "main" domain and a single linear chain) to a per-domain color drawn
+from an 8-color palette, cycling by the domain's stable WPS number - so any
+number of siblings at any depth stay visually distinguishable on the map,
+not just "innermost vs. everything else".
+
+Verified end-to-end through real Qt widget interaction (tree selection via
+`setCurrentItem`, matching what an actual click does - not just calling
+handlers directly): building a 3-domain project with two siblings entirely
+through the UI from an empty project, confirming both children end up with
+`parent_id` pointing at the same parent; importing the sibling namelist and
+confirming the tree renders the correct hierarchy (root -> domain 2 ->
+[domain 3, domain 4]) with each domain's panel showing its own distinct
+ratio/position/size; an exact namelist export round-trip afterward;
+partial removal of one sibling with correct renumbering of the survivor
+(namelist re-export still byte-identical for the unaffected domain); the
+existing linear-chain regression case; and a rendered screenshot showing 4
+distinctly-colored, correctly-nested/positioned domain outlines over the
+real geography, with two of them (siblings) visibly at different positions
+within their shared parent. Also caught and fixed one real bug along the
+way: removing every domain left `project.data['domains']` empty, which
+`Project.projection` and the overlay redraw path hit as an unhandled
+`IndexError` rather than the `UserError` every other "not configured yet"
+case already raises - fixed in both places.
+
+**Phase 3 (validation) and 4 (broader testing) beyond what's described
+above: not started.**
 
 
 ## Motivation

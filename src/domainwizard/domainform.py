@@ -11,17 +11,26 @@ Differences from the QGIS-plugin version:
 - No Broadcast signal bus: this widget owns its Project directly, so
   "Import from namelist" just replaces self.project instead of emitting a
   cross-widget signal.
+
+Phase 2 of PLAN_TREE_DOMAINS.md: unlike the QGIS plugin (and this port's own
+Phase 1), the domain editor here is a tree (QTreeWidget), not a fixed chain
+of "Parent N" boxes - domains can share a parent (siblings), matching what
+gis4wrf.core's WPS-native storage (root-first, explicit parent_id per
+domain) has supported since Phase 1. There's no more "update_project()
+rebuilds everything from a flat field list" - each field edit writes
+directly into the currently *selected* domain's dict in
+self.project.data['domains'] and calls fill_domains() to recompute.
 """
 
 from math import ceil
-from typing import Dict, List, Optional
+from typing import Optional
 
 from osgeo import osr
-from PyQt6.QtCore import QMetaObject, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QDoubleValidator, QIntValidator
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
-    QWidget, QPushButton, QLayout, QVBoxLayout, QGridLayout, QGroupBox, QSpinBox,
-    QLabel, QHBoxLayout, QComboBox, QFileDialog
+    QWidget, QPushButton, QVBoxLayout, QGridLayout, QGroupBox,
+    QLabel, QHBoxLayout, QComboBox, QFileDialog, QTreeWidget, QTreeWidgetItem, QMessageBox
 )
 
 from gis4wrf.core import (
@@ -34,11 +43,10 @@ from domainwizard.tilemap import TileMapWidget
 from domainwizard.domainoverlay import compute_domain_overlays, domain_lonlat_bounds
 from domainwizard.fileextent import read_extent_and_srs
 from domainwizard.formhelpers import (
-    MyLineEdit, add_grid_lineedit, update_input_validation_style, create_lineedit,
+    MyLineEdit, add_grid_lineedit, update_input_validation_style,
     RATIO_VALIDATOR, DIM_VALIDATOR,
 )
 
-MAX_PARENTS = 22
 DECIMALS = 50
 # See the comment at its use in set_domain_to_extent().
 MAX_REASONABLE_DIM = 5000
@@ -46,7 +54,17 @@ LON_VALIDATOR = QDoubleValidator(-180.0, 180.0, DECIMALS)
 LAT_VALIDATOR = QDoubleValidator(-90.0, 90.0, DECIMALS)
 RESOLUTION_VALIDATOR = QDoubleValidator(0.00000000000000000001, float('+inf'), DECIMALS)
 
-HORIZONTAL_RESOLUTION_LABEL = 'Horizontal Resolution: {resolution} {unit}'
+PROJECTIONS = {
+    'undefined': '-',
+    'lat-lon': 'Latitude/Longitude',
+    'lambert': 'Lambert Conformal',
+    'mercator': 'Mercator',
+    'polar': 'Polar Stereographic',
+}
+
+# Qt.ItemDataRole.UserRole on each QTreeWidgetItem holds the domain's 1-based
+# WPS domain number (== its position in project.data['domains']).
+DOMAIN_NUMBER_ROLE = Qt.ItemDataRole.UserRole
 
 
 def _lonlat_srs() -> osr.SpatialReference:
@@ -63,36 +81,44 @@ class DomainForm(QWidget):
         super().__init__()
         self.map_widget = map_widget
         self._project = Project.create()
+        self._selected_domain_number: Optional[int] = None
 
         # Import/Export
         import_from_namelist_button = QPushButton("Import from namelist")
-        import_from_namelist_button.setObjectName('import_from_namelist_button')
         export_geogrid_namelist_button = QPushButton("Export to namelist")
-        export_geogrid_namelist_button.setObjectName('export_geogrid_namelist_button')
-
+        import_from_namelist_button.clicked.connect(self.on_import_from_namelist_button_clicked)
+        export_geogrid_namelist_button.clicked.connect(self.on_export_geogrid_namelist_button_clicked)
         vbox_import_export = QVBoxLayout()
         vbox_import_export.addWidget(import_from_namelist_button)
         vbox_import_export.addWidget(export_geogrid_namelist_button)
         self.gbox_import_export = QGroupBox("Import/Export")
         self.gbox_import_export.setLayout(vbox_import_export)
 
-        # Group: Map Type
-        self.group_box_map_type = QGroupBox("Map Type")
+        # Domain tree
+        self.domain_tree = QTreeWidget()
+        self.domain_tree.setHeaderHidden(True)
+        self.domain_tree.itemSelectionChanged.connect(self.on_tree_selection_changed)
+        self.add_domain_button = QPushButton("Add Root Domain")
+        self.add_domain_button.clicked.connect(self.on_add_domain_button_clicked)
+        self.remove_domain_button = QPushButton("Remove Domain")
+        self.remove_domain_button.clicked.connect(self.on_remove_domain_button_clicked)
+        self.remove_domain_button.setEnabled(False)
+        vbox_tree = QVBoxLayout()
+        vbox_tree.addWidget(self.domain_tree)
+        vbox_tree.addWidget(self.add_domain_button)
+        vbox_tree.addWidget(self.remove_domain_button)
+        self.gbox_tree = QGroupBox("Domains")
+        self.gbox_tree.setLayout(vbox_tree)
+
+        # Map Type (root domain only - WPS defines one projection per
+        # project regardless of nesting shape)
+        self.gbox_map_type = QGroupBox("Map Type")
         vbox_map_type = QVBoxLayout()
         hbox_map_type = QHBoxLayout()
-
         self.projection = QComboBox()
-        self.projection.setObjectName('projection')
-        projs = {
-            'undefined': '-',
-            'lat-lon': 'Latitude/Longitude',
-            'lambert': 'Lambert Conformal',
-            'mercator': 'Mercator',
-            'polar': 'Polar Stereographic',
-        }
-        for proj_id, proj_label in projs.items():
+        for proj_id, proj_label in PROJECTIONS.items():
             self.projection.addItem(proj_label, proj_id)
-
+        self.projection.currentIndexChanged.connect(self.on_projection_changed)
         hbox_map_type.addWidget(QLabel('GCS/Projection:'))
         hbox_map_type.addWidget(self.projection)
         vbox_map_type.addLayout(hbox_map_type)
@@ -104,105 +130,88 @@ class DomainForm(QWidget):
         self.widget_proj_params = QWidget()
         self.widget_proj_params.setLayout(proj_params_grid)
         vbox_map_type.addWidget(self.widget_proj_params)
+        self.gbox_map_type.setLayout(vbox_map_type)
 
-        # editingFinished (see the loop below) only fires once a field loses
-        # focus, so the view only updates once every required field has been
-        # tabbed/clicked away from in turn. This button lets the user force
-        # a redraw immediately once they've filled in what's needed, without
-        # depending on field-visit order.
-        refresh_view_button = QPushButton("Refresh View")
-        refresh_view_button.setObjectName('refresh_view_button')
-        refresh_view_button.clicked.connect(lambda: self.on_change_any_field(zoom_out=True, raise_on_invalid=True))
-        vbox_map_type.addWidget(refresh_view_button)
-
-        self.group_box_map_type.setLayout(vbox_map_type)
-
-        # Group: Horizontal Resolution
-        self.group_box_resol = QGroupBox("Horizontal Grid Spacing")
+        # Horizontal Resolution (root only - descendants derive theirs from
+        # their own parent_cell_size_ratio instead)
+        self.gbox_resolution = QGroupBox("Horizontal Grid Spacing")
         hbox_resol = QHBoxLayout()
         self.resolution = MyLineEdit(required=True)
         self.resolution.setValidator(RESOLUTION_VALIDATOR)
         self.resolution.textChanged.connect(lambda _: update_input_validation_style(self.resolution))
         self.resolution.textChanged.emit(self.resolution.text())
         hbox_resol.addWidget(self.resolution)
-        self.resolution_label = QLabel()
-        hbox_resol.addWidget(self.resolution_label)
-        self.group_box_resol.setLayout(hbox_resol)
+        self.resolution_unit_label = QLabel()
+        hbox_resol.addWidget(self.resolution_unit_label)
+        self.gbox_resolution.setLayout(hbox_resol)
 
-        # Group: Automatic Domain Generator
-        self.group_box_auto_domain = QGroupBox("Grid Extent Calculator")
-        vbox_auto_domain = QVBoxLayout()
-        domain_pb_set_canvas_extent = QPushButton("Set to Map View Extent")
-        domain_pb_set_canvas_extent.setObjectName('set_canvas_extent_button')
-        domain_pb_set_file_extent = QPushButton("Set from File...")
-        domain_pb_set_file_extent.setObjectName('set_file_extent_button')
-        vbox_auto_domain.addWidget(domain_pb_set_canvas_extent)
-        vbox_auto_domain.addWidget(domain_pb_set_file_extent)
-        self.group_box_auto_domain.setLayout(vbox_auto_domain)
+        # Nesting (non-root only)
+        self.gbox_nesting = QGroupBox("Nesting")
+        grid_nesting = QGridLayout()
+        self.ratio = add_grid_lineedit(grid_nesting, 0, 'Child-to-Parent Ratio', RATIO_VALIDATOR, required=True)
+        self.nesting_resolution_label = QLabel()
+        grid_nesting.addWidget(self.nesting_resolution_label, 1, 0, 1, 3)
+        self.gbox_nesting.setLayout(grid_nesting)
 
-        # Group: Manual Domain Configuration
-        grid_center_point = QGridLayout()
-        self.center_lon = add_grid_lineedit(grid_center_point, 0, 'Longitude', LON_VALIDATOR, '°', required=True)
-        self.center_lat = add_grid_lineedit(grid_center_point, 1, 'Latitude', LAT_VALIDATOR, '°', required=True)
-        group_box_centre_point = QGroupBox("Center Point")
-        group_box_centre_point.setLayout(grid_center_point)
+        # Grid Extent Calculator (both - meaning differs: for the root it
+        # sets center+size directly, for a nested domain it sets this
+        # domain's position within its parent (i_parent_start/j_parent_start
+        # equivalent) + size)
+        self.gbox_extent_calc = QGroupBox("Grid Extent Calculator")
+        vbox_extent_calc = QVBoxLayout()
+        set_canvas_extent_button = QPushButton("Set to Map View Extent")
+        set_canvas_extent_button.clicked.connect(self.on_set_canvas_extent_button_clicked)
+        set_file_extent_button = QPushButton("Set from File...")
+        set_file_extent_button.clicked.connect(self.on_set_file_extent_button_clicked)
+        vbox_extent_calc.addWidget(set_canvas_extent_button)
+        vbox_extent_calc.addWidget(set_file_extent_button)
+        self.gbox_extent_calc.setLayout(vbox_extent_calc)
 
-        grid_dims = QGridLayout()
-        self.cols = add_grid_lineedit(grid_dims, 0, 'Horizontal', DIM_VALIDATOR, required=True)
-        self.rows = add_grid_lineedit(grid_dims, 1, 'Vertical', DIM_VALIDATOR, required=True)
-        group_box_dims = QGroupBox("Grid Extent")
-        group_box_dims.setLayout(grid_dims)
+        # Center Point (root only)
+        self.gbox_center = QGroupBox("Center Point")
+        grid_center = QGridLayout()
+        self.center_lon = add_grid_lineedit(grid_center, 0, 'Longitude', LON_VALIDATOR, '°', required=True)
+        self.center_lat = add_grid_lineedit(grid_center, 1, 'Latitude', LAT_VALIDATOR, '°', required=True)
+        self.gbox_center.setLayout(grid_center)
 
-        vbox_manual_domain = QVBoxLayout()
-        vbox_manual_domain.addWidget(group_box_centre_point)
-        vbox_manual_domain.addWidget(group_box_dims)
+        # Position within Parent (non-root only) - WPS's
+        # i_parent_start/j_parent_start, 0-based here (padding_left/bottom)
+        self.gbox_position = QGroupBox("Position within Parent")
+        grid_position = QGridLayout()
+        self.padding_left = add_grid_lineedit(grid_position, 0, 'From left edge', DIM_VALIDATOR, 'parent cells', required=True)
+        self.padding_bottom = add_grid_lineedit(grid_position, 1, 'From bottom edge', DIM_VALIDATOR, 'parent cells', required=True)
+        self.gbox_position.setLayout(grid_position)
 
-        self.group_box_manual_domain = QGroupBox("Advanced Configuration")
-        self.group_box_manual_domain.setCheckable(True)
-        self.group_box_manual_domain.setChecked(False)
-        self.group_box_manual_domain.setLayout(vbox_manual_domain)
+        # Grid Extent (both)
+        self.gbox_grid_extent = QGroupBox("Grid Extent")
+        grid_extent = QGridLayout()
+        self.cols = add_grid_lineedit(grid_extent, 0, 'Horizontal', DIM_VALIDATOR, required=True)
+        self.rows = add_grid_lineedit(grid_extent, 1, 'Vertical', DIM_VALIDATOR, required=True)
+        self.gbox_grid_extent.setLayout(grid_extent)
 
-        for field in [self.resolution, self.center_lat, self.center_lon, self.rows, self.cols,
-                      self.truelat1, self.truelat2, self.stand_lon]:
-            field.editingFinished.connect(self.on_change_any_field)
-
-        # Group Box: Parent Domain
-        self.group_box_parent_domain = QGroupBox("Enable Parenting")
-        self.group_box_parent_domain.setObjectName('group_box_parent_domain')
-        self.group_box_parent_domain.setCheckable(True)
-        self.group_box_parent_domain.setChecked(False)
-
-        hbox_parent_num = QHBoxLayout()
-        hbox_parent_num.addWidget(QLabel('Number of Parent Domains:'))
-        self.parent_spin = QSpinBox()
-        self.parent_spin.setObjectName('parent_spin')
-        self.parent_spin.setRange(1, MAX_PARENTS)
-        hbox_parent_num.addWidget(self.parent_spin)
-        self.group_box_parent_domain.setLayout(hbox_parent_num)
-
-        self.parent_domains: list = []
-        self.parent_vbox = QVBoxLayout()
-        self.parent_vbox.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        for field in [self.truelat1, self.truelat2, self.stand_lon, self.resolution,
+                      self.center_lon, self.center_lat, self.ratio,
+                      self.padding_left, self.padding_bottom, self.cols, self.rows]:
+            field.editingFinished.connect(self.on_selected_domain_field_changed)
 
         go_to_data_tab_btn = QPushButton('Continue to Datasets')
         go_to_data_tab_btn.clicked.connect(self.go_to_data_tab)
 
         dom_mgr_layout = QVBoxLayout()
         dom_mgr_layout.addWidget(self.gbox_import_export)
-        dom_mgr_layout.addWidget(self.group_box_map_type)
-        dom_mgr_layout.addWidget(self.group_box_resol)
-        dom_mgr_layout.addWidget(self.group_box_auto_domain)
-        dom_mgr_layout.addWidget(self.group_box_manual_domain)
-        dom_mgr_layout.addWidget(self.group_box_parent_domain)
-        dom_mgr_layout.addLayout(self.parent_vbox)
+        dom_mgr_layout.addWidget(self.gbox_tree)
+        dom_mgr_layout.addWidget(self.gbox_map_type)
+        dom_mgr_layout.addWidget(self.gbox_resolution)
+        dom_mgr_layout.addWidget(self.gbox_nesting)
+        dom_mgr_layout.addWidget(self.gbox_extent_calc)
+        dom_mgr_layout.addWidget(self.gbox_center)
+        dom_mgr_layout.addWidget(self.gbox_position)
+        dom_mgr_layout.addWidget(self.gbox_grid_extent)
         dom_mgr_layout.addWidget(go_to_data_tab_btn)
         dom_mgr_layout.addStretch(1)
         self.setLayout(dom_mgr_layout)
 
-        QMetaObject.connectSlotsByName(self)
-
-        # trigger event for initial layout
-        self.projection.currentIndexChanged.emit(self.projection.currentIndex())
+        self._update_panel_visibility()
 
     @property
     def project(self) -> Project:
@@ -211,84 +220,293 @@ class DomainForm(QWidget):
     @project.setter
     def project(self, val: Project) -> None:
         self._project = val
-        self.populate_ui_from_project()
+        self._selected_domain_number = None
+        self._rebuild_tree(select_number=1 if val.data.get('domains') else None)
 
-    def populate_ui_from_project(self) -> None:
-        project = self.project
-        try:
-            domains = project.data['domains']
-        except KeyError:
+    # --- domain tree -----------------------------------------------------
+
+    def _rebuild_tree(self, select_number: Optional[int] = None) -> None:
+        self.domain_tree.blockSignals(True)
+        self.domain_tree.clear()
+        domains = self._project.data.get('domains') or []
+
+        items_by_number = {}
+        for i, domain in enumerate(domains):
+            number = i + 1
+            item = QTreeWidgetItem([f'Domain {number}'])
+            item.setData(0, DOMAIN_NUMBER_ROLE, number)
+            items_by_number[number] = item
+
+        for i, domain in enumerate(domains):
+            number = i + 1
+            if number == 1:
+                self.domain_tree.addTopLevelItem(items_by_number[number])
+            else:
+                items_by_number[domain['parent_id']].addChild(items_by_number[number])
+
+        self.domain_tree.expandAll()
+        self.domain_tree.blockSignals(False)
+
+        if select_number is not None and select_number in items_by_number:
+            items_by_number[select_number].setSelected(True)
+            self._selected_domain_number = select_number
+        else:
+            self._selected_domain_number = None
+        self._update_panel_visibility()
+        self._populate_properties_panel()
+        self.draw_bbox_and_grids(zoom_out=True)
+
+    @pyqtSlot()
+    def on_tree_selection_changed(self) -> None:
+        selected = self.domain_tree.selectedItems()
+        self._selected_domain_number = selected[0].data(0, DOMAIN_NUMBER_ROLE) if selected else None
+        self._update_panel_visibility()
+        self._populate_properties_panel()
+
+    def _selected_domain(self) -> Optional[dict]:
+        if self._selected_domain_number is None:
+            return None
+        domains = self._project.data.get('domains') or []
+        if self._selected_domain_number > len(domains):
+            return None
+        return domains[self._selected_domain_number - 1]
+
+    def _is_root_selected(self) -> bool:
+        return self._selected_domain_number == 1
+
+    def _update_panel_visibility(self) -> None:
+        has_selection = self._selected_domain_number is not None
+        is_root = self._is_root_selected()
+
+        self.gbox_map_type.setVisible(has_selection and is_root)
+        self.gbox_resolution.setVisible(has_selection and is_root)
+        self.gbox_center.setVisible(has_selection and is_root)
+        self.gbox_nesting.setVisible(has_selection and not is_root)
+        self.gbox_position.setVisible(has_selection and not is_root)
+        self.gbox_extent_calc.setVisible(has_selection)
+        self.gbox_grid_extent.setVisible(has_selection)
+
+        has_domains = bool(self._project.data.get('domains'))
+        self.remove_domain_button.setEnabled(has_selection)
+        self.add_domain_button.setText('Add Root Domain' if not has_domains else 'Add Child Domain')
+        # No domains yet: nothing to select, so the button (which creates the
+        # root) is always enabled. Once domains exist, adding one needs a
+        # selected parent.
+        self.add_domain_button.setEnabled(has_selection or not has_domains)
+
+    def _populate_properties_panel(self) -> None:
+        domain = self._selected_domain()
+        if domain is None:
             return
 
-        # self.data['domains'] is stored WPS-native (root-first, each domain
-        # after the first identified by 'parent_id') to support arbitrary
-        # domain trees, including domains that share a parent (siblings) -
-        # see PLAN_TREE_DOMAINS.md. This form's UI, however, only knows how
-        # to display a single linear chain (one leaf, its parent, its
-        # parent's parent, ...): reduce the tree back to that shape here, or
-        # tell the user clearly why we can't if it doesn't fit, rather than
-        # silently displaying the wrong domain's values or crashing on a
-        # missing field.
-        chain = _linear_chain_leaf_first(domains)
-        # cell_size/bbox/center_lonlat/padding_right/padding_top on every
-        # domain but the root are computed, not given directly (e.g. right
-        # after a namelist import) - make sure they're actually populated
-        # before reading any of them below.
-        project.fill_domains()
-        main_domain = chain[0]
-        # map_proj/truelat1/truelat2/stand_lon are project-wide (WPS defines
-        # one projection regardless of nesting shape) and live only on the
-        # root domain (domains[0]) now, unlike the pre-tree-support schema
-        # where every domain carried its own copy.
-        root_domain = domains[0]
-        map_proj = root_domain['map_proj']
+        if self._is_root_selected():
+            map_proj = domain['map_proj']
+            self.projection.blockSignals(True)
+            self.projection.setCurrentIndex(self.projection.findData(map_proj))
+            self.projection.blockSignals(False)
+            self._update_proj_param_visibility(map_proj)
+            if map_proj in ('lambert', 'mercator', 'polar'):
+                self.truelat1.set_value(domain['truelat1'])
+            if map_proj == 'lambert':
+                self.truelat2.set_value(domain['truelat2'])
+            if map_proj in ('lambert', 'polar'):
+                self.stand_lon.set_value(domain['stand_lon'])
+            self.resolution.set_value(domain['cell_size'][0])
+            lon, lat = domain['center_lonlat']
+            self.center_lon.set_value(lon)
+            self.center_lat.set_value(lat)
+        else:
+            self.ratio.set_value(domain['parent_cell_size_ratio'])
+            self.padding_left.set_value(domain['padding_left'])
+            self.padding_bottom.set_value(domain['padding_bottom'])
+            if 'cell_size' in domain:
+                self.nesting_resolution_label.setText(
+                    f"Resolution: {domain['cell_size'][0]:g} {self._resolution_unit()}")
+            else:
+                self.nesting_resolution_label.setText('')
 
-        idx = self.projection.findData(map_proj)
-        self.projection.setCurrentIndex(idx)
-
-        if map_proj in ['lambert', 'mercator', 'polar']:
-            self.truelat1.set_value(root_domain['truelat1'])
-        if map_proj == 'lambert':
-            self.truelat2.set_value(root_domain['truelat2'])
-        if map_proj in ['lambert', 'polar']:
-            self.stand_lon.set_value(root_domain['stand_lon'])
-
-        self.resolution.set_value(main_domain['cell_size'][0])
-
-        lon, lat = main_domain['center_lonlat']
-        self.center_lat.set_value(lat)
-        self.center_lon.set_value(lon)
-
-        cols, rows = main_domain['domain_size']
-        self.rows.set_value(rows)
+        cols, rows = domain['domain_size']
         self.cols.set_value(cols)
+        self.rows.set_value(rows)
 
-        if len(chain) > 1:
-            self.group_box_parent_domain.setChecked(True)
-            self.parent_spin.setValue(len(chain) - 1)
-            self.on_parent_spin_valueChanged(len(chain) - 1)
+    def _resolution_unit(self) -> str:
+        root = self._project.data.get('domains', [None])[0]
+        if root is None:
+            return ''
+        return '°' if root['map_proj'] == 'lat-lon' else 'm'
 
-            # chain[1:] includes the root domain as its last entry (chain[-1]).
-            # Every other entry has real ratio/padding (it has an actual
-            # parent it's placed relative to), but the root has none - there's
-            # nothing "more outer" for it to be derived from, unlike the old
-            # schema where the outermost domain still carried leftover ratio/
-            # padding fields used only to compute its own size. Default those
-            # to sensible values (ratio 1, no padding) when displaying it.
-            field_to_key_and_default = {
-                'ratio': ('parent_cell_size_ratio', 1),
-                'top': ('padding_top', 0),
-                'left': ('padding_left', 0),
-                'right': ('padding_right', 0),
-                'bottom': ('padding_bottom', 0),
-            }
-            for idx, parent_domain in enumerate(chain[1:]):
-                fields, _ = self.parent_domains[idx]
-                fields = fields['inputs']
-                for field_name, (key, default) in field_to_key_and_default.items():
-                    fields[field_name].set_value(parent_domain.get(key, default))
+    def _update_proj_param_visibility(self, proj_id: str) -> None:
+        is_projected = proj_id not in ('undefined', 'lat-lon')
 
-        self.draw_bbox_and_grids(zoom_out=True)
+        def update_field(field, enabled):
+            field.required = enabled
+            field.setEnabled(enabled)
+            if not enabled:
+                field.setText('')
+            field.textChanged.emit(field.text())
+
+        self.widget_proj_params.setVisible(is_projected)
+        update_field(self.truelat1, proj_id in ('lambert', 'mercator', 'polar'))
+        update_field(self.truelat2, proj_id == 'lambert')
+        update_field(self.stand_lon, proj_id in ('lambert', 'polar'))
+        self.resolution_unit_label.setText('°' if proj_id == 'lat-lon' else 'm' if is_projected else '')
+
+    @pyqtSlot(int)
+    def on_projection_changed(self, index: int) -> None:
+        if not self._is_root_selected():
+            return
+        self._update_proj_param_visibility(self.projection.currentData())
+
+    # --- add/remove domains -----------------------------------------------
+
+    @pyqtSlot()
+    def on_add_domain_button_clicked(self) -> None:
+        domains = self._project.data.setdefault('domains', [])
+        if not domains:
+            domains.append({
+                'map_proj': 'lat-lon',
+                'parent_id': 1,
+                'cell_size': [0.1, 0.1],
+                'domain_size': [10, 10],
+                'center_lonlat': [0.0, 0.0],
+            })
+            self._rebuild_tree(select_number=1)
+            return
+
+        if self._selected_domain_number is None:
+            return
+        parent_number = self._selected_domain_number
+        parent = domains[parent_number - 1]
+        domains.append({
+            'parent_id': parent_number,
+            'parent_cell_size_ratio': 3,
+            'padding_left': 0,
+            'padding_bottom': 0,
+            'domain_size': [10, 10],
+        })
+        new_number = len(domains)
+        try:
+            self._project.fill_domains()
+        except (UserError, KeyError):
+            pass
+        self._rebuild_tree(select_number=new_number)
+
+    @pyqtSlot()
+    def on_remove_domain_button_clicked(self) -> None:
+        if self._selected_domain_number is None:
+            return
+        domains = self._project.data.get('domains') or []
+
+        children_of = {}
+        for i, domain in enumerate(domains):
+            number = i + 1
+            if number == 1:
+                continue
+            children_of.setdefault(domain['parent_id'], []).append(number)
+
+        to_remove = set()
+        stack = [self._selected_domain_number]
+        while stack:
+            number = stack.pop()
+            to_remove.add(number)
+            stack.extend(children_of.get(number, []))
+
+        if len(to_remove) > 1:
+            answer = QMessageBox.question(
+                self, 'Remove Domain',
+                f'Domain {self._selected_domain_number} has {len(to_remove) - 1} nested domain(s). '
+                'Removing it will remove all of them too. Continue?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        surviving = [(i + 1, domain) for i, domain in enumerate(domains) if (i + 1) not in to_remove]
+        old_to_new = {old_number: new_index + 1 for new_index, (old_number, _) in enumerate(surviving)}
+        new_domains = []
+        for old_number, domain in surviving:
+            domain = dict(domain)
+            if old_number != 1:
+                domain['parent_id'] = old_to_new[domain['parent_id']]
+            new_domains.append(domain)
+
+        self._project.data['domains'] = new_domains
+        self._rebuild_tree(select_number=old_to_new.get(1) if new_domains else None)
+
+    # --- field edits -------------------------------------------------------
+
+    @pyqtSlot()
+    def on_selected_domain_field_changed(self) -> None:
+        self._apply_selected_domain_fields(raise_on_invalid=False)
+
+    def _apply_selected_domain_fields(self, raise_on_invalid: bool) -> bool:
+        domain = self._selected_domain()
+        if domain is None:
+            return False
+
+        if self._is_root_selected():
+            ok = self._apply_root_fields(domain)
+        else:
+            ok = self._apply_nested_fields(domain)
+
+        if not ok:
+            if raise_on_invalid:
+                raise UserError(
+                    'Domain configuration invalid or incomplete - check the highlighted fields '
+                    '(red = invalid, yellow = required but empty).')
+            return False
+
+        try:
+            self._project.fill_domains()
+        except UserError as e:
+            if raise_on_invalid:
+                raise
+            return False
+
+        self._populate_properties_panel()
+        self.draw_bbox_and_grids(zoom_out=False)
+        return True
+
+    def _apply_root_fields(self, domain: dict) -> bool:
+        proj_id = self.projection.currentData()
+        if proj_id == 'undefined':
+            return False
+
+        fields_to_check = [self.resolution, self.center_lon, self.center_lat, self.cols, self.rows]
+        if proj_id in ('lambert', 'mercator', 'polar'):
+            fields_to_check.append(self.truelat1)
+        if proj_id == 'lambert':
+            fields_to_check.append(self.truelat2)
+        if proj_id in ('lambert', 'polar'):
+            fields_to_check.append(self.stand_lon)
+        if not all(f.is_valid() for f in fields_to_check):
+            return False
+
+        domain['map_proj'] = proj_id
+        if proj_id in ('lambert', 'mercator', 'polar'):
+            domain['truelat1'] = self.truelat1.value()
+        if proj_id == 'lambert':
+            domain['truelat2'] = self.truelat2.value()
+        if proj_id == 'lat-lon':
+            domain['stand_lon'] = 0.0
+        if proj_id in ('lambert', 'polar'):
+            domain['stand_lon'] = self.stand_lon.value()
+
+        resolution = self.resolution.value()
+        domain['cell_size'] = [resolution, resolution]
+        domain['center_lonlat'] = [self.center_lon.value(), self.center_lat.value()]
+        domain['domain_size'] = [self.cols.value(), self.rows.value()]
+        return True
+
+    def _apply_nested_fields(self, domain: dict) -> bool:
+        if not all(f.is_valid() for f in [self.ratio, self.padding_left, self.padding_bottom, self.cols, self.rows]):
+            return False
+        domain['parent_cell_size_ratio'] = self.ratio.value()
+        domain['padding_left'] = self.padding_left.value()
+        domain['padding_bottom'] = self.padding_bottom.value()
+        domain['domain_size'] = [self.cols.value(), self.rows.value()]
+        return True
+
+    # --- namelist import/export --------------------------------------------
 
     @pyqtSlot()
     def on_import_from_namelist_button_clicked(self) -> None:
@@ -299,47 +517,29 @@ class DomainForm(QWidget):
         self.project = convert_wps_nml_to_project(nml, self.project)
 
     @pyqtSlot()
-    def on_export_geogrid_namelist_button_clicked(self):
-        if not self.update_project():
+    def on_export_geogrid_namelist_button_clicked(self) -> None:
+        if not self._project.data.get('domains'):
+            raise UserError('No domains configured yet')
+        try:
+            self._project.fill_domains()
+        except UserError:
             raise UserError('Domain configuration invalid, check fields')
         file_path, _ = QFileDialog.getSaveFileName(self, caption='Save WPS namelist as', directory='namelist.wps')
         if not file_path:
             return
-        wps_namelist = convert_project_to_wps_namelist(self.project)
+        wps_namelist = convert_project_to_wps_namelist(self._project)
         write_namelist(wps_namelist, file_path)
 
-    def create_domain_crs(self) -> CRS:
-        proj = self.get_proj_kwargs()
-        if proj is None:
-            raise UserError('Incomplete projection definition')
-
-        map_proj = proj['map_proj']
-        if map_proj == 'lambert':
-            origin_lat = self.center_lat.value() if self.center_lat.is_valid() else 0
-            crs = CRS.create_lambert(proj['truelat1'], proj['truelat2'], LonLat(proj['stand_lon'], origin_lat))
-        elif map_proj == 'polar':
-            crs = CRS.create_polar(proj['truelat1'], proj['stand_lon'])
-        elif map_proj == 'mercator':
-            origin_lon = self.center_lon.value() if self.center_lon.is_valid() else 0
-            crs = CRS.create_mercator(proj['truelat1'], origin_lon)
-        elif map_proj == 'lat-lon':
-            crs = CRS.create_lonlat()
-        else:
-            assert False, 'unknown proj: ' + map_proj
-        return crs
+    # --- grid extent calculator --------------------------------------------
 
     @pyqtSlot()
-    def on_set_canvas_extent_button_clicked(self):
-        if not self.resolution.is_valid():
-            return
+    def on_set_canvas_extent_button_clicked(self) -> None:
         min_lon, min_lat, max_lon, max_lat = self.map_widget.current_view_bbox()
         bbox = BoundingBox2D(minx=min_lon, maxx=max_lon, miny=min_lat, maxy=max_lat)
         self.set_domain_to_extent(_lonlat_srs(), bbox)
 
     @pyqtSlot()
-    def on_set_file_extent_button_clicked(self):
-        if not self.resolution.is_valid():
-            return
+    def on_set_file_extent_button_clicked(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, caption='Select a raster or vector file to read the extent from')
         if not file_path:
             return
@@ -350,19 +550,57 @@ class DomainForm(QWidget):
         self.set_domain_to_extent(srs, bbox)
 
     def set_domain_to_extent(self, srs: osr.SpatialReference, bbox: BoundingBox2D) -> None:
-        resolution = self.resolution.value()
-
+        domain = self._selected_domain()
+        if domain is None:
+            return
         extent_crs = CRS(srs=srs)
-        domain_crs = self.create_domain_crs()
-        domain_srs = domain_crs.srs
 
-        domain_bbox = extent_crs.transform_bbox(bbox, domain_srs)
+        if self._is_root_selected():
+            if not self.resolution.is_valid():
+                return
+            resolution = self.resolution.value()
+            domain_crs = self._create_root_crs_from_fields()
+            if domain_crs is None:
+                raise UserError('Incomplete projection definition')
+            domain_bbox = extent_crs.transform_bbox(bbox, domain_crs.srs)
+            cols = ceil((domain_bbox.maxx - domain_bbox.minx) / resolution)
+            rows = ceil((domain_bbox.maxy - domain_bbox.miny) / resolution)
+            self._check_reasonable_size(cols, rows)
+            center_x = domain_bbox.minx + (domain_bbox.maxx - domain_bbox.minx) / 2
+            center_y = domain_bbox.miny + (domain_bbox.maxy - domain_bbox.miny) / 2
+            center_lonlat = domain_crs.to_lonlat(Coordinate2D(center_x, center_y))
+            self.center_lon.set_value(center_lonlat.lon)
+            self.center_lat.set_value(center_lonlat.lat)
+            self.cols.set_value(cols)
+            self.rows.set_value(rows)
+        else:
+            if not self.ratio.is_valid():
+                return
+            try:
+                self._project.fill_domains()
+            except UserError as e:
+                raise UserError(f'Configure the parent domain first: {e}')
+            parent = self._project.data['domains'][domain['parent_id'] - 1]
+            if 'bbox' not in parent:
+                raise UserError('Configure the parent domain first')
+            ratio = self.ratio.value()
+            own_cell_size = [parent['cell_size'][0] / ratio, parent['cell_size'][1] / ratio]
+            domain_crs = self._project.projection
+            domain_bbox = extent_crs.transform_bbox(bbox, domain_crs.srs)
+            cols = ceil((domain_bbox.maxx - domain_bbox.minx) / own_cell_size[0])
+            rows = ceil((domain_bbox.maxy - domain_bbox.miny) / own_cell_size[1])
+            self._check_reasonable_size(cols, rows)
+            padding_left = round((domain_bbox.minx - parent['bbox'].minx) / parent['cell_size'][0])
+            padding_bottom = round((domain_bbox.miny - parent['bbox'].miny) / parent['cell_size'][1])
+            self.padding_left.set_value(padding_left)
+            self.padding_bottom.set_value(padding_bottom)
+            self.cols.set_value(cols)
+            self.rows.set_value(rows)
 
-        xmin, xmax, ymin, ymax = domain_bbox.minx, domain_bbox.maxx, domain_bbox.miny, domain_bbox.maxy
+        self._apply_selected_domain_fields(raise_on_invalid=True)
+        self.draw_bbox_and_grids(zoom_out=True)
 
-        cols = ceil((xmax - xmin) / resolution)
-        rows = ceil((ymax - ymin) / resolution)
-
+    def _check_reasonable_size(self, cols: int, rows: int) -> None:
         # Guards against e.g. clicking "Set to Map View Extent" while the map
         # is still zoomed out to (close to) the whole world: the resulting
         # domain is thousands of km wide, which real WRF domains never are,
@@ -380,163 +618,37 @@ class DomainForm(QWidget):
                 '"Set from File") covers a much larger area than intended - zoom in on the map '
                 'first, or increase the horizontal grid spacing, then try again.')
 
-        center_x = xmin + (xmax - xmin) / 2
-        center_y = ymin + (ymax - ymin) / 2
-        center_lonlat = domain_crs.to_lonlat(Coordinate2D(center_x, center_y))
-        self.center_lat.set_value(center_lonlat.lat)
-        self.center_lon.set_value(center_lonlat.lon)
-        self.resolution.set_value(resolution)
-        self.cols.set_value(cols)
-        self.rows.set_value(rows)
-
-        self.on_change_any_field(zoom_out=True)
-
-    @pyqtSlot()
-    def on_group_box_parent_domain_clicked(self):
-        if self.group_box_parent_domain.isChecked():
-            self.add_parent_domain()
-        else:
-            self.parent_spin.setValue(1)
-            while self.parent_domains:
-                self.remove_last_parent_domain()
-
-    def add_parent_domain(self):
-        idx = len(self.parent_domains) + 1
-        fields, group_box_parent = create_parent_group_box('Parent ' + str(idx), '?', self.proj_res_unit, required=True)
-        self.parent_vbox.addWidget(group_box_parent)
-        group_box_parent.show()
-        self.parent_domains.append((fields, group_box_parent))
-        self.adjustSize()
-        for field in fields['inputs'].values():
-            field.editingFinished.connect(self.on_change_any_field)
-
-    def remove_last_parent_domain(self):
-        _, group_box_parent = self.parent_domains.pop()
-        group_box_parent.deleteLater()
-        self.parent_vbox.removeWidget(group_box_parent)
-        self.on_change_any_field()
-
-    @pyqtSlot(int)
-    def on_parent_spin_valueChanged(self, value: int) -> None:
-        count = len(self.parent_domains)
-        for _ in range(value, count):
-            self.remove_last_parent_domain()
-        for _ in range(count, value):
-            self.add_parent_domain()
-
-    @pyqtSlot(int)
-    def on_projection_currentIndexChanged(self, index: int) -> None:
+    def _create_root_crs_from_fields(self) -> Optional[CRS]:
         proj_id = self.projection.currentData()
-        is_undefined = proj_id == 'undefined'
-        is_lat_lon = proj_id == 'lat-lon'
-        is_projected = not is_undefined and not is_lat_lon
-
-        self.group_box_resol.setDisabled(is_undefined)
-        self.group_box_auto_domain.setDisabled(is_undefined)
-        self.group_box_manual_domain.setDisabled(is_undefined)
-        self.group_box_parent_domain.setDisabled(is_undefined)
-
-        def update_field(field, enabled):
-            field.required = enabled
-            field.setEnabled(enabled)
-            if not enabled:
-                field.setText('')
-            field.textChanged.emit(field.text())
-
-        self.widget_proj_params.setVisible(is_projected)
-        update_field(self.truelat1, proj_id in ['lambert', 'mercator', 'polar'])
-        update_field(self.truelat2, proj_id == 'lambert')
-        update_field(self.stand_lon, proj_id in ['lambert', 'polar'])
-
-        if is_undefined:
-            self.proj_res_unit = ''
-        elif is_lat_lon:
-            self.proj_res_unit = '°'
-        else:
-            self.proj_res_unit = 'm'
-        self.resolution_label.setText(self.proj_res_unit)
-
-        self.group_box_parent_domain.setChecked(False)
-        for _ in list(self.parent_domains):
-            self.remove_last_parent_domain()
-
-        self.adjustSize()
-
-    def get_proj_kwargs(self) -> Optional[dict]:
-        proj_id = self.projection.currentData()
-        kwargs = {'map_proj': proj_id}
-        if proj_id in ['lambert', 'mercator', 'polar']:
+        if proj_id == 'lambert':
+            if not (self.truelat1.is_valid() and self.truelat2.is_valid() and self.stand_lon.is_valid()):
+                return None
+            origin_lat = self.center_lat.value() if self.center_lat.is_valid() else 0
+            return CRS.create_lambert(self.truelat1.value(), self.truelat2.value(), LonLat(self.stand_lon.value(), origin_lat))
+        elif proj_id == 'polar':
+            if not (self.truelat1.is_valid() and self.stand_lon.is_valid()):
+                return None
+            return CRS.create_polar(self.truelat1.value(), self.stand_lon.value())
+        elif proj_id == 'mercator':
             if not self.truelat1.is_valid():
                 return None
-            kwargs['truelat1'] = self.truelat1.value()
-        if proj_id == 'lambert':
-            if not self.truelat2.is_valid():
-                return None
-            kwargs['truelat2'] = self.truelat2.value()
-        if proj_id in ['lambert', 'polar']:
-            if not self.stand_lon.is_valid():
-                return None
-            kwargs['stand_lon'] = self.stand_lon.value()
-        return kwargs
+            origin_lon = self.center_lon.value() if self.center_lon.is_valid() else 0
+            return CRS.create_mercator(self.truelat1.value(), origin_lon)
+        elif proj_id == 'lat-lon':
+            return CRS.create_lonlat()
+        return None
 
-    def update_project(self) -> bool:
-        proj_kwargs = self.get_proj_kwargs()
-        if proj_kwargs is None:
-            return False
-
-        valid = all(w.is_valid() for w in [self.center_lat, self.center_lon, self.resolution, self.cols, self.rows])
-        if not valid:
-            return False
-        center_lonlat = LonLat(lon=self.center_lon.value(), lat=self.center_lat.value())
-        resolution = self.resolution.value()
-        domain_size = (self.cols.value(), self.rows.value())
-
-        parent_domains = []
-        for fields, _ in self.parent_domains:
-            inputs = fields['inputs']
-            valid = all(w.is_valid() for w in inputs.values())
-            if not valid:
-                return False
-            ratio, top, left, right, bottom = [inputs[name].value() for name in ['ratio', 'top', 'left', 'right', 'bottom']]
-            parent_domains.append({
-                'parent_cell_size_ratio': ratio,
-                'padding_left': left,
-                'padding_right': right,
-                'padding_bottom': bottom,
-                'padding_top': top,
-            })
-
-        self.project.set_domains(
-            cell_size=(resolution, resolution), domain_size=domain_size,
-            center_lonlat=center_lonlat, parent_domains=parent_domains, **proj_kwargs)
-        return True
-
-    def on_change_any_field(self, zoom_out=False, raise_on_invalid=False):
-        if not self.update_project():
-            if raise_on_invalid:
-                raise UserError(
-                    'Domain configuration invalid or incomplete - check the highlighted fields '
-                    '(red = invalid, yellow = required but empty), including any parent domains.')
-            return
-
-        domains = self.project.data['domains']
-        main_domain_size = domains[0]['domain_size']
-        self.cols.set_value(main_domain_size[0])
-        self.rows.set_value(main_domain_size[1])
-
-        for (fields, _), domain in zip(self.parent_domains, domains[1:]):
-            res_label = fields['other']['resolution']
-            res_label.setText(HORIZONTAL_RESOLUTION_LABEL.format(resolution=domain['cell_size'][0], unit=self.proj_res_unit))
-            for name in ['left', 'right', 'top', 'bottom']:
-                fields['inputs'][name].set_value(domain['padding_' + name])
-
-        self.draw_bbox_and_grids(zoom_out)
+    # --- map redraw ----------------------------------------------------------
 
     def draw_bbox_and_grids(self, zoom_out: bool) -> None:
-        project = self.project
+        project = self._project
+        if not project.data.get('domains'):
+            self.map_widget.set_overlays([])
+            return
         try:
             overlays = compute_domain_overlays(project)
         except UserError:
+            self.map_widget.set_overlays([])
             return
 
         self.map_widget.set_overlays(overlays)
@@ -544,82 +656,3 @@ class DomainForm(QWidget):
             bounds = domain_lonlat_bounds(project)
             if bounds is not None:
                 self.map_widget.fit_bounds(*bounds)
-
-
-def _linear_chain_leaf_first(domains: List[dict]) -> List[dict]:
-    """Reduces a WPS-native (root-first, each non-root domain identified by
-    'parent_id') domain tree to a single leaf-first chain (index 0 = the
-    unique leaf domain, index -1 = the root), for display in this form's
-    single-chain UI. Raises UserError if the tree isn't actually a simple
-    chain, i.e. some domain has more than one nested (child) domain."""
-    by_number = {i + 1: domain for i, domain in enumerate(domains)}
-    children_of = {}  # type: Dict[int, List[int]]
-    for i, domain in enumerate(domains):
-        domain_number = i + 1
-        if domain_number == 1:
-            continue
-        children_of.setdefault(domain['parent_id'], []).append(domain_number)
-
-    for parent_number, child_numbers in children_of.items():
-        if len(child_numbers) > 1:
-            raise UserError(
-                f'Domain {parent_number} has {len(child_numbers)} nested domains '
-                f'({", ".join(str(c) for c in child_numbers)}) sharing it as their parent. '
-                'This isn\'t supported by the current interface yet, which can only display a '
-                'single chain of nested domains (each domain having at most one child) - '
-                'see PLAN_TREE_DOMAINS.md.')
-
-    leaves = [n for n in range(1, len(domains) + 1) if n not in children_of]
-    assert len(leaves) == 1, 'a tree with no branching must have exactly one leaf'
-
-    chain = []
-    number = leaves[0]
-    while True:
-        chain.append(by_number[number])
-        if number == 1:
-            break
-        number = by_number[number]['parent_id']
-    return chain
-
-
-def create_parent_group_box(name: str, res, unit: str, required: bool = False) -> tuple:
-    """Returns a 'validator-ready' group box to be used by the parent-domain tab."""
-    parent_child_ratio_box = QGridLayout()
-    parent_child_ratio = add_grid_lineedit(parent_child_ratio_box, 0, 'Child-to-Parent Ratio', RATIO_VALIDATOR, required=required)
-
-    res_label = QLabel(HORIZONTAL_RESOLUTION_LABEL.format(resolution=res, unit=unit))
-
-    sub_group_box = QGroupBox("Padding")
-    grid = QGridLayout()
-    top_label = QLabel('Top')
-    top_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    grid.addWidget(top_label, 0, 1)
-    left_label = QLabel('Left')
-    left_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    grid.addWidget(left_label, 2, 0)
-    right_label = QLabel('Right')
-    right_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    grid.addWidget(right_label, 2, 2)
-    bottom_label = QLabel('Bottom')
-    bottom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    grid.addWidget(bottom_label, 4, 1)
-    top = create_lineedit(DIM_VALIDATOR, required)
-    left = create_lineedit(DIM_VALIDATOR, required)
-    right = create_lineedit(DIM_VALIDATOR, required)
-    bottom = create_lineedit(DIM_VALIDATOR, required)
-    grid.addWidget(top, 1, 1)
-    grid.addWidget(left, 3, 0)
-    grid.addWidget(right, 3, 2)
-    grid.addWidget(bottom, 5, 1)
-    sub_group_box.setLayout(grid)
-
-    vbox = QVBoxLayout()
-    vbox.addLayout(parent_child_ratio_box)
-    vbox.addWidget(res_label)
-    vbox.addWidget(sub_group_box)
-    group_box = QGroupBox(name)
-    group_box.setLayout(vbox)
-    return {
-        'inputs': {'ratio': parent_child_ratio, 'top': top, 'left': left, 'right': right, 'bottom': bottom},
-        'other': {'resolution': res_label},
-    }, group_box
