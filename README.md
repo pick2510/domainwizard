@@ -27,6 +27,19 @@ this machine's system `libgdal`; if `uv sync` fails to build it, check
 uv run domainwizard
 ```
 
+## Packaging
+
+```
+./build.sh
+```
+
+Produces a standalone single-file executable at `dist/domainwizard`
+(~167MB) - no QGIS, no Python install, and no system libraries beyond libc
+required on the target machine. See the comments in `build.sh` for why it
+needs a few things PyInstaller's automatic analysis misses (numpy's BLAS
+backend, GDAL/PROJ data files) and adjust the paths there if your system
+layout differs (it was written against Fedora).
+
 ## Project layout
 
 - `src/domainwizard/tilemap.py` - the map widget: tile math, HTTP fetch +
