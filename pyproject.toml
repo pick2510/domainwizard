@@ -1,0 +1,20 @@
+[project]
+name = "domainwizard"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "strebdom", email = "dominik.strebel@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "gdal==3.12.4",
+    "pyqt6>=6.11.0",
+]
+
+[project.scripts]
+domainwizard = "domainwizard:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
