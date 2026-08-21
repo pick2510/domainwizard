@@ -151,3 +151,8 @@ same way this trim was derived).
   placement.
 - Basemap uses OpenStreetMap's standard tile server (the GIS4WRF plugin's
   Stamen-based basemap is dead - Stamen's tile servers were shut down).
+- Only linear domain nesting (domain 0 nested in 1 nested in 2, ...) is
+  supported - a namelist where two domains share the same parent (siblings)
+  is rejected at import. See `PLAN_TREE_DOMAINS.md` for the plan to fix
+  this - it's a real architectural change (the domain data model, not a
+  small patch), not yet started.
