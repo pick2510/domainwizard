@@ -72,10 +72,7 @@ why plain manylinux_2_28, the more conventional choice for this kind of
 thing, doesn't work here):
 
 ```
-docker build -f Dockerfile.build -t domainwizard-build .
-docker create --name dw-extract domainwizard-build
-docker cp dw-extract:/src/dist/domainwizard ./dist/domainwizard
-docker rm dw-extract
+./build-portable.sh
 ```
 
 The target machine still needs the base graphics stack essentially every
