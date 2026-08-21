@@ -8,8 +8,11 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "f90nml>=1.5",
     "gdal==3.12.4",
+    "numpy>=2.4.6",
     "pyqt6>=6.11.0",
+    "requests>=2.34.2",
 ]
 
 [project.scripts]
