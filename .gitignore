@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# PyInstaller (built via build.sh, which passes flags on the CLI - the
+# auto-generated .spec file is just a byproduct, not used to rebuild)
+*.spec
