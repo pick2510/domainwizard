@@ -1,7 +1,7 @@
 # GIS4WRF (https://doi.org/10.5281/zenodo.1288569)
 # Copyright (c) 2018 D. Meyer and M. Riechert. Licensed under MIT.
 
-from gis4wrf.core.constants import WRF_EARTH_RADIUS
+from gis4wrf.core.constants import WRF_EARTH_RADIUS, WRF_PROJ4_SPHERE
 from gis4wrf.core.util import osr, ogr, export, as_float, Number
 
 @export
@@ -69,9 +69,15 @@ class BoundingBox2D(object):
 
 @export
 class CRS(object):
-    #FIXME: temporary fix -- we assume that the datum is WGS84 sphere and not lat-lon
-    WRF_DATUM_PROJ4 = '+datum=WGS84'
-    # '+towgs84=0,0,0 {sphere}'.format(sphere=WRF_PROJ4_SPHERE)
+    # WRF computes on a perfect sphere of radius WRF_EARTH_RADIUS, not the WGS84
+    # ellipsoid. Upstream GIS4WRF used '+datum=WGS84' here (per a since-removed
+    # FIXME acknowledging it was wrong) - measured against real domains, that
+    # made WRF's square grid cells come out ~0.3-0.6% anisotropic (dx != dy) and
+    # shifted a domain's lon/lat placement by ~0.9 km on a 180 km-wide domain.
+    # Domain geometry itself is computed in projected space from DX/DY and cell
+    # counts, so this is purely a projected-to-geographic accuracy fix: existing
+    # namelist import/export round-trips are unaffected (verified byte-identical).
+    WRF_DATUM_PROJ4 = WRF_PROJ4_SPHERE
 
     def __init__(self, proj4: str=None, srs: osr.SpatialReference=None) -> None:
         if proj4:

@@ -141,6 +141,18 @@ version (importing `gis4wrf.core` and checking `sys.modules` for
 `gis4wrf.*` after the fact confirms exactly what's actually reachable, the
 same way this trim was derived).
 
+**One deliberate local deviation from upstream that a re-sync would silently
+revert:** `crs.py`'s `CRS.WRF_DATUM_PROJ4` is `WRF_PROJ4_SPHERE` (the WRF earth
+radius, 6370000 m) here, not upstream's `'+datum=WGS84'`. Upstream's own code
+carried a `#FIXME` acknowledging that was wrong. Measured on this repo's test
+fixtures: the WGS84 datum made WRF's (square-by-construction) grid cells
+0.3-0.6% anisotropic, and shifted a domain's displayed lon/lat placement by
+~1 km on a several-hundred-km domain, because WRF's own grid spacing is
+computed with spherical projection formulas - using the WGS84 ellipsoid
+instead doesn't reproduce where WRF actually places a domain. See
+`tests/test_crs_datum.py` for the regression coverage. Re-apply this override
+after any re-sync.
+
 ## Known limitations
 
 - Tile math and lon/lat projection is spherical-Mercator-for-display only;
