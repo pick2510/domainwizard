@@ -2,9 +2,16 @@
 
 Draws standard Web Mercator tiles (the same scheme used by OpenStreetMap,
 Stamen, etc.) with mouse pan/zoom, plus a simple overlay mechanism for
-drawing extra geometries (e.g. WRF/WPS domain outlines) on top in lon/lat
-coordinates. Tiles are fetched over HTTP via Qt's own QtNetwork module and
-cached to disk, so no extra HTTP library is needed.
+drawing extra geometries (e.g. WRF/WPS domain outlines, and - for the View
+tab - warped raster imagery) on top. Tiles are fetched over HTTP via Qt's
+own QtNetwork module and cached to disk, so no extra HTTP library is needed.
+
+Overlays are organized into named, independently replaceable groups
+(`set_overlay_group`) rather than one flat list, specifically so two tabs
+sharing one map widget (DomainForm's domain outlines, ViewForm's raster
+layers) can each update their own overlays without erasing the other's.
+Groups paint in a fixed z-order (`Z_RASTER` under `Z_VECTOR`), so raster
+layers never obscure the domain outlines.
 """
 
 import math
@@ -12,7 +19,7 @@ import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import QPointF, QRectF, QStandardPaths, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent, QMouseEvent, QPaintEvent, QResizeEvent
+from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent, QMouseEvent, QPaintEvent, QResizeEvent
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import QUrl
@@ -20,6 +27,17 @@ from PyQt6.QtCore import QUrl
 TILE_SIZE = 256
 MIN_ZOOM = 0
 MAX_ZOOM = 19
+
+# Web Mercator's half-circumference in metres (pi * 6378137, the EPSG:3857
+# convention - not the WRF sphere used elsewhere in this app, since this is
+# purely about matching what OSM/EPSG:3857 tiles and gdal.Warp(dstSRS=3857)
+# use).
+MERC_HALF = 20037508.342789244
+
+# Overlay group paint order: lower z paints first (further back). Raster
+# imagery sits under vector outlines so outlines stay legible on top of it.
+Z_RASTER = 0
+Z_VECTOR = 100
 
 LonLat = Tuple[float, float]
 
@@ -42,7 +60,26 @@ def tile_xy_to_lonlat(x: float, y: float, zoom: int) -> LonLat:
     return lon, lat
 
 
-class Overlay:
+def mercator_to_world_px(x: float, y: float, zoom: int) -> Tuple[float, float]:
+    """EPSG:3857 metres -> fractional world-pixel coordinates at a given
+    zoom level, on the same pixel grid as lonlat_to_tile_xy()'s output
+    (i.e. lonlat_to_tile_xy(lon, lat, z) * TILE_SIZE ==
+    mercator_to_world_px(lonlat_to_mercator(lon, lat), z) up to the
+    ~85.05 deg latitude clamp lonlat_to_tile_xy applies)."""
+    n = TILE_SIZE * (2.0 ** zoom)
+    px = (x + MERC_HALF) / (2 * MERC_HALF) * n
+    py = (MERC_HALF - y) / (2 * MERC_HALF) * n
+    return px, py
+
+
+class BaseOverlay:
+    """Common interface for anything TileMapWidget can paint as an overlay."""
+
+    def paint(self, painter: QPainter, zoom: int, top_left_world_px: QPointF, viewport: QRectF) -> None:
+        raise NotImplementedError
+
+
+class Overlay(BaseOverlay):
     """A set of lon/lat polygons or polylines to draw on top of the tiles."""
 
     def __init__(self, rings: Sequence[Sequence[LonLat]], pen: QPen, brush: Optional[QBrush] = None, closed: bool = True) -> None:
@@ -50,6 +87,78 @@ class Overlay:
         self.pen = pen
         self.brush = brush
         self.closed = closed
+
+    def paint(self, painter: QPainter, zoom: int, top_left_world_px: QPointF, viewport: QRectF) -> None:
+        painter.setPen(self.pen)
+        painter.setBrush(self.brush if self.brush is not None else QBrush(Qt.BrushStyle.NoBrush))
+        for ring in self.rings:
+            path = QPainterPath()
+            for i, (lon, lat) in enumerate(ring):
+                x, y = lonlat_to_tile_xy(lon, lat, zoom)
+                screen_pt = QPointF(x * TILE_SIZE, y * TILE_SIZE) - top_left_world_px
+                if i == 0:
+                    path.moveTo(screen_pt)
+                else:
+                    path.lineTo(screen_pt)
+            if self.closed and ring:
+                path.closeSubpath()
+            painter.drawPath(path)
+
+
+class RasterOverlay(BaseOverlay):
+    """A georeferenced (EPSG:3857) image drawn as an axis-aligned rectangle -
+    used for View-tab WRF variable layers. Because the image is already in
+    the map's own projection, placing it is a pure scale + translate, no
+    rotation, so this needs none of Overlay's per-vertex projection.
+
+    Two limitations, matching Overlay's existing ones: no antimeridian
+    wrapping (a layer straddling +/-180 deg draws once, not repeated), and
+    nothing renders beyond +/-85.05 deg latitude (TileMapWidget's own tile
+    math has the same limit).
+    """
+
+    def __init__(
+        self,
+        image: QImage,
+        bounds_3857: Tuple[float, float, float, float],  # (minx, miny, maxx, maxy)
+        opacity: float = 1.0,
+        smooth: bool = True,
+        _buffer=None,
+    ) -> None:
+        self.image = image
+        self.bounds_3857 = bounds_3857
+        self.opacity = opacity
+        self.smooth = smooth
+        # QImage(buffer, ...) does NOT copy the backing memory - if the numpy
+        # array behind it were garbage collected, the widget would paint
+        # freed memory. Keeping a reference here (never read, only held)
+        # ties its lifetime to this overlay's.
+        self._buffer = _buffer
+
+    def paint(self, painter: QPainter, zoom: int, top_left_world_px: QPointF, viewport: QRectF) -> None:
+        minx, miny, maxx, maxy = self.bounds_3857
+        x0, y0 = mercator_to_world_px(minx, maxy, zoom)  # top-left
+        x1, y1 = mercator_to_world_px(maxx, miny, zoom)  # bottom-right
+        target = QRectF(x0 - top_left_world_px.x(), y0 - top_left_world_px.y(), x1 - x0, y1 - y0)
+
+        if target.width() <= 0 or target.height() <= 0 or not target.intersects(viewport):
+            return
+
+        # Clip to the viewport before drawing: at high zoom the full target
+        # rect can be millions of pixels wide, which is slow and risks
+        # coordinate overflow in Qt's rasterizer.
+        clipped = target.intersected(viewport.adjusted(-1, -1, 1, 1))
+        sx = self.image.width() / target.width()
+        sy = self.image.height() / target.height()
+        source = QRectF(
+            (clipped.left() - target.left()) * sx, (clipped.top() - target.top()) * sy,
+            clipped.width() * sx, clipped.height() * sy)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.smooth)
+        painter.setOpacity(self.opacity)
+        painter.drawImage(clipped, self.image, source)
+        painter.restore()
 
 
 class TileMapWidget(QWidget):
@@ -73,7 +182,8 @@ class TileMapWidget(QWidget):
         self._center_lat = 20.0
         self._zoom = 2
 
-        self._overlays: List[Overlay] = []
+        # name -> (z, overlays); see set_overlay_group().
+        self._groups: Dict[str, Tuple[int, List[BaseOverlay]]] = {}
 
         self._pixmap_cache: Dict[Tuple[int, int, int], QPixmap] = {}
         self._pending: Dict[Tuple[int, int, int], QNetworkReply] = {}
@@ -99,9 +209,21 @@ class TileMapWidget(QWidget):
             self._zoom = max(MIN_ZOOM, min(MAX_ZOOM, zoom))
         self.update()
 
-    def set_overlays(self, overlays: List[Overlay]) -> None:
-        self._overlays = overlays
+    def set_overlay_group(self, name: str, overlays: Sequence[BaseOverlay], z: int = Z_VECTOR) -> None:
+        """Replaces the overlays of one named group, leaving every other
+        group untouched - so e.g. DomainForm's 'domains' group and
+        ViewForm's 'view-rasters' group can each redraw independently on a
+        shared TileMapWidget without erasing each other."""
+        self._groups[name] = (z, list(overlays))
         self.update()
+
+    def clear_overlay_group(self, name: str) -> None:
+        self._groups.pop(name, None)
+        self.update()
+
+    def overlay_group(self, name: str) -> List[BaseOverlay]:
+        """Read-only accessor, mainly for tests."""
+        return list(self._groups.get(name, (0, []))[1])
 
     def fit_bounds(self, min_lon: float, min_lat: float, max_lon: float, max_lat: float, padding_frac: float = 0.1) -> None:
         """Center the view on a lon/lat bounding box and pick a zoom level that fits it."""
@@ -183,21 +305,13 @@ class TileMapWidget(QWidget):
             painter.drawText(4, self.height() - 5, self._attribution)
 
     def _paint_overlays(self, painter: QPainter, top_left_world_px: QPointF) -> None:
-        for overlay in self._overlays:
-            painter.setPen(overlay.pen)
-            painter.setBrush(overlay.brush if overlay.brush is not None else QBrush(Qt.BrushStyle.NoBrush))
-            for ring in overlay.rings:
-                path = QPainterPath()
-                for i, (lon, lat) in enumerate(ring):
-                    x, y = lonlat_to_tile_xy(lon, lat, self._zoom)
-                    screen_pt = QPointF(x * TILE_SIZE, y * TILE_SIZE) - top_left_world_px
-                    if i == 0:
-                        path.moveTo(screen_pt)
-                    else:
-                        path.lineTo(screen_pt)
-                if overlay.closed and ring:
-                    path.closeSubpath()
-                painter.drawPath(path)
+        viewport = QRectF(self.rect())
+        # (z, name) order: z decides paint order (lower first, i.e. further
+        # back), name is just a deterministic tiebreak for equal z.
+        ordered_groups = sorted(self._groups.items(), key=lambda kv: (kv[1][0], kv[0]))
+        for _name, (_z, overlays) in ordered_groups:
+            for overlay in overlays:
+                overlay.paint(painter, self._zoom, top_left_world_px, viewport)
 
     # --- tile fetch/cache ---------------------------------------------------
 

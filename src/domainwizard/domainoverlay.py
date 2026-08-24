@@ -50,7 +50,7 @@ def _wgs84_srs() -> osr.SpatialReference:
 
 def compute_domain_overlays(project: 'core.Project') -> List[Overlay]:
     """Returns one Overlay (outline) per domain, in lon/lat, ready to hand to
-    TileMapWidget.set_overlays()."""
+    TileMapWidget.set_overlay_group('domains', ...)."""
     gdal_ds = core.convert_project_to_gdal_outlines(project)
     layer = gdal_ds.GetLayer(0)
     domain_srs = layer.GetSpatialRef()

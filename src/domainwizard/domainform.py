@@ -39,7 +39,7 @@ from gis4wrf.core import (
     UserError,
 )
 
-from domainwizard.tilemap import TileMapWidget
+from domainwizard.tilemap import TileMapWidget, Z_VECTOR
 from domainwizard.domainoverlay import compute_domain_overlays, domain_lonlat_bounds
 from domainwizard.fileextent import read_extent_and_srs
 from domainwizard.formhelpers import (
@@ -637,15 +637,15 @@ class DomainForm(QWidget):
     def draw_bbox_and_grids(self, zoom_out: bool) -> None:
         project = self._project
         if not project.data.get('domains'):
-            self.map_widget.set_overlays([])
+            self.map_widget.set_overlay_group('domains', [], z=Z_VECTOR)
             return
         try:
             overlays = compute_domain_overlays(project)
         except UserError:
-            self.map_widget.set_overlays([])
+            self.map_widget.set_overlay_group('domains', [], z=Z_VECTOR)
             return
 
-        self.map_widget.set_overlays(overlays)
+        self.map_widget.set_overlay_group('domains', overlays, z=Z_VECTOR)
         if zoom_out:
             bounds = domain_lonlat_bounds(project)
             if bounds is not None:
