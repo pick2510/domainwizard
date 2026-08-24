@@ -80,6 +80,7 @@ class DomainForm(QWidget):
         self.map_widget = map_widget
         self._project = Project.create()
         self._selected_domain_number: Optional[int] = None
+        self._active = True
 
         # Import/Export
         import_from_namelist_button = QPushButton("Import from namelist")
@@ -216,6 +217,16 @@ class DomainForm(QWidget):
         self._project = val
         self._selected_domain_number = None
         self._rebuild_tree(select_number=1 if val.data.get('domains') else None)
+
+    def set_active(self, active: bool) -> None:
+        """Camera-move gate for a TileMapWidget shared with another tab
+        (the View tab): when this tab isn't the one on screen, automatic
+        redraws (e.g. from a namelist import) shouldn't yank the map away
+        from whatever the user is looking at elsewhere. Overlay updates are
+        unaffected - only draw_bbox_and_grids(zoom_out=True)'s fit_bounds()
+        call is gated, so switching back to this tab still shows correct,
+        up-to-date geometry with no recomputation needed."""
+        self._active = active
 
     # --- domain tree -----------------------------------------------------
 
@@ -646,7 +657,7 @@ class DomainForm(QWidget):
             return
 
         self.map_widget.set_overlay_group('domains', overlays, z=Z_VECTOR)
-        if zoom_out:
+        if zoom_out and self._active:
             bounds = domain_lonlat_bounds(project)
             if bounds is not None:
                 self.map_widget.fit_bounds(*bounds)

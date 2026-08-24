@@ -247,7 +247,7 @@ class WRFFile:
 
             description = var_md.get(f'{var_name}#description', '') or ''
             units = var_md.get(f'{var_name}#units', '') or ''
-            if units.strip('-').strip() in ('', 'dimensionless'):
+            if units.strip('-').strip().lower() in ('', 'dimensionless', 'no units'):
                 units = ''
 
             self.variables[var_name] = WRFVariable(

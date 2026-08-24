@@ -21,7 +21,7 @@ Opacity and visibility are deliberately excluded from both cache keys
 slider and a layer's checkbox never invalidate anything.
 """
 from dataclasses import dataclass
-from typing import Dict, Optional, OrderedDict as OrderedDictType, Tuple
+from typing import Dict, List, Optional, OrderedDict as OrderedDictType, Tuple
 from collections import OrderedDict
 
 import numpy as np
@@ -119,6 +119,10 @@ class LayerRenderer:
         if path not in self._files:
             self._files[path] = WRFFile(path)
         return self._files[path]
+
+    @property
+    def open_paths(self) -> List[str]:
+        return list(self._files)
 
     def invalidate_file(self, path: str) -> None:
         """Closes a file and drops every cached slice/image that came from

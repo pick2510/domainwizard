@@ -13,10 +13,11 @@ if getattr(sys, 'frozen', False):
     os.environ.setdefault('GDAL_DATA', os.path.join(_bundle_dir, 'share', 'gdal'))
     os.environ.setdefault('PROJ_DATA', os.path.join(_bundle_dir, 'share', 'proj'))
 
-from PyQt6.QtWidgets import QApplication, QMainWindow, QSplitter, QWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QSplitter, QTabWidget, QWidget
 
 from domainwizard.tilemap import TileMapWidget
 from domainwizard.domainform import DomainForm
+from domainwizard.viewform import ViewForm
 from domainwizard.formhelpers import WhiteScroll
 from domainwizard import errorhandling
 
@@ -40,17 +41,29 @@ class MainWindow(QMainWindow):
         self.map.set_center(0.0, 20.0, zoom=2)
 
         self.domain_form = DomainForm(self.map)
-        self.domain_form.setMinimumWidth(340)
-        self.domain_form.setMaximumWidth(420)
+        self.view_form = ViewForm(self.map)
+
+        # One WhiteScroll per tab (not one wrapping the QTabWidget) so each
+        # panel scrolls independently and the tab bar itself stays pinned.
+        self.tabs = QTabWidget()
+        self.tabs.addTab(WhiteScroll(self.domain_form), 'Domains')
+        self.tabs.addTab(WhiteScroll(self.view_form), 'View')
+        self.tabs.setMinimumWidth(340)
+        self.tabs.setMaximumWidth(420)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter = QSplitter()
-        splitter.addWidget(WhiteScroll(self.domain_form))
+        splitter.addWidget(self.tabs)
         splitter.addWidget(self.map)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([360, 940])
 
         self.setCentralWidget(splitter)
+
+    def _on_tab_changed(self, index: int) -> None:
+        self.domain_form.set_active(index == 0)
+        self.view_form.set_active(index == 1)
 
 
 def main() -> None:
