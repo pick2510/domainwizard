@@ -16,9 +16,10 @@ here differ by orders of magnitude in cost:
    flipping colormaps or nudging the range redraws instantly with no
    re-warp.
 
-Opacity and visibility are deliberately excluded from both cache keys
-(RasterLayer.slice_key/image_key) - they're paint-time only, so the opacity
-slider and a layer's checkbox never invalidate anything.
+Opacity, visibility, and the interpolate-on-display flag are deliberately
+excluded from both cache keys (RasterLayer.slice_key/image_key) - they're
+paint-time only (passed straight to RasterOverlay), so the opacity slider,
+a layer's checkbox, and the interpolate toggle never invalidate anything.
 """
 from dataclasses import dataclass
 from typing import Dict, List, Optional, OrderedDict as OrderedDictType, Tuple
@@ -53,6 +54,7 @@ class RasterLayer:
     colormap: str = 'viridis'
     opacity: float = 0.8
     visible: bool = True
+    interpolate: bool = True  # paint-time only, like opacity/visible - see below
     vmin: Optional[float] = None  # None => auto from the slice's own data
     vmax: Optional[float] = None
 
@@ -162,7 +164,23 @@ class LayerRenderer:
         # image could be freed out from under it once this function returns.
         rgba, image = _make_qimage(image_data.image_rgba)
         return RasterOverlay(
-            image=image, bounds_3857=image_data.bounds_3857, opacity=layer.opacity, _buffer=rgba)
+            image=image, bounds_3857=image_data.bounds_3857, opacity=layer.opacity,
+            smooth=layer.interpolate, _buffer=rgba)
+
+    def effective_range(self, layer: RasterLayer) -> Optional[Tuple[float, float]]:
+        """Returns the (vmin, vmax) actually used to colormap this layer -
+        the manual override if set, else the slice's own auto range (the
+        same computation _get_image does internally). Used by the View
+        tab's on-map colorbar, which needs the range without needing a
+        full colormapped image. Returns None if the file isn't open yet."""
+        if layer.file_path not in self._files:
+            return None
+        slice_data = self._get_slice(layer)
+        if slice_data is None:
+            return None
+        vmin = layer.vmin if layer.vmin is not None else slice_data.auto_vmin
+        vmax = layer.vmax if layer.vmax is not None else slice_data.auto_vmax
+        return vmin, vmax
 
     def prefetch(self, layer: RasterLayer) -> None:
         """Populates the slice cache only (no colormapping/QImage) - used to

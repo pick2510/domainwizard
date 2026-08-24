@@ -200,6 +200,11 @@ class TileMapWidget(QWidget):
         self._dragging = False
         self._drag_last_pos = QPointF()
 
+        # A single small fixed-position overlay (e.g. the View tab's
+        # colorbar), independent of the geo-referenced overlay groups above -
+        # it's drawn directly in screen space, not projected from lon/lat.
+        self._legend: Optional[QPixmap] = None
+
     # --- public API -----------------------------------------------------
 
     def set_center(self, lon: float, lat: float, zoom: Optional[int] = None) -> None:
@@ -224,6 +229,14 @@ class TileMapWidget(QWidget):
     def overlay_group(self, name: str) -> List[BaseOverlay]:
         """Read-only accessor, mainly for tests."""
         return list(self._groups.get(name, (0, []))[1])
+
+    def set_legend(self, pixmap: Optional[QPixmap]) -> None:
+        """Sets (or clears, with None) a small fixed-position overlay drawn
+        in the top-right corner - e.g. the View tab's colorbar. Unlike the
+        overlay groups above, this isn't geo-referenced: it's drawn directly
+        in screen space every paint, so it needs no repositioning logic."""
+        self._legend = pixmap
+        self.update()
 
     def fit_bounds(self, min_lon: float, min_lat: float, max_lon: float, max_lat: float, padding_frac: float = 0.1) -> None:
         """Center the view on a lon/lat bounding box and pick a zoom level that fits it."""
@@ -298,6 +311,10 @@ class TileMapWidget(QWidget):
                     painter.fillRect(QRectF(screen_x, screen_y, TILE_SIZE, TILE_SIZE), QColor(230, 230, 230))
 
         self._paint_overlays(painter, top_left_world_px)
+
+        if self._legend is not None:
+            margin = 10
+            painter.drawPixmap(self.width() - self._legend.width() - margin, margin, self._legend)
 
         if self._attribution:
             painter.setPen(QColor(0, 0, 0))

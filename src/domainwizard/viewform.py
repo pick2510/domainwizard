@@ -26,7 +26,7 @@ from gis4wrf.core import UserError
 
 from domainwizard.tilemap import TileMapWidget, Z_RASTER
 from domainwizard.rasterlayer import LayerRenderer, RasterLayer
-from domainwizard import colormaps
+from domainwizard import colorbar, colormaps
 from domainwizard.formhelpers import add_grid_lineedit
 from domainwizard.wrfreader import WRFFile
 
@@ -159,6 +159,10 @@ class ViewForm(QWidget):
             field.editingFinished.connect(self.on_range_changed)
         grid_props.addLayout(grid_range, 6, 0, 1, 3)
 
+        self.interpolate_check = QCheckBox('Interpolate')
+        self.interpolate_check.toggled.connect(self.on_interpolate_changed)
+        grid_props.addWidget(self.interpolate_check, 7, 0, 1, 3)
+
         self.gbox_layer_props.setLayout(grid_props)
 
         # --- View --------------------------------------------------------
@@ -229,6 +233,11 @@ class ViewForm(QWidget):
                 item.setSelected(True)
         self.file_list.blockSignals(False)
         self.on_file_selection_changed()
+        # add_layer_button's enabled state depends on whether any file is
+        # open, not on layer selection - without this, opening the very
+        # first file leaves it permanently disabled (nothing else would
+        # ever call _update_panel_visibility() to flip it on).
+        self._update_panel_visibility()
 
     def _open_file_paths(self) -> List[str]:
         return self._renderer.open_paths
@@ -251,11 +260,18 @@ class ViewForm(QWidget):
             return
         variable = next(iter(wrf_file.variables))
 
+        is_first_layer = not self._layers
         layer = RasterLayer(layer_id=self._next_layer_id, file_path=file_path, variable=variable)
         self._next_layer_id += 1
         self._layers.append(layer)
         self._rebuild_layer_tree(select_id=layer.layer_id)
         self.refresh_map()
+        if is_first_layer:
+            # A WRF domain is typically a tiny sliver of the whole-world
+            # default view (app.py starts the map at zoom 2), often under a
+            # pixel wide - so without this, the very first layer someone
+            # adds is invisible and looks like nothing happened.
+            self._zoom_to_layer(layer)
 
     @pyqtSlot()
     def on_remove_layer_button_clicked(self) -> None:
@@ -322,6 +338,10 @@ class ViewForm(QWidget):
         self._selected_layer_id = selected[0].data(0, LAYER_ID_ROLE) if selected else None
         self._update_panel_visibility()
         self._populate_properties_panel()
+        # Changing the selection alone (no property edit) doesn't go through
+        # refresh_map(), but the colorbar tracks the selected layer, so it
+        # needs its own update here.
+        self._update_colorbar()
 
     @pyqtSlot('QTreeWidgetItem*', int)
     def on_layer_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -395,6 +415,10 @@ class ViewForm(QWidget):
             self.vmin.set_value(layer.vmin)
         if layer.vmax is not None:
             self.vmax.set_value(layer.vmax)
+
+        self.interpolate_check.blockSignals(True)
+        self.interpolate_check.setChecked(layer.interpolate)
+        self.interpolate_check.blockSignals(False)
 
     def _populate_time_combo(self, wrf_file: WRFFile, layer: RasterLayer) -> None:
         self.time_combo.blockSignals(True)
@@ -496,6 +520,14 @@ class ViewForm(QWidget):
         self._rebuild_layer_tree(select_id=layer.layer_id)
         self.refresh_map()
 
+    @pyqtSlot(bool)
+    def on_interpolate_changed(self, checked: bool) -> None:
+        layer = self._selected_layer()
+        if layer is None:
+            return
+        layer.interpolate = checked
+        self.refresh_map()
+
     # --- view --------------------------------------------------------------
 
     @pyqtSlot()
@@ -503,6 +535,9 @@ class ViewForm(QWidget):
         layer = self._selected_layer()
         if layer is None:
             return
+        self._zoom_to_layer(layer)
+
+    def _zoom_to_layer(self, layer: RasterLayer) -> None:
         overlay = self._renderer.overlay_for(layer)
         if overlay is None:
             return
@@ -525,3 +560,29 @@ class ViewForm(QWidget):
             if overlay is not None:
                 overlays.append(overlay)
         self.map_widget.set_overlay_group('view-rasters', overlays, z=Z_RASTER)
+        self._update_colorbar()
+
+    def _update_colorbar(self) -> None:
+        """Shows a colorbar for the selected layer (if visible and
+        renderable), matching its own colormap/range - hidden otherwise."""
+        layer = self._selected_layer()
+        if layer is None or not layer.visible:
+            self.map_widget.set_legend(None)
+            return
+        try:
+            value_range = self._renderer.effective_range(layer)
+        except UserError:
+            value_range = None
+        if value_range is None:
+            self.map_widget.set_legend(None)
+            return
+
+        wrf_file = self._renderer.open_file(layer.file_path)
+        var = wrf_file.variables.get(layer.variable)
+        title = layer.variable
+        if var and var.units:
+            title += f' ({var.units})'
+
+        vmin, vmax = value_range
+        pixmap = colorbar.build_legend_pixmap(layer.colormap, vmin, vmax, title)
+        self.map_widget.set_legend(pixmap)

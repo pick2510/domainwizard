@@ -12,7 +12,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import numpy as np
 import pytest
-from PyQt6.QtGui import QColor, QImage, QPen
+from PyQt6.QtGui import QColor, QImage, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 import gis4wrf.core as core
@@ -77,6 +77,17 @@ def test_overlay_groups_are_independent(map_widget):
     map_widget.clear_overlay_group('domains')
     assert map_widget.overlay_group('domains') == []
     assert len(map_widget.overlay_group('view-rasters')) == 1
+
+
+def test_legend_defaults_to_none_and_can_be_set_and_cleared(map_widget):
+    assert map_widget._legend is None
+
+    pixmap = QPixmap(10, 10)
+    map_widget.set_legend(pixmap)
+    assert map_widget._legend is pixmap
+
+    map_widget.set_legend(None)
+    assert map_widget._legend is None
 
 
 def test_raster_group_paints_before_vector_group(map_widget):

@@ -67,6 +67,16 @@ def test_open_file_and_add_layer(form, map_widget):
     assert len(map_widget.overlay_group('view-rasters')) == 1
 
 
+def test_add_layer_button_is_enabled_right_after_opening_the_first_file(form):
+    # Regression: add_layer_button's enabled state is only updated by
+    # _update_panel_visibility(), which _rebuild_layer_tree() calls but
+    # _rebuild_file_list() didn't - so opening a file (with no layers yet
+    # to trigger a tree rebuild) left the button permanently disabled.
+    assert not form.add_layer_button.isEnabled()
+    _open(form, WRFOUT)
+    assert form.add_layer_button.isEnabled()
+
+
 def test_adding_a_layer_with_no_open_file_is_a_noop(form):
     form.on_add_layer_button_clicked()
     assert form._layers == []
@@ -157,6 +167,69 @@ def test_colormap_and_opacity_changes_apply_to_the_layer(form):
 
     form.opacity_slider.setValue(25)
     assert form._layers[0].opacity == pytest.approx(0.25)
+
+
+def test_interpolate_checkbox_toggles_the_layer_and_overlay_smoothing(form):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    assert form.interpolate_check.isChecked()  # default is True
+    assert form._layers[0].interpolate is True
+
+    form.interpolate_check.setChecked(False)
+    assert form._layers[0].interpolate is False
+    overlay = form._renderer.overlay_for(form._layers[0])
+    assert overlay.smooth is False
+
+    form.interpolate_check.setChecked(True)
+    assert form._layers[0].interpolate is True
+    overlay = form._renderer.overlay_for(form._layers[0])
+    assert overlay.smooth is True
+
+
+# --- colorbar legend ----------------------------------------------------
+
+def test_colorbar_shown_for_selected_visible_layer(form, map_widget):
+    assert map_widget._legend is None  # nothing selected yet
+
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    assert map_widget._legend is not None
+
+
+def test_colorbar_hidden_when_selected_layer_is_not_visible(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    assert map_widget._legend is not None
+
+    item = form.layer_tree.topLevelItem(0)
+    item.setCheckState(0, Qt.CheckState.Unchecked)
+    assert map_widget._legend is None
+
+
+def test_colorbar_hidden_when_nothing_is_selected(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    assert map_widget._legend is not None
+
+    form.layer_tree.clearSelection()
+    assert map_widget._legend is None
+
+
+def test_colorbar_follows_layer_selection(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()  # layer 1: HGT_M
+    _open(form, WRFOUT)
+    form.on_add_layer_button_clicked()  # layer 2: T2, now selected
+    legend_for_t2 = map_widget._legend
+    assert legend_for_t2 is not None
+
+    # Re-select layer 1 (bottom row, since the tree shows topmost layer first).
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(1))
+    legend_for_hgt = map_widget._legend
+    assert legend_for_hgt is not None
+    assert legend_for_hgt.toImage() != legend_for_t2.toImage()
 
 
 def test_manual_range_overrides_auto(form):
@@ -271,3 +344,25 @@ def test_zoom_to_layer_moves_the_map(form, map_widget):
     # geo_em_small.nc is centered around lon ~114.17, lat ~22.3 (Hong Kong)
     assert map_widget._center_lon == pytest.approx(114.17, abs=0.1)
     assert map_widget._center_lat == pytest.approx(22.3, abs=0.1)
+
+
+def test_adding_the_first_layer_auto_zooms_to_it(form, map_widget):
+    # Regression: without this, a newly added layer is invisible against the
+    # whole-world default view (app.py starts the map at zoom 2) - a WRF
+    # domain is typically a tiny sliver of that, often under a pixel wide.
+    map_widget.resize(400, 400)
+    map_widget.set_center(0.0, 0.0, zoom=2)
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    assert map_widget._center_lon == pytest.approx(114.17, abs=0.1)
+    assert map_widget._center_lat == pytest.approx(22.3, abs=0.1)
+
+
+def test_adding_a_second_layer_does_not_recenter_the_map(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    map_widget.resize(400, 400)
+    map_widget.set_center(0.0, 0.0, zoom=2)  # simulate the user having panned away
+    form.on_add_layer_button_clicked()  # second layer, same file
+    assert map_widget._center_lon == pytest.approx(0.0, abs=0.01)
+    assert map_widget._center_lat == pytest.approx(0.0, abs=0.01)

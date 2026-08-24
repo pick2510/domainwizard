@@ -6,9 +6,11 @@ map: **Domains**, for defining nested model domains and importing/exporting
 [GIS4WRF](https://github.com/GIS4WRF/gis4wrf) QGIS plugin's domain wizard);
 and **View**, for opening WRF/WPS NetCDF files (`geo_em*`, `met_em*`,
 `wrfinput*`, `wrfout*`) and drawing a configurable stack of colored raster
-layers - one per (variable, time step, vertical level, colormap, opacity)
-selection - over the same basemap, so terrain/land-use/meteorology can be
-checked against where the domains were actually configured.
+layers - one per (variable, time step, vertical level, colormap, opacity,
+interpolate-on-display) selection - over the same basemap, so
+terrain/land-use/meteorology can be checked against where the domains were
+actually configured. A colorbar for the selected layer is drawn directly on
+the map (`domainwizard/colorbar.py`).
 
 Deliberately lightweight: no QGIS, no Chromium/QWebEngine, no third-party
 map/web library, and no `netCDF4` dependency for reading WRF files - GDAL's
@@ -122,9 +124,19 @@ machine, not just redundant.
   (`RasterLayer`) and its three-tier render/cache pipeline
   (`LayerRenderer`): open file handles, a byte-bounded cache of warped
   (EPSG:3857) arrays, and a count-bounded cache of colormapped images.
+  `RasterLayer.interpolate` controls smooth vs. nearest-neighbor display
+  (`RasterOverlay.smooth`, `QPainter.RenderHint.SmoothPixmapTransform`) -
+  paint-time only, like opacity/visibility, so it never invalidates a cache
+  entry.
+- `src/domainwizard/colorbar.py` - builds the View tab's on-map colorbar
+  legend (a QPixmap: gradient + variable/units label + min/mid/max ticks)
+  for the selected layer's colormap and effective range
+  (`LayerRenderer.effective_range`); drawn fixed in the map's top-right
+  corner via `TileMapWidget.set_legend()`, independent of the
+  geo-referenced overlay groups.
 - `src/domainwizard/viewform.py` - the View tab: open files, add/remove/
   reorder layers, and configure each layer's variable/time/level/colormap/
-  opacity/range.
+  opacity/range/interpolate.
 - `src/gis4wrf/core/` - **vendored**, see below.
 
 ## Vendored `gis4wrf.core`

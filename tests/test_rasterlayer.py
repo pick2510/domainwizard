@@ -68,6 +68,41 @@ def test_manual_vmin_vmax_is_honored(renderer):
     assert overlay is not None
 
 
+def test_interpolate_flag_is_passed_through_to_the_overlay(renderer):
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='HGT_M', interpolate=False)
+    overlay = renderer.overlay_for(layer)
+    assert overlay.smooth is False
+
+
+# --- effective_range: what the on-map colorbar shows ---------------------
+
+def test_effective_range_is_auto_by_default(renderer):
+    # The auto range comes from the warped (EPSG:3857) slice, not the raw
+    # native-grid array - bilinear resampling can shift the min/max slightly,
+    # so this only checks it's a sane range, not an exact match to the raw
+    # array's own min/max.
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='HGT_M')
+    vmin, vmax = renderer.effective_range(layer)
+    assert vmin < vmax
+
+    array = renderer._files[GEO_EM].read('HGT_M', 0, 0)
+    raw_min, raw_max = float(np.nanmin(array)), float(np.nanmax(array))
+    tolerance = 0.1 * (raw_max - raw_min)
+    assert vmin >= raw_min - tolerance
+    assert vmax <= raw_max + tolerance
+
+
+def test_effective_range_honors_manual_override(renderer):
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='HGT_M', vmin=10.0, vmax=200.0)
+    assert renderer.effective_range(layer) == (10.0, 200.0)
+
+
+def test_effective_range_of_unopened_file_returns_none():
+    renderer = LayerRenderer()
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='HGT_M')
+    assert renderer.effective_range(layer) is None
+
+
 # --- cache tiers: hit/miss behavior --------------------------------------
 
 def test_rerendering_the_same_layer_hits_the_image_cache(renderer):
