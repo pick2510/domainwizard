@@ -26,7 +26,7 @@ from math import ceil
 from typing import Optional
 
 from osgeo import osr
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QWidget, QPushButton, QVBoxLayout, QGridLayout, QGroupBox,
@@ -75,8 +75,6 @@ def _lonlat_srs() -> osr.SpatialReference:
 
 
 class DomainForm(QWidget):
-    go_to_data_tab = pyqtSignal()
-
     def __init__(self, map_widget: TileMapWidget) -> None:
         super().__init__()
         self.map_widget = map_widget
@@ -194,9 +192,6 @@ class DomainForm(QWidget):
                       self.padding_left, self.padding_bottom, self.cols, self.rows]:
             field.editingFinished.connect(self.on_selected_domain_field_changed)
 
-        go_to_data_tab_btn = QPushButton('Continue to Datasets')
-        go_to_data_tab_btn.clicked.connect(self.go_to_data_tab)
-
         dom_mgr_layout = QVBoxLayout()
         dom_mgr_layout.addWidget(self.gbox_import_export)
         dom_mgr_layout.addWidget(self.gbox_tree)
@@ -207,7 +202,6 @@ class DomainForm(QWidget):
         dom_mgr_layout.addWidget(self.gbox_center)
         dom_mgr_layout.addWidget(self.gbox_position)
         dom_mgr_layout.addWidget(self.gbox_grid_extent)
-        dom_mgr_layout.addWidget(go_to_data_tab_btn)
         dom_mgr_layout.addStretch(1)
         self.setLayout(dom_mgr_layout)
 
