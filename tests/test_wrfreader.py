@@ -8,6 +8,12 @@ tests/fixtures/geo_em_small.nc: an 8x8 window of a real geo_em file
 tests/fixtures/wrfout_multitime.nc: the same 8x8 window of a real wrfout
 file, 3 (synthetic, via ncap2/ncrcat) time steps with distinct T2/XTIME
 values, T2 (2D) and U/V (3-level, staggered) variables.
+tests/fixtures/wrfout_with_1d_var.nc: an 8x8 window of a real wrfout file
+that also carries ZS/DZS (1D, vertical-only soil-layer variables, MemoryOrder
+'Z  ') alongside T2/HGT (2D) - regression coverage for a real bug where GDAL
+exposes 1D variables as tiny (N, 1) "rasters" that corrupted mass-grid-size
+inference and silently dropped every real 2D variable from a genuine wrfout
+file (see wrfreader.py's MemoryOrder check).
 """
 import os
 
@@ -21,6 +27,7 @@ from domainwizard.wrfreader import WRFFile, _build_crs
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 GEO_EM = os.path.join(FIXTURES_DIR, 'geo_em_small.nc')
 WRFOUT = os.path.join(FIXTURES_DIR, 'wrfout_multitime.nc')
+WRFOUT_WITH_1D_VAR = os.path.join(FIXTURES_DIR, 'wrfout_with_1d_var.nc')
 
 
 def _declared_dx_dy(path):
@@ -116,6 +123,14 @@ def test_geo_em_exposes_static_2d_variables_with_no_extra_dim():
         assert var.n_times == 1
         assert var.n_levels == 1
     assert f.extra_dims == {}
+
+
+def test_1d_vertical_only_variables_are_excluded_and_dont_break_2d_ones():
+    f = WRFFile(WRFOUT_WITH_1D_VAR)
+    assert 'ZS' not in f.variables
+    assert 'DZS' not in f.variables
+    assert {'T2', 'HGT'} <= set(f.variables)
+    assert f.size == (8, 8)
 
 
 def test_wrfout_exposes_2d_and_3d_variables_with_correct_time_and_level_counts():

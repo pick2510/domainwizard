@@ -179,8 +179,30 @@ def _build_geo_transform(path: str, crs: CRS, size: Tuple[int, int]) -> Tuple[fl
     return (x_min, dx, 0.0, y_max, 0.0, -dy)
 
 
+def _open_netcdf(path: str) -> gdal.Dataset:
+    """Opens `path` forcing GDAL's netCDF driver via the `NETCDF:"path"`
+    syntax, rather than a bare `gdal.Open(path)`.
+
+    WRF files built with netCDF4 (HDF5-backed) storage - the common case for
+    real wrfout/wrfinput files, as opposed to the classic-format fixtures in
+    tests/fixtures/ - are identified by GDAL's *HDF5* driver when opened
+    bare, since that driver claims the file before the netCDF driver gets a
+    look. That driver reports global attributes fine (so MAP_PROJ is still
+    found) but lists subdatasets as `HDF5:"path"://VAR` instead of
+    `NETCDF:"path":VAR`, and `NETCDF:"path":VAR` opens built from that name
+    fail - which silently dropped every real variable down to a handful of
+    unrelated ones that happened to still resolve. Forcing the netCDF driver
+    up front avoids the ambiguity entirely and works identically on both
+    classic and netCDF4/HDF5-backed files.
+    """
+    try:
+        return gdal.Open(f'NETCDF:"{path}"')
+    except RuntimeError:
+        raise UserError(f'{path.rsplit("/", 1)[-1]} is not a NetCDF file.')
+
+
 def _list_subdataset_names(path: str) -> List[str]:
-    ds = gdal.Open(path)
+    ds = _open_netcdf(path)
     subdatasets = ds.GetMetadata('SUBDATASETS')
     return sorted({v.rsplit(':', 1)[-1] for k, v in subdatasets.items() if k.endswith('_NAME')})
 
@@ -193,7 +215,7 @@ class WRFFile:
         self.path = path
         self.name = path.rsplit('/', 1)[-1]
 
-        root_ds = gdal.Open(path)
+        root_ds = _open_netcdf(path)
         global_md = root_ds.GetMetadata()
         if _global_attr(global_md, 'MAP_PROJ') is None:
             raise UserError(f'{self.name} does not look like a WRF/WPS NetCDF file (no MAP_PROJ global attribute).')
@@ -217,6 +239,18 @@ class WRFFile:
                 continue
 
             var_md = var_ds.GetMetadata()
+
+            # MemoryOrder tells us directly whether this variable is
+            # horizontally gridded ('XY ' or 'XYZ') as opposed to a 1D
+            # vertical-only field like DZS/ZS/FCX/GCX ('Z  ', 'C  ', ...),
+            # which GDAL still exposes as a (N, 1) "raster" - confirmed on a
+            # real wrfout file, where these masqueraded as tiny rasters and,
+            # before this check existed, corrupted mass-grid-size inference
+            # (see _infer_mass_grid_size) enough to drop every real variable.
+            memory_order = var_md.get(f'{var_name}#MemoryOrder', '').strip()
+            if not memory_order.startswith('XY'):
+                continue
+
             # NETCDF_DIM_EXTRA always includes 'Time' (even for a plain 2D
             # variable, confirmed on the geo_em fixture: '{Time}' with a
             # single band) - only a dimension *beyond* Time makes this a
