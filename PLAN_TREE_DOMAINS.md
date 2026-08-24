@@ -109,8 +109,10 @@ the actual form widgets) correctly raises the new `UserError`; the same
 child domain corrected to fit within its parent applies cleanly and
 produces a bbox properly nested inside the parent's.
 
-**Phase 4: in progress.** `pytest` added as a dev dependency
-(`uv add --dev pytest`). Everything below runs with `uv run pytest`.
+**Phase 4: done.** `pytest` added as a dev dependency
+(`uv add --dev pytest`). Everything below runs with `uv run pytest`
+(`tests/test_ui_domain_tree.py` sets `QT_QPA_PLATFORM=offscreen` itself if
+not already set, so no extra environment setup is needed).
 
 Done: `tests/test_core_domain_tree.py` - core-level (no Qt) coverage,
 8 tests, all passing:
@@ -139,33 +141,35 @@ Done: `tests/test_core_domain_tree.py` - core-level (no Qt) coverage,
   permanent regression tests (previously only checked via throwaway
   scripts during those phases).
 
-Not yet done (pick up here):
-- A Qt/UI-level test module (`tests/test_ui_domain_tree.py`, not yet
-  created) exercising `DomainForm` through real widget interaction
-  (`QT_QPA_PLATFORM=offscreen`), matching the rigor of the ad hoc scripts
-  used to verify Phases 2 and 3 by hand, but persisted as an actual test:
-  building a 3-domain project with two siblings entirely through the UI
-  (click "Add Root Domain", select it, "Add Child Domain" twice) and
-  confirming both children get the same `parent_id`; importing the sibling
-  namelist through `on_import_from_namelist_button_clicked` and checking
-  the resulting `QTreeWidget` shape (root -> domain 2 -> [domain 3,
-  domain 4]); partial removal of one sibling via
-  `on_remove_domain_button_clicked` and confirming correct renumbering;
-  the out-of-bounds-child case surfacing as a caught `UserError` (not a
-  crash) through `_apply_selected_domain_fields(raise_on_invalid=True)`
-  when triggered via real field edits. Relevant `DomainForm` internals
-  already located for this: `_rebuild_tree`/`on_tree_selection_changed`/
-  `_selected_domain` (tree <-> `project.data['domains']` sync),
-  `on_add_domain_button_clicked` (line ~363, first click with no domains
-  yet adds a default root; subsequent clicks add a child under whichever
-  tree item is selected), `on_remove_domain_button_clicked` (line ~395,
-  cascade-collects descendants via a `children_of` map before removing,
-  confirms via `QMessageBox` if more than one domain would be removed).
-- No dedicated color-uniqueness assertion yet for
-  `domainoverlay._pen_for_domain_number` (currently only the feature-count
-  check above touches outline rendering at the core level) - worth adding
-  once the UI test module exists, since that's where "visually
-  distinguishable on the map" is actually meaningful to check end-to-end.
+Done: `tests/test_ui_domain_tree.py` - Qt/UI-level coverage (real widget
+interaction via `setCurrentItem`, matching what an actual click does), 4
+tests, all passing:
+- `test_build_siblings_through_ui` - builds a 3-domain project with two
+  siblings entirely through the UI (click "Add Root Domain", select it,
+  "Add Child Domain" twice), confirms both children get `parent_id == 1`
+  and that the `QTreeWidget` itself (not just `project.data`) shows two
+  children under the root item.
+- `test_import_namelist_builds_sibling_tree` - imports the sibling namelist
+  via `on_import_from_namelist_button_clicked` (with `QFileDialog.
+  getOpenFileName` monkeypatched to return the fixture path instead of
+  opening a real dialog) and checks the resulting tree shape: root ->
+  domain 2 -> [domain 3, domain 4].
+- `test_remove_one_sibling_renumbers_survivor` - removes domain 3 (a leaf,
+  so no cascade-delete confirmation dialog appears) via
+  `on_remove_domain_button_clicked` and confirms domain 4 is renumbered to
+  3, keeps `parent_id == 2`, and its bbox is unchanged.
+- `test_out_of_bounds_child_raises_usererror_via_field_edit` - builds a
+  root + child through the UI, then pushes the child out of bounds by
+  setting the actual "Position within Parent" line edits
+  (`padding_left`/`padding_bottom`) and confirms
+  `_apply_selected_domain_fields(raise_on_invalid=True)` raises `UserError`
+  instead of crashing.
+
+Not done (out of scope for now): no dedicated color-uniqueness assertion
+for `domainoverlay._pen_for_domain_number` - the core-level feature-count
+check (`test_siblings_outlines_are_visually_distinguishable`) is the only
+outline-rendering coverage; a pixel- or pen-comparison test would be the
+next step if this needs tightening further.
 
 
 ## Motivation
