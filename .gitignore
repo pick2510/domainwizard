@@ -6,6 +6,10 @@ dist/
 wheels/
 *.egg-info
 
+# Native C++ build directories (build-portable-cpp.sh's own build tree;
+# build/ above already covers the plain CMake dev build)
+build-portable-cpp/
+
 # Virtual environments
 .venv
 

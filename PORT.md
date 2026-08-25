@@ -111,13 +111,29 @@ the feature-complete behavioral reference.
   `updateColorbar()` rather than `refreshMap()` - a cosmetic legend tweak
   must not re-render or touch the slice/image cache, matching
   `wrftools.viewform`'s tick handlers.
+- **Portable Linux artifact (`build-portable-cpp.sh`, `cmake/bundle_linux.cmake`)**:
+  builds Release and bundles the executable, its full shared-library
+  closure (`file(GET_RUNTIME_DEPENDENCIES)`), the Qt `platforms`/`tls`/
+  `imageformats` plugins (dlopen'd, so invisible to that closure - resolved
+  via a second `GET_RUNTIME_DEPENDENCIES` pass with `MODULES` so a plugin's
+  own deps, e.g. the TLS backend's libssl/libcrypto, aren't missed), and
+  GDAL/PROJ's data files, then `patchelf --set-rpath`s everything to
+  `$ORIGIN`-relative paths. Requires `patchelf` (`apt install patchelf` on
+  Debian/Ubuntu) - nothing else outside apt. Verified end-to-end on this
+  machine: the bundle launches and its GDAL/PROJ data perform a real CRS
+  transform with `LD_LIBRARY_PATH`/`GDAL_DATA`/`PROJ_DATA` pointed only at
+  itself, no system Qt/GDAL/PROJ in scope. Deliberately does *not* bundle
+  libc/libstdc++/libgcc_s/the dynamic loader (tied to the target machine's
+  kernel/ABI) - promises portability across a comparably-recent-or-newer
+  glibc than the build machine, not literally any glibc the way
+  `build-portable.sh`'s Docker/manylinux pipeline does for the Python side.
 
 ## Still required for feature parity
 
 ### Packaging and verification
 
-- Bundle Qt, GDAL, PROJ, GDAL data, and `proj.db` into a macOS `.app` and a
-  portable Linux artifact; test both artifacts on clean machines.
+- macOS `.app` bundling - no macOS machine available to build or verify
+  this from within the current working environment.
 - Port the remaining Python tests (197 total in the Python suite; the native
   suite has grown from 17 to 25 CTest entries / ~28 Catch2 cases but is
   still far short) - especially `tests/test_ui_view_layers.py`'s 43 cases,
