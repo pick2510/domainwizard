@@ -21,6 +21,7 @@ struct WrfVariable {
     int levelCount{1};
     std::optional<std::string> categoryScheme;
 };
+struct GeographicBounds { double west{}; double south{}; double east{}; double north{}; };
 
 // Read-only GDAL-backed WRF/WPS source. Raster read/warp is deliberately a
 // separate renderer concern; this class owns file discovery and metadata.
@@ -31,6 +32,7 @@ public:
     [[nodiscard]] const std::vector<WrfVariable>& variables() const noexcept { return variables_; }
     [[nodiscard]] const std::array<double, 6>& geotransform() const noexcept { return geotransform_; }
     [[nodiscard]] std::array<int, 2> size() const noexcept { return size_; }
+    [[nodiscard]] const GeographicBounds& geographicBounds() const noexcept { return geographicBounds_; }
     [[nodiscard]] std::vector<float> read(const std::string& variable, int timeIndex = 0, int levelIndex = 0) const;
 
 private:
@@ -38,6 +40,7 @@ private:
     std::vector<WrfVariable> variables_;
     std::array<double, 6> geotransform_{};
     std::array<int, 2> size_{};
+    GeographicBounds geographicBounds_{};
     std::unordered_map<std::string, int> staggerAxis_;
     std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> dataset_{nullptr, nullptr};
 };

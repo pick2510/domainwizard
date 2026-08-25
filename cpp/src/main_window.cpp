@@ -1,5 +1,6 @@
 #include "wrftools/main_window.hpp"
 #include "wrftools/tile_map_widget.hpp"
+#include "wrftools/view_form.hpp"
 
 #include <QFileDialog>
 #include <QLabel>
@@ -14,8 +15,8 @@ MainWindow::MainWindow() {
     auto* tabs = new QTabWidget;
     tabs->setMinimumWidth(340);
     tabs->addTab(new QLabel("Domains are being ported to C++.", tabs), "Domains");
-    tabs->addTab(new QLabel("WRF layer controls are being ported to C++.", tabs), "View");
     map_ = new TileMapWidget;
+    tabs->addTab(new ViewForm(map_, tabs), "View");
     auto* splitter = new QSplitter;
     splitter->addWidget(tabs);
     splitter->addWidget(map_);

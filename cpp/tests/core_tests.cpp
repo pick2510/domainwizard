@@ -84,6 +84,8 @@ TEST_CASE("GDAL-backed reader discovers fixture variables") {
     WrfFile file("tests/fixtures/geo_em_small.nc");
     REQUIRE_FALSE(file.variables().empty());
     CHECK(std::any_of(file.variables().begin(), file.variables().end(), [](const WrfVariable& value) { return value.name == "LU_INDEX"; }));
+    CHECK(file.geographicBounds().north > file.geographicBounds().south);
+    CHECK(file.geographicBounds().east > file.geographicBounds().west);
 }
 
 TEST_CASE("GDAL-backed reader reads real multi-time rasters") {

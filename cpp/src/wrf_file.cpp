@@ -38,6 +38,15 @@ std::string subdatasetName(const char* entry) {
     const auto namePosition = value.find(suffix);
     return namePosition == std::string::npos ? "" : value.substr(namePosition + suffix.size());
 }
+
+float coordinateValue(const std::filesystem::path& path, const char* variable, int x, int y) {
+    const std::string target = "NETCDF:\"" + path.string() + "\":" + variable;
+    std::unique_ptr<GDALDataset, decltype(&GDALClose)> dataset(static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
+    if (!dataset) throw UserError("WRF coordinate variable is unavailable: " + std::string(variable));
+    float value{};
+    if (dataset->GetRasterBand(1)->RasterIO(GF_Read, x, y, 1, 1, &value, 1, 1, GDT_Float32, 0, 0) != CE_None) throw UserError("Could not read WRF coordinate variable.");
+    return value;
+}
 }
 
 WrfFile::WrfFile(std::filesystem::path path)
@@ -90,6 +99,11 @@ WrfFile::WrfFile(std::filesystem::path path)
         height = std::min(height, field->GetRasterYSize());
     }
     size_ = {width, height};
+    try {
+        geographicBounds_ = {.west = coordinateValue(path_, "XLONG", 0, height - 1), .south = coordinateValue(path_, "XLAT", 0, height - 1), .east = coordinateValue(path_, "XLONG", width - 1, 0), .north = coordinateValue(path_, "XLAT", width - 1, 0)};
+    } catch (const UserError&) {
+        geographicBounds_ = {.west = coordinateValue(path_, "XLONG_M", 0, height - 1), .south = coordinateValue(path_, "XLAT_M", 0, height - 1), .east = coordinateValue(path_, "XLONG_M", width - 1, 0), .north = coordinateValue(path_, "XLAT_M", width - 1, 0)};
+    }
     for (const auto& variable : variables_) {
         const std::string target = "NETCDF:\"" + path_.string() + "\":" + variable.name;
         std::unique_ptr<GDALDataset, decltype(&GDALClose)> field(static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
