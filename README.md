@@ -25,6 +25,11 @@ geometry, CRS handling, and namelist I/O reuse GDAL/OGR/OSR directly
 
 ## Setup
 
+Linux and macOS are both supported (developed on Linux; regularly run and
+packaged on macOS too - see [Packaging](#packaging) below). Install GDAL
+first - `gdal-devel`/`libgdal-dev` on Linux, or `brew install gdal` on
+macOS - then:
+
 ```
 ./setup.sh
 ```
@@ -46,6 +51,12 @@ own machine) doesn't match yours - it's local, per-machine config, not a
 real dependency change, so don't worry about "reverting" someone else's
 pin when you fix yours.
 
+On a machine that also has Anaconda/Miniconda installed, make sure a
+`gdal-config` from Homebrew (or your Linux distro's package) is the one
+that resolves first on `PATH` - conda ships its own, often much older,
+`gdal-config`, and `setup.sh` will happily (but wrongly) pin to whichever
+one it finds first. `setup.sh` prints a note if it detects this.
+
 ## Run
 
 ```
@@ -58,37 +69,49 @@ uv run domainwizard
 ./build.sh
 ```
 
-Produces a standalone single-file executable at `dist/domainwizard`. See
-the comments in `build.sh` for why it needs a few things PyInstaller's
-automatic analysis misses (numpy's BLAS backend, GDAL/PROJ data files,
-a numpy submodule GDAL's C extension imports in a way static analysis
-can't see) and adjust the paths there if your system layout differs.
+Produces a standalone single-file executable at `dist/domainwizard`, on
+both Linux and macOS. See the comments in `build.sh` for why it needs a
+few things PyInstaller's automatic analysis misses (numpy's BLAS backend
+on some Linux distros, GDAL/PROJ data files, a numpy submodule GDAL's C
+extension imports in a way static analysis can't see) and adjust the
+paths there if your system layout differs. On macOS the built binary is
+ad-hoc signed by PyInstaller; Gatekeeper may still require right-click ->
+Open the first time, or `xattr -d com.apple.quarantine dist/domainwizard`
+if it was downloaded/copied from another machine.
 
-**Running `build.sh` directly only produces a binary that works on
-machines with glibc >= the build machine's.** PyInstaller bundles shared
-libraries (Qt, glib, GDAL, ...) as found on the build machine, and those
-carry that machine's glibc symbol-version requirements baked in - a binary
-built on a bleeding-edge system (this project's normal dev machine runs
-glibc 2.43) fails on anything older with an error like:
+**On Linux, running `build.sh` directly only produces a binary that works
+on machines with glibc >= the build machine's** (this doesn't apply to
+macOS, which has no glibc). PyInstaller bundles shared libraries (Qt,
+glib, GDAL, ...) as found on the build machine, and those carry that
+machine's glibc symbol-version requirements baked in - a binary built on
+a bleeding-edge system (this project's normal dev machine runs glibc
+2.43) fails on anything older with an error like:
 
 ```
 ImportError: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.43' not found
 ```
 
-For a binary that runs on essentially any current Linux system, build
-inside the provided Docker image instead, which uses Debian 12 (glibc
-2.36) specifically because it's old enough to cover the overwhelming
-majority of currently-supported distros while still having a modern
-enough GDAL to build cleanly (see the comments in `Dockerfile.build` for
-why plain manylinux_2_28, the more conventional choice for this kind of
-thing, doesn't work here):
+For a Linux binary that runs on essentially any current Linux system
+(including when building from macOS, via Docker), build inside the
+provided Docker image instead, which uses Debian 12 (glibc 2.36)
+specifically because it's old enough to cover the overwhelming majority
+of currently-supported distros while still having a modern enough GDAL to
+build cleanly (see the comments in `Dockerfile.build` for why plain
+manylinux_2_28, the more conventional choice for this kind of thing,
+doesn't work here):
 
 ```
 ./build-portable.sh
 ```
 
-The target machine still needs the base graphics stack essentially every
-Linux desktop already has (`libgl1`/`libegl1` or equivalent) - GL/EGL
+This always produces a Linux binary (it builds inside a Linux container
+regardless of host OS), so it's not useful for a portable *macOS* binary -
+macOS has no glibc-style forward-compatibility problem to work around in
+the first place, since Apple doesn't support running a binary built on a
+newer macOS on an older one anyway; just use `build.sh` there.
+
+The target Linux machine still needs the base graphics stack essentially
+every Linux desktop already has (`libgl1`/`libegl1` or equivalent) - GL/EGL
 libraries are deliberately *not* bundled, since they're tied to the actual
 GPU driver in use; a bundled generic copy would be wrong on the target
 machine, not just redundant.

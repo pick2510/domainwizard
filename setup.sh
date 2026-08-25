@@ -26,10 +26,24 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if ! command -v gdal-config >/dev/null; then
-    echo "gdal-config not found - install the GDAL development package for your" >&2
-    echo "distro first (e.g. 'gdal-devel' on Fedora, 'libgdal-dev' on Debian/Ubuntu)." >&2
+    echo "gdal-config not found - install GDAL first:" >&2
+    echo "  Fedora:        sudo dnf install gdal-devel" >&2
+    echo "  Debian/Ubuntu: sudo apt install libgdal-dev" >&2
+    echo "  macOS:         brew install gdal" >&2
     exit 1
 fi
+
+# On machines that also have Anaconda/Miniconda installed (common on
+# meteorology workstations, this app's target audience), conda's own
+# (often much older) gdal-config can shadow Homebrew's/the system's on
+# PATH depending on shell init order, silently pinning to a stale GDAL.
+case "$(command -v gdal-config)" in
+    */conda*|*/anaconda*|*/miniconda*)
+        echo "Note: using gdal-config from a conda environment ($(command -v gdal-config))." >&2
+        echo "If that's not intended (e.g. you meant to use Homebrew's GDAL), adjust PATH" >&2
+        echo "so the right gdal-config comes first, then re-run this script." >&2
+        ;;
+esac
 
 uv sync --no-install-package gdal
 
