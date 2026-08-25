@@ -1,7 +1,7 @@
 #pragma once
 
+#include "wrftools/layer_renderer.hpp"
 #include "wrftools/raster_layer.hpp"
-#include "wrftools/wrf_source.hpp"
 
 #include <optional>
 #include <string>
@@ -70,7 +70,7 @@ private:
     [[nodiscard]] std::string layerLabel(const ViewLayer& layer);
 
     TileMapWidget* map_;
-    WrfSourceRegistry registry_;
+    LayerRenderer renderer_;
     std::vector<ViewLayer> layers_;  // bottom-first: draw order
     int nextLayerId_{1};
     std::optional<int> selectedLayerId_;

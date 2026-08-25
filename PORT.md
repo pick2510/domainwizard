@@ -77,10 +77,19 @@ the feature-complete behavioral reference.
   variable/time/level/colormap/units/opacity/range/interpolate; a
   `WrfFileSeries` shows one file row with its real `%Y-%m-%d %H:%M`
   timestamp labels instead of "Step i of N", and a lazily-detected series
-  mismatch drops just that layer's overlay (caught around each `renderLayer`
-  call in `refreshMap`) instead of failing the whole redraw. Zoom-to-layer,
+  mismatch drops just that layer's overlay (caught around each render call
+  in `refreshMap`) instead of failing the whole redraw. Zoom-to-layer,
   categorical/continuous colorbar and movable info-text overlay, and
   looping playback are wired per the selected layer.
+- **`LayerRenderer` (`layer_renderer.hpp`/`.cpp`)**: the two-tier cache the
+  View UI above actually renders through - a byte-bounded cache of warped
+  (EPSG:3857, native-unit) slices keyed by (file, variable, time, level),
+  and a count-bounded cache of colormapped images keyed by the slice key
+  plus (colormap, vmin, vmax, unit), so a UI change that only touches
+  opacity/visibility/colormap/range doesn't re-read and re-warp the GDAL
+  subdataset. `renderLayer`/`colorizeWarped` (`raster_layer.hpp`) stay as
+  the uncached path the cache itself and direct tests build on. Mirrors
+  `wrftools.rasterlayer.LayerRenderer`'s cache tiers and byte/count budgets.
 - Native regression suite, now including cross-language pins: CRS/geotransform,
   warped-raster bounds, domain bboxes, and LANDUSE palette values are each
   checked against a value produced by running the Python reference on the
@@ -89,18 +98,12 @@ the feature-complete behavioral reference.
   `setCurrentItem`) and `ViewForm` (a 4-file series collapsing to one file
   row, a 2-layer stack built and hidden via real checkbox clicks) in a new
   `wrftools_ui_tests` binary. Current local result: all CTest targets pass
-  (24 CTest entries; `wrftools_ui_tests` alone runs 5 Catch2 cases).
+  (25 CTest entries; `wrftools_ui_tests` alone runs 5 Catch2 cases).
 
 ## Still required for feature parity
 
 ### View tab and rendering
 
-- No caching: `WrfFile::read`/`renderLayer` reopen the GDAL subdataset and
-  re-warp on every call (every UI change, every playback tick, every layer
-  in `refreshMap`'s loop), rather than the Python reference's byte-bounded
-  warped-slice + count-bounded rendered-image cache tiers. Fine for the
-  small test fixtures; will be visibly slow on real wrfout-sized grids with
-  more than a couple of layers.
 - Tick-count/format/decimals controls exist at the `colorbar` level but
   aren't exposed as UI controls in `ViewForm` yet (always `tickCount=3`,
   `"auto"` format).
@@ -125,7 +128,7 @@ the feature-complete behavioral reference.
 - Bundle Qt, GDAL, PROJ, GDAL data, and `proj.db` into a macOS `.app` and a
   portable Linux artifact; test both artifacts on clean machines.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown from 17 to 24 CTest entries / ~26 Catch2 cases but is
+  suite has grown from 17 to 25 CTest entries / ~27 Catch2 cases but is
   still far short) - especially `tests/test_ui_view_layers.py`'s 43 cases,
   now that the layer stack exists to test against.
 - Run and require the macOS CI job, then address any Homebrew-specific

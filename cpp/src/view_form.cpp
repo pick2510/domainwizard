@@ -136,8 +136,8 @@ void ViewForm::openFiles(const std::vector<std::string>& paths) {
     const auto grouped = groupWrfPaths(given);
     std::optional<std::string> lastOpened;
     try {
-        for (const auto& group : grouped.groups) { registry_.open(group); lastOpened = group.front().string(); }
-        for (const auto& single : grouped.singles) { registry_.open({single}); lastOpened = single.string(); }
+        for (const auto& group : grouped.groups) { static_cast<void>(renderer_.openFile(group)); lastOpened = group.front().string(); }
+        for (const auto& single : grouped.singles) { static_cast<void>(renderer_.openFile({single})); lastOpened = single.string(); }
     } catch (const std::exception& error) { QMessageBox::critical(this, "Could not open file", error.what()); }
     rebuildFileList(lastOpened);
 }
@@ -151,7 +151,7 @@ void ViewForm::closeSelectedFile() {
         if (QMessageBox::question(this, "Close File", question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
     }
     layers_.erase(std::remove_if(layers_.begin(), layers_.end(), [&path](const ViewLayer& layer) { return layer.filePath == *path; }), layers_.end());
-    registry_.invalidate(*path);
+    renderer_.invalidateFile(*path);
     rebuildFileList();
     rebuildLayerTree();
     refreshMap();
@@ -162,14 +162,14 @@ std::optional<std::string> ViewForm::selectedFilePath() const {
     return fileTree_->currentItem()->data(0, kLayerIdRole).toString().toStdString();
 }
 
-std::vector<std::string> ViewForm::openFilePaths() const { return registry_.openPaths(); }
+std::vector<std::string> ViewForm::openFilePaths() const { return renderer_.openPaths(); }
 
 void ViewForm::rebuildFileList(const std::optional<std::string>& selectPath) {
     fileTree_->blockSignals(true);
     fileTree_->clear();
     QTreeWidgetItem* toSelect = nullptr;
     for (const auto& path : openFilePaths()) {
-        auto* item = new QTreeWidgetItem({QString::fromStdString(registry_.open({path}).displayName())});
+        auto* item = new QTreeWidgetItem({QString::fromStdString(renderer_.openFile({path}).displayName())});
         item->setData(0, kLayerIdRole, QString::fromStdString(path));
         fileTree_->addTopLevelItem(item);
         if (selectPath && path == *selectPath) toSelect = item;
@@ -183,7 +183,7 @@ void ViewForm::addLayer() {
     const auto paths = openFilePaths();
     if (paths.empty()) return;
     const auto target = selectedFilePath().value_or(paths.front());
-    auto& source = registry_.open({target});
+    auto& source = renderer_.openFile({target});
     if (source.variables().empty()) return;
     const auto& firstVariable = source.variables().front();
     ViewLayer layer{.layerId = nextLayerId_++, .filePath = target, .settings = {}};
@@ -225,10 +225,10 @@ void ViewForm::moveSelectedLayer(int direction) {
 }
 
 std::string ViewForm::layerLabel(const ViewLayer& layer) {
-    // registry_.open() here is a cache lookup (the source is already open),
+    // renderer_.openFile() here is a cache lookup (the source is already open),
     // matching rasterlayer.RasterLayer.label()'s use of the renderer for
     // the display name, so a series shows its "(N files)" name.
-    return layer.settings.variable + " — " + registry_.open({layer.filePath}).displayName() + " (t=" + std::to_string(layer.settings.timeIndex + 1) + ")";
+    return layer.settings.variable + " — " + renderer_.openFile({layer.filePath}).displayName() + " (t=" + std::to_string(layer.settings.timeIndex + 1) + ")";
 }
 
 void ViewForm::rebuildLayerTree(std::optional<int> selectId) {
@@ -288,7 +288,7 @@ void ViewForm::populatePropertiesPanel() {
     auto* layer = selectedLayer();
     if (!layer) return;
     try {
-        auto& source = registry_.open({layer->filePath});
+        auto& source = renderer_.openFile({layer->filePath});
         const auto old = variable_->blockSignals(true);
         variable_->clear();
         for (const auto& value : source.variables()) variable_->addItem(QString::fromStdString(value.name));
@@ -346,7 +346,7 @@ void ViewForm::onVariableChanged() {
     layer->settings.levelIndex = 0;
     layer->settings.unitKey = "native";
     try {
-        auto& source = registry_.open({layer->filePath});
+        auto& source = renderer_.openFile({layer->filePath});
         const auto found = std::find_if(source.variables().begin(), source.variables().end(), [layer](const WrfVariable& v) { return v.name == layer->settings.variable; });
         if (found != source.variables().end()) {
             if (found->categoryScheme) layer->settings.colormap = kCategoricalColormap;
@@ -376,8 +376,7 @@ void ViewForm::refreshMap() {
     for (auto& layer : layers_) {  // bottom-first: draw order
         if (!layer.settings.visible) continue;
         try {
-            auto& source = registry_.open({layer.filePath});
-            const auto rendered = renderLayer(source, layer.settings);
+            const auto rendered = renderer_.render(layer.filePath, layer.settings);
             overlays.push_back({rasterImage(rendered), rendered.bounds3857, layer.settings.opacity, layer.settings.interpolate});
         } catch (const UserError&) {
             // A lazily-detected series mismatch or a bad time/level index:
@@ -394,8 +393,8 @@ void ViewForm::updateColorbar() {
     auto* layer = selectedLayer();
     if (!layer || !layer->settings.visible) { map_->setLegend({}); map_->setInfoText({}); return; }
     try {
-        auto& source = registry_.open({layer->filePath});
-        const auto rendered = renderLayer(source, layer->settings);
+        auto& source = renderer_.openFile({layer->filePath});
+        const auto rendered = renderer_.render(layer->filePath, layer->settings);
         const auto found = std::find_if(source.variables().begin(), source.variables().end(), [layer](const WrfVariable& v) { return v.name == layer->settings.variable; });
         const auto unitLabel = found != source.variables().end() ? findUnit(found->units, layer->settings.unitKey).label : std::string{};
         const auto title = layer->settings.variable + (unitLabel.empty() ? "" : " (" + unitLabel + ")");
@@ -412,8 +411,7 @@ void ViewForm::zoomToSelectedLayer() {
     auto* layer = selectedLayer();
     if (!layer) return;
     try {
-        auto& source = registry_.open({layer->filePath});
-        const auto rendered = renderLayer(source, layer->settings);
+        const auto rendered = renderer_.render(layer->filePath, layer->settings);
         const auto southWest = mercatorToLonLat(rendered.bounds3857.minX, rendered.bounds3857.minY);
         const auto northEast = mercatorToLonLat(rendered.bounds3857.maxX, rendered.bounds3857.maxY);
         map_->zoomToBounds(southWest, northEast);

@@ -2,6 +2,7 @@
 
 #include "wrftools/colormaps.hpp"
 #include "wrftools/crs.hpp"
+#include "wrftools/warp.hpp"
 #include "wrftools/wrf_file.hpp"
 #include "wrftools/wrf_source.hpp"
 
@@ -42,4 +43,13 @@ struct RenderedRaster {
 };
 [[nodiscard]] RenderedRaster renderLayer(WrfSource& source, const RasterLayer& layer);
 [[nodiscard]] QImage rasterImage(const RenderedRaster& raster);
+
+// Unit-converts a copy of `warped`'s native-unit values (never mutating
+// `warped` itself, since a cache - see layer_renderer.hpp - shares one
+// warped slice across every layer that reads that same (file, variable,
+// time, level), possibly in different displayed units) and colormaps the
+// result. The second half of renderLayer(), split out so a caching layer
+// can reuse it against an already-warped, cached slice instead of
+// re-reading and re-warping on every call.
+[[nodiscard]] RenderedRaster colorizeWarped(const WarpedRaster& warped, const RasterLayer& layer, const WrfVariable& variable);
 }  // namespace wrftools

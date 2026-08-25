@@ -7,6 +7,7 @@
 #include "wrftools/units.hpp"
 #include "wrftools/raster_layer.hpp"
 #include "wrftools/warp.hpp"
+#include "wrftools/layer_renderer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -304,4 +305,41 @@ TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
     CHECK(manual.minimum == 270.0f);
     CHECK(manual.maximum == 310.0f);
     CHECK(manual.pixels != automatic.pixels);
+}
+
+TEST_CASE("LayerRenderer caches slices/images and matches uncached rendering") {
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    LayerRenderer renderer;
+    static_cast<void>(renderer.openFile({path}));
+    const RasterLayer layer{.variable = "T2", .timeIndex = 1};
+    const auto cached = renderer.render(path, layer);
+
+    WrfSourceRegistry registry;
+    auto& source = registry.open({path});
+    const auto uncached = renderLayer(source, layer);
+    CHECK(cached.pixels == uncached.pixels);
+    CHECK(cached.minimum == uncached.minimum);
+    CHECK(cached.bounds3857.minX == uncached.bounds3857.minX);
+
+    // A second render() with identical settings is an image-cache hit -
+    // same result, not a rebuild.
+    const auto again = renderer.render(path, layer);
+    CHECK(again.pixels == cached.pixels);
+
+    // Different display units on the SAME (file, variable, time, level)
+    // share one cached warped slice - converting for one layer must not
+    // corrupt what a second layer in a different unit reads from it.
+    const auto celsius = renderer.render(path, RasterLayer{.variable = "T2", .timeIndex = 1, .unitKey = "degC"});
+    const auto kelvin = renderer.render(path, RasterLayer{.variable = "T2", .timeIndex = 1, .unitKey = "native"});
+    CHECK(celsius.minimum != kelvin.minimum);  // different units, not accidentally sharing converted state
+    const auto kelvinAgain = renderer.render(path, RasterLayer{.variable = "T2", .timeIndex = 1, .unitKey = "native"});
+    CHECK(kelvinAgain.minimum == kelvin.minimum);  // native reading still intact after the degC render
+
+    // invalidateFile drops the cache; the file can still be reopened and
+    // rendered afterward (not left in a broken state).
+    renderer.invalidateFile(path);
+    CHECK(renderer.openPaths().empty());
+    static_cast<void>(renderer.openFile({path}));
+    const auto afterInvalidate = renderer.render(path, layer);
+    CHECK(afterInvalidate.pixels == uncached.pixels);
 }

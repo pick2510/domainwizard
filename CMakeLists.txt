@@ -21,6 +21,7 @@ add_library(wrftools_core
     cpp/src/units.cpp
     cpp/src/colormaps.cpp
     cpp/src/raster_layer.cpp
+    cpp/src/layer_renderer.cpp
     cpp/src/colorbar.cpp
     cpp/src/wps_namelist.cpp
     cpp/src/wrf_file.cpp
