@@ -14,8 +14,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import numpy as np
 import pytest
 
-from domainwizard.rasterlayer import LayerRenderer, RasterLayer
-from domainwizard.tilemap import RasterOverlay
+from wrftools import colormaps
+from wrftools.rasterlayer import LayerRenderer, RasterLayer
+from wrftools.tilemap import RasterOverlay
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 GEO_EM = os.path.join(FIXTURES_DIR, 'geo_em_small.nc')
@@ -213,6 +214,85 @@ def test_clear_resets_everything(renderer):
     renderer.clear()
     assert renderer.stats.slice_misses == 0
     assert renderer.overlay_for(layer) is None  # files were closed too
+
+
+# --- categorical rendering --------------------------------------------------
+
+def test_categorical_layer_uses_the_files_own_landuse_scheme(renderer):
+    # geo_em_small.nc's MMINLU is MODIFIED_IGBP_MODIS_NOAH; its LU_INDEX
+    # slice contains exactly classes 2, 13, 17 (verified against the fixture).
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='LU_INDEX', colormap=colormaps.CATEGORICAL)
+    overlay = renderer.overlay_for(layer)
+    assert overlay is not None
+    lut, labels, present = renderer.categorical_legend(layer)
+    assert present == [2, 13, 17]
+    assert labels[2] == 'Evergreen Broadleaf Forest'
+    np.testing.assert_array_equal(lut[2], colormaps.hex_to_rgb('#00FF00'))
+    assert labels[13] == 'Urban and Built-Up'
+    np.testing.assert_array_equal(lut[13], colormaps.hex_to_rgb('#FF0000'))
+    assert labels[17] == 'Water'
+    np.testing.assert_array_equal(lut[17], colormaps.hex_to_rgb('#000080'))
+
+
+def test_categorical_legend_is_none_for_a_continuous_layer(renderer):
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='HGT_M')
+    assert renderer.categorical_legend(layer) is None
+
+
+def test_categorical_legend_of_unopened_file_returns_none():
+    renderer = LayerRenderer()
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='LU_INDEX', colormap=colormaps.CATEGORICAL)
+    assert renderer.categorical_legend(layer) is None
+
+
+# --- unit conversion ---------------------------------------------------------
+
+def test_effective_range_in_a_converted_unit_is_shifted_from_native(renderer):
+    native = RasterLayer(layer_id=1, file_path=WRFOUT, variable='T2')
+    celsius = RasterLayer(layer_id=2, file_path=WRFOUT, variable='T2', units='degC')
+    native_vmin, native_vmax = renderer.effective_range(native)
+    celsius_vmin, celsius_vmax = renderer.effective_range(celsius)
+    assert celsius_vmin == pytest.approx(native_vmin - 273.15)
+    assert celsius_vmax == pytest.approx(native_vmax - 273.15)
+
+
+def test_manual_range_in_a_converted_unit_is_used_as_is(renderer):
+    layer = RasterLayer(layer_id=1, file_path=WRFOUT, variable='T2', units='degC', vmin=0.0, vmax=30.0)
+    assert renderer.effective_range(layer) == (0.0, 30.0)
+
+
+def test_units_change_misses_image_cache_but_not_slice_cache(renderer):
+    layer = RasterLayer(layer_id=1, file_path=WRFOUT, variable='T2')
+    renderer.overlay_for(layer)
+    before = dataclasses.replace(renderer.stats)
+    layer.units = 'degC'
+    renderer.overlay_for(layer)
+    assert renderer.stats.slice_misses == before.slice_misses  # slice (native K) reused
+    assert renderer.stats.slice_hits == before.slice_hits + 1
+    assert renderer.stats.image_misses == before.image_misses + 1  # different pixels
+
+
+def test_two_layers_same_slice_different_units_do_not_share_the_image_cache(renderer):
+    native = RasterLayer(layer_id=1, file_path=WRFOUT, variable='T2')
+    celsius = RasterLayer(layer_id=2, file_path=WRFOUT, variable='T2', units='degC')
+    renderer.overlay_for(native)
+    renderer.overlay_for(celsius)
+    assert renderer.stats.slice_misses == 1  # same underlying slice
+    assert renderer.stats.image_misses == 2  # but rendered in different units
+
+
+# --- colorbar appearance fields (ticks) are legend-only ----------------------
+
+def test_tick_settings_do_not_invalidate_either_cache_tier(renderer):
+    layer = RasterLayer(layer_id=1, file_path=GEO_EM, variable='HGT_M')
+    renderer.overlay_for(layer)
+    before = dataclasses.replace(renderer.stats)
+    layer.tick_count, layer.tick_format, layer.tick_decimals = 9, 'scientific', 4
+    renderer.overlay_for(layer)
+    assert renderer.stats.slice_misses == before.slice_misses
+    assert renderer.stats.slice_hits == before.slice_hits
+    assert renderer.stats.image_misses == before.image_misses
+    assert renderer.stats.image_hits == before.image_hits + 1
 
 
 # --- eviction ----------------------------------------------------------------

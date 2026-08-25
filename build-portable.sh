@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the portable (glibc 2.36+) single-file executable via Docker and
-# extracts it to dist/domainwizard. See Dockerfile.build and the
+# extracts it to dist/wrftools. See Dockerfile.build and the
 # "Packaging" section of the README for why this exists (build.sh alone
 # only produces a binary that works on machines with glibc >= the build
 # machine's - use this instead of build.sh when you need the result to run
@@ -17,8 +17,8 @@ if ! command -v docker >/dev/null; then
     exit 1
 fi
 
-IMAGE=domainwizard-build
-CONTAINER=domainwizard-build-extract-$$
+IMAGE=wrftools-build
+CONTAINER=wrftools-build-extract-$$
 
 docker build -f Dockerfile.build -t "$IMAGE" .
 
@@ -26,7 +26,7 @@ docker create --name "$CONTAINER" "$IMAGE" >/dev/null
 trap 'docker rm "$CONTAINER" >/dev/null 2>&1 || true' EXIT
 
 mkdir -p dist
-docker cp "$CONTAINER:/src/dist/domainwizard" ./dist/domainwizard
+docker cp "$CONTAINER:/src/dist/wrftools" ./dist/wrftools
 
 echo
-echo "Built: dist/domainwizard ($(du -h dist/domainwizard | cut -f1))"
+echo "Built: dist/wrftools ($(du -h dist/wrftools | cut -f1))"

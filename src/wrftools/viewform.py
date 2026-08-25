@@ -19,16 +19,17 @@ from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
-    QLabel, QMessageBox, QPushButton, QSlider, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QLabel, QMessageBox, QPushButton, QSlider, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from gis4wrf.core import UserError
 
-from domainwizard.tilemap import TileMapWidget, Z_RASTER
-from domainwizard.rasterlayer import LayerRenderer, RasterLayer
-from domainwizard import colorbar, colormaps
-from domainwizard.formhelpers import add_grid_lineedit
-from domainwizard.wrfreader import WRFFile
+from wrftools.tilemap import TileMapWidget, Z_RASTER
+from wrftools.rasterlayer import LayerRenderer, RasterLayer
+from wrftools import colorbar, colormaps
+from wrftools import units as units_module
+from wrftools.formhelpers import add_grid_lineedit
+from wrftools.wrfreader import WRFFile, WRFVariable
 
 DECIMALS = 50
 RANGE_VALIDATOR = QDoubleValidator(-1e30, 1e30, DECIMALS)
@@ -132,38 +133,83 @@ class ViewForm(QWidget):
         self.widget_level.setLayout(level_row)
         grid_props.addWidget(self.widget_level, 2, 0, 1, 3)
 
+        # Hidden (like widget_level above) whenever the selected variable's
+        # native unit has no known conversions - units.conversions_for()
+        # returns just the identity entry in that case, so there's nothing
+        # to pick between.
+        self.units_label = QLabel('Units:')
+        self.units_combo = QComboBox()
+        self.units_combo.currentIndexChanged.connect(self.on_units_changed)
+        units_row = QHBoxLayout()
+        units_row.addWidget(self.units_label)
+        units_row.addWidget(self.units_combo)
+        self.widget_units = QWidget()
+        self.widget_units.setLayout(units_row)
+        grid_props.addWidget(self.widget_units, 3, 0, 1, 3)
+
+        # Rebuilt per-selection (see _populate_colormap_combo), not populated
+        # once here: the "Categorical" entry only appears for a variable
+        # with a category_scheme (RasterLayer/wrfreader.WRFVariable).
         self.colormap_combo = QComboBox()
-        for name in colormaps.names():
-            self.colormap_combo.addItem(name, name)
         self.colormap_combo.currentIndexChanged.connect(self.on_colormap_changed)
-        grid_props.addWidget(QLabel('Colormap:'), 3, 0)
-        grid_props.addWidget(self.colormap_combo, 3, 1, 1, 2)
+        grid_props.addWidget(QLabel('Colormap:'), 4, 0)
+        grid_props.addWidget(self.colormap_combo, 4, 1, 1, 2)
 
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
         self.opacity_label = QLabel()
-        grid_props.addWidget(QLabel('Opacity:'), 4, 0)
-        grid_props.addWidget(self.opacity_slider, 4, 1)
-        grid_props.addWidget(self.opacity_label, 4, 2)
+        grid_props.addWidget(QLabel('Opacity:'), 5, 0)
+        grid_props.addWidget(self.opacity_slider, 5, 1)
+        grid_props.addWidget(self.opacity_label, 5, 2)
 
         self.auto_range_check = QCheckBox('Auto')
         self.auto_range_check.toggled.connect(self.on_range_changed)
-        grid_props.addWidget(QLabel('Range:'), 5, 0)
-        grid_props.addWidget(self.auto_range_check, 5, 1)
+        grid_props.addWidget(QLabel('Range:'), 6, 0)
+        grid_props.addWidget(self.auto_range_check, 6, 1)
 
         grid_range = QGridLayout()
         self.vmin = add_grid_lineedit(grid_range, 0, 'Min', RANGE_VALIDATOR)
         self.vmax = add_grid_lineedit(grid_range, 1, 'Max', RANGE_VALIDATOR)
         for field in (self.vmin, self.vmax):
             field.editingFinished.connect(self.on_range_changed)
-        grid_props.addLayout(grid_range, 6, 0, 1, 3)
+        grid_props.addLayout(grid_range, 7, 0, 1, 3)
 
         self.interpolate_check = QCheckBox('Interpolate')
         self.interpolate_check.toggled.connect(self.on_interpolate_changed)
-        grid_props.addWidget(self.interpolate_check, 7, 0, 1, 3)
+        grid_props.addWidget(self.interpolate_check, 8, 0, 1, 3)
 
         self.gbox_layer_props.setLayout(grid_props)
+
+        # --- Colorbar ------------------------------------------------------
+        # Legend appearance only (see RasterLayer's tick_count/tick_format/
+        # tick_decimals docstring) - a separate group box from Layer
+        # Properties above since it configures how the range is *displayed*,
+        # not the layer's data/rendering itself.
+        self.gbox_colorbar = QGroupBox('Colorbar')
+        grid_colorbar = QGridLayout()
+
+        self.tick_count_spin = QSpinBox()
+        self.tick_count_spin.setRange(2, 11)
+        self.tick_count_spin.valueChanged.connect(self.on_tick_count_changed)
+        grid_colorbar.addWidget(QLabel('Ticks:'), 0, 0)
+        grid_colorbar.addWidget(self.tick_count_spin, 0, 1)
+
+        self.tick_format_combo = QComboBox()
+        self.tick_format_combo.addItem('Auto', 'auto')
+        self.tick_format_combo.addItem('Fixed', 'fixed')
+        self.tick_format_combo.addItem('Scientific', 'scientific')
+        self.tick_format_combo.currentIndexChanged.connect(self.on_tick_format_changed)
+        grid_colorbar.addWidget(QLabel('Format:'), 1, 0)
+        grid_colorbar.addWidget(self.tick_format_combo, 1, 1)
+
+        self.tick_decimals_spin = QSpinBox()
+        self.tick_decimals_spin.setRange(0, 10)
+        self.tick_decimals_spin.valueChanged.connect(self.on_tick_decimals_changed)
+        grid_colorbar.addWidget(QLabel('Decimals:'), 2, 0)
+        grid_colorbar.addWidget(self.tick_decimals_spin, 2, 1)
+
+        self.gbox_colorbar.setLayout(grid_colorbar)
 
         # --- View --------------------------------------------------------
         self.gbox_zoom = QGroupBox('View')
@@ -177,6 +223,7 @@ class ViewForm(QWidget):
         layout.addWidget(self.gbox_files)
         layout.addWidget(self.gbox_layers)
         layout.addWidget(self.gbox_layer_props)
+        layout.addWidget(self.gbox_colorbar)
         layout.addWidget(self.gbox_zoom)
         layout.addStretch(1)
         self.setLayout(layout)
@@ -262,6 +309,8 @@ class ViewForm(QWidget):
 
         is_first_layer = not self._layers
         layer = RasterLayer(layer_id=self._next_layer_id, file_path=file_path, variable=variable)
+        if wrf_file.variables[variable].category_scheme is not None:
+            layer.colormap = colormaps.CATEGORICAL
         self._next_layer_id += 1
         self._layers.append(layer)
         self._rebuild_layer_tree(select_id=layer.layer_id)
@@ -366,6 +415,7 @@ class ViewForm(QWidget):
     def _update_panel_visibility(self) -> None:
         has_selection = self._selected_layer_id is not None
         self.gbox_layer_props.setVisible(has_selection)
+        self.gbox_colorbar.setVisible(has_selection)
         self.gbox_zoom.setVisible(has_selection)
 
         has_layers = bool(self._layers)
@@ -396,10 +446,8 @@ class ViewForm(QWidget):
 
         self._populate_time_combo(wrf_file, layer)
         self._populate_level_combo(wrf_file, layer)
-
-        self.colormap_combo.blockSignals(True)
-        self.colormap_combo.setCurrentIndex(max(0, self.colormap_combo.findData(layer.colormap)))
-        self.colormap_combo.blockSignals(False)
+        self._populate_units_combo(wrf_file, layer)
+        self._populate_colormap_combo(wrf_file, layer)
 
         self.opacity_slider.blockSignals(True)
         self.opacity_slider.setValue(round(layer.opacity * 100))
@@ -419,6 +467,49 @@ class ViewForm(QWidget):
         self.interpolate_check.blockSignals(True)
         self.interpolate_check.setChecked(layer.interpolate)
         self.interpolate_check.blockSignals(False)
+
+        self.tick_count_spin.blockSignals(True)
+        self.tick_count_spin.setValue(layer.tick_count)
+        self.tick_count_spin.blockSignals(False)
+
+        self.tick_format_combo.blockSignals(True)
+        self.tick_format_combo.setCurrentIndex(max(0, self.tick_format_combo.findData(layer.tick_format)))
+        self.tick_format_combo.blockSignals(False)
+
+        self.tick_decimals_spin.blockSignals(True)
+        self.tick_decimals_spin.setValue(layer.tick_decimals)
+        self.tick_decimals_spin.setEnabled(layer.tick_format != 'auto')
+        self.tick_decimals_spin.blockSignals(False)
+
+    def _populate_units_combo(self, wrf_file: WRFFile, layer: RasterLayer) -> None:
+        var = wrf_file.variables[layer.variable]
+        options = units_module.conversions_for(var.units)
+        is_convertible = len(options) > 1
+        self.widget_units.setVisible(is_convertible)
+        if not is_convertible:
+            return
+        self.units_combo.blockSignals(True)
+        self.units_combo.clear()
+        for unit in options:
+            self.units_combo.addItem(unit.label, unit.key)
+        target_key = layer.units if layer.units is not None else 'native'
+        self.units_combo.setCurrentIndex(max(0, self.units_combo.findData(target_key)))
+        self.units_combo.blockSignals(False)
+
+    def _populate_colormap_combo(self, wrf_file: WRFFile, layer: RasterLayer) -> None:
+        """Rebuilt per-selection rather than populated once: the
+        'Categorical' entry is only offered for a variable with a
+        category_scheme (see wrfreader.WRFVariable), so it appears and
+        disappears as the selected layer's variable changes."""
+        var = wrf_file.variables[layer.variable]
+        self.colormap_combo.blockSignals(True)
+        self.colormap_combo.clear()
+        for name in colormaps.names():
+            self.colormap_combo.addItem(name, name)
+        if var.category_scheme is not None:
+            self.colormap_combo.addItem('Categorical', colormaps.CATEGORICAL)
+        self.colormap_combo.setCurrentIndex(max(0, self.colormap_combo.findData(layer.colormap)))
+        self.colormap_combo.blockSignals(False)
 
     def _populate_time_combo(self, wrf_file: WRFFile, layer: RasterLayer) -> None:
         self.time_combo.blockSignals(True)
@@ -450,7 +541,26 @@ class ViewForm(QWidget):
             return
         layer.variable = self.variable_combo.itemData(index)
         layer.level_index = 0
+        # A unit choice belongs to the *old* variable - the new one may not
+        # even share that unit key (units.find would raise) - so reset to
+        # native. (Range/vmin,vmax is intentionally left alone, same as
+        # before this change: a stale manual range on a new variable is
+        # visibly odd rather than a crash, and "Auto" is one click away.)
+        layer.units = None
         wrf_file = self._renderer.open_file(layer.file_path)
+        var = wrf_file.variables[layer.variable]
+        # Auto-detect with manual override: default a categorical variable
+        # to the categorical colormap, and pull a layer back off it when the
+        # new variable isn't categorical - _populate_colormap_combo only
+        # ever offers "Categorical" for a categorical variable, so leaving a
+        # stale CATEGORICAL selection here would silently fall back to
+        # whatever ends up at index 0 there. Only fires on an actual
+        # variable switch - the combo itself still lets the user manually
+        # pick a continuous map for a categorical variable afterwards.
+        if var.category_scheme is not None:
+            layer.colormap = colormaps.CATEGORICAL
+        elif layer.colormap == colormaps.CATEGORICAL:
+            layer.colormap = 'viridis'
         self._populate_level_combo(wrf_file, layer)
         self._rebuild_layer_tree(select_id=layer.layer_id)
         self.refresh_map()
@@ -480,6 +590,38 @@ class ViewForm(QWidget):
             return
         layer.level_index = index
         self.refresh_map()
+
+    @pyqtSlot(int)
+    def on_units_changed(self, index: int) -> None:
+        layer = self._selected_layer()
+        if layer is None or index < 0:
+            return
+        key = self.units_combo.itemData(index)
+        new_units = None if key == 'native' else key
+        if new_units != layer.units:
+            self._rescale_manual_range(layer, new_units)
+        layer.units = new_units
+        self._rebuild_layer_tree(select_id=layer.layer_id)
+        self.refresh_map()
+
+    def _rescale_manual_range(self, layer: RasterLayer, new_units: Optional[str]) -> None:
+        """Converts a manual vmin/vmax (stored in the layer's *previous*
+        display unit) into the new one, so switching units keeps the same
+        view instead of the range suddenly meaning something else (or, for
+        an auto range, going blank until the next redraw recomputes it)."""
+        if layer.vmin is None or layer.vmax is None:
+            return
+        wrf_file = self._renderer.open_file(layer.file_path)
+        var = wrf_file.variables[layer.variable]
+        old_unit = units_module.find(var.units, layer.units) if layer.units is not None \
+            else units_module.Unit(key='native', label=var.units, scale=1.0, offset=0.0)
+        new_unit = units_module.find(var.units, new_units) if new_units is not None \
+            else units_module.Unit(key='native', label=var.units, scale=1.0, offset=0.0)
+        native_vmin = (layer.vmin - old_unit.offset) / old_unit.scale
+        native_vmax = (layer.vmax - old_unit.offset) / old_unit.scale
+        rescaled_vmin = units_module.convert(native_vmin, new_unit)
+        rescaled_vmax = units_module.convert(native_vmax, new_unit)
+        layer.vmin, layer.vmax = sorted((rescaled_vmin, rescaled_vmax))
 
     @pyqtSlot(int)
     def on_colormap_changed(self, index: int) -> None:
@@ -528,6 +670,37 @@ class ViewForm(QWidget):
         layer.interpolate = checked
         self.refresh_map()
 
+    # --- colorbar appearance -------------------------------------------------
+    # Ticks/format/decimals are legend-only (see RasterLayer's docstring for
+    # these fields) - these handlers update the colorbar directly rather
+    # than going through refresh_map(): no re-render of the layer itself is
+    # needed for a purely cosmetic legend change.
+
+    @pyqtSlot(int)
+    def on_tick_count_changed(self, value: int) -> None:
+        layer = self._selected_layer()
+        if layer is None:
+            return
+        layer.tick_count = value
+        self._update_colorbar()
+
+    @pyqtSlot(int)
+    def on_tick_format_changed(self, index: int) -> None:
+        layer = self._selected_layer()
+        if layer is None or index < 0:
+            return
+        layer.tick_format = self.tick_format_combo.itemData(index)
+        self.tick_decimals_spin.setEnabled(layer.tick_format != 'auto')
+        self._update_colorbar()
+
+    @pyqtSlot(int)
+    def on_tick_decimals_changed(self, value: int) -> None:
+        layer = self._selected_layer()
+        if layer is None:
+            return
+        layer.tick_decimals = value
+        self._update_colorbar()
+
     # --- view --------------------------------------------------------------
 
     @pyqtSlot()
@@ -564,11 +737,34 @@ class ViewForm(QWidget):
 
     def _update_colorbar(self) -> None:
         """Shows a colorbar for the selected layer (if visible and
-        renderable), matching its own colormap/range - hidden otherwise."""
+        renderable) - a discrete swatch/label legend for the categorical
+        colormap, otherwise a gradient matching its own colormap/range/unit/
+        tick settings - hidden otherwise."""
         layer = self._selected_layer()
         if layer is None or not layer.visible:
             self.map_widget.set_legend(None)
             return
+
+        wrf_file = self._renderer.open_file(layer.file_path)
+        var = wrf_file.variables.get(layer.variable)
+        title = layer.variable
+        unit_label = self._display_unit_label(var, layer) if var else ''
+        if unit_label:
+            title += f' ({unit_label})'
+
+        if layer.colormap == colormaps.CATEGORICAL:
+            try:
+                legend = self._renderer.categorical_legend(layer)
+            except UserError:
+                legend = None
+            if legend is None:
+                self.map_widget.set_legend(None)
+                return
+            lut, labels, present = legend
+            pixmap = colorbar.build_categorical_legend_pixmap(lut, labels, present, title)
+            self.map_widget.set_legend(pixmap)
+            return
+
         try:
             value_range = self._renderer.effective_range(layer)
         except UserError:
@@ -577,12 +773,14 @@ class ViewForm(QWidget):
             self.map_widget.set_legend(None)
             return
 
-        wrf_file = self._renderer.open_file(layer.file_path)
-        var = wrf_file.variables.get(layer.variable)
-        title = layer.variable
-        if var and var.units:
-            title += f' ({var.units})'
-
         vmin, vmax = value_range
-        pixmap = colorbar.build_legend_pixmap(layer.colormap, vmin, vmax, title)
+        pixmap = colorbar.build_legend_pixmap(
+            layer.colormap, vmin, vmax, title,
+            tick_count=layer.tick_count, tick_format=layer.tick_format, tick_decimals=layer.tick_decimals)
         self.map_widget.set_legend(pixmap)
+
+    @staticmethod
+    def _display_unit_label(var: WRFVariable, layer: RasterLayer) -> str:
+        if layer.units is None:
+            return var.units
+        return units_module.find(var.units, layer.units).label

@@ -34,7 +34,15 @@ _ANCHORS: Dict[str, List[Tuple[int, int, int]]] = {
     'coolwarm': [(59, 76, 192), (146, 161, 214), (221, 221, 221), (212, 137, 116), (180, 4, 38)],
     'terrain': [(51, 102, 204), (51, 204, 102), (204, 204, 102), (153, 102, 51), (204, 204, 204), (255, 255, 255)],
     'greys': [(0, 0, 0), (255, 255, 255)],
+    'jet': [(0, 0, 131), (0, 60, 170), (5, 255, 255), (255, 255, 0), (250, 0, 0), (128, 0, 0)],
 }
+
+# Sentinel value for RasterLayer.colormap: instead of a continuous LUT built
+# from _ANCHORS, render via categorical_lut()/apply_categorical() below
+# (direct per-value indexing, not a normalized gradient). Kept out of
+# _ANCHORS/names() since it isn't a continuous map - viewform.py adds it to
+# the colormap combo as its own entry.
+CATEGORICAL = 'categorical'
 
 # Fallback colors for a categorical value this app has no name/color for
 # (e.g. an index outside the known scheme's range). Cycled deterministically

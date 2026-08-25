@@ -3,7 +3,7 @@ LUTs, no widgets involved."""
 import numpy as np
 import pytest
 
-from domainwizard import colormaps
+from wrftools import colormaps
 
 
 def test_all_named_colormaps_build_a_valid_lut():
@@ -64,6 +64,16 @@ def test_categorical_lut_falls_back_deterministically_for_unknown_scheme():
     assert all(labels[v] == f'Category {v}' for v in range(1, 6))
     lut2, _ = colormaps.categorical_lut('SOME_UNKNOWN_SCHEME', 1, 5)
     np.testing.assert_array_equal(lut, lut2)  # reproducible, not random per call
+
+
+def test_jet_is_a_named_continuous_colormap():
+    assert 'jet' in colormaps.names()
+    lut = colormaps.get('jet')
+    assert lut.shape == (256, 3)
+    assert lut.dtype == np.uint8
+    # Classic jet: starts dark blue, ends dark red.
+    assert lut[0].tolist()[2] > lut[0].tolist()[0]  # blue > red at the low end
+    assert lut[-1].tolist()[0] > lut[-1].tolist()[2]  # red > blue at the high end
 
 
 def test_apply_categorical_maps_by_direct_index():

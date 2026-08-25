@@ -191,7 +191,7 @@ class TileMapWidget(QWidget):
 
         if cache_dir is None:
             base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-            cache_dir = os.path.join(base or '.', 'domainwizard', 'tiles')
+            cache_dir = os.path.join(base or '.', 'wrftools', 'tiles')
         self._cache_dir = cache_dir
         os.makedirs(self._cache_dir, exist_ok=True)
 
@@ -352,7 +352,7 @@ class TileMapWidget(QWidget):
         request = QNetworkRequest(QUrl(url))
         # Tile providers such as OpenStreetMap require a descriptive User-Agent
         # and will otherwise block or rate-limit requests.
-        request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, 'domainwizard/0.1 (GIS4WRF domain wizard prototype)')
+        request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, 'wrftools/0.1 (GIS4WRF domain wizard prototype)')
         reply = self._network.get(request)
         self._pending[key] = reply
         reply.finished.connect(lambda: self._on_tile_downloaded(key, reply, disk_path))
@@ -420,3 +420,19 @@ class TileMapWidget(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.update()
+
+    # --- export -------------------------------------------------------------
+
+    def export_image(self, path: str) -> bool:
+        """Saves the current view - basemap tiles, every overlay group, the
+        legend, and the attribution strip, i.e. exactly what's on screen
+        right now via the same paintEvent() this class always uses - as an
+        image file at `path` (format inferred from its extension). Returns
+        False on failure rather than raising, so this module (deliberately
+        PyQt6-only - see the module docstring) doesn't need a gis4wrf.core
+        import just for a UserError.
+
+        Known limitation: a tile still being fetched exports as the same
+        grey placeholder rect it shows on screen (see paintEvent) - this
+        does not wait for in-flight tile downloads to finish."""
+        return self.grab().save(path)

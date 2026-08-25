@@ -1,4 +1,4 @@
-# Domain Wizard
+# WRF Tools
 
 A standalone (no QGIS required) WRF/WPS tool with two tabs on one shared
 map: **Domains**, for defining nested model domains and importing/exporting
@@ -6,22 +6,29 @@ map: **Domains**, for defining nested model domains and importing/exporting
 [GIS4WRF](https://github.com/GIS4WRF/gis4wrf) QGIS plugin's domain wizard);
 and **View**, for opening WRF/WPS NetCDF files (`geo_em*`, `met_em*`,
 `wrfinput*`, `wrfout*`) and drawing a configurable stack of colored raster
-layers - one per (variable, time step, vertical level, colormap, opacity,
-interpolate-on-display) selection - over the same basemap, so
+layers - one per (variable, time step, vertical level, colormap, unit,
+opacity, interpolate-on-display) selection - over the same basemap, so
 terrain/land-use/meteorology can be checked against where the domains were
-actually configured. A colorbar for the selected layer is drawn directly on
-the map (`domainwizard/colorbar.py`).
+actually configured. A colorbar for the selected layer (with configurable
+tick count/number format) is drawn directly on the map
+(`wrftools/colorbar.py`); a known-categorical variable (`LU_INDEX`,
+`IVGTYP`, soil-type fields, ...) auto-selects a discrete swatch-per-class
+legend instead of a gradient, using the file's own WRF `LANDUSE.TBL` colors
+where available. The whole map view - basemap, layers, outlines, legend -
+can be exported as a PNG/JPEG via `File > Export Map Image...`.
 
 Deliberately lightweight: no QGIS, no Chromium/QWebEngine, no third-party
 map/web library, and no `netCDF4` dependency for reading WRF files - GDAL's
-own netCDF driver is sufficient (`domainwizard/wrfreader.py`). The map is a
-small hand-rolled XYZ tile widget (`domainwizard/tilemap.py`) built on PyQt6
+own netCDF driver is sufficient (`wrftools/wrfreader.py`). The map is a
+small hand-rolled XYZ tile widget (`wrftools/tilemap.py`) built on PyQt6
 alone, with support for both vector overlays (domain outlines) and raster
 overlays (View-tab layers) drawn in independent, z-ordered groups so the two
 tabs can update their own overlays without disturbing each other's. Domain
 geometry, CRS handling, and namelist I/O reuse GDAL/OGR/OSR directly
-(`gis4wrf.core`, vendored - see below); colormaps
-(`domainwizard/colormaps.py`) are small numpy-only LUTs, no matplotlib.
+(`gis4wrf.core`, vendored - see below); colormaps (`wrftools/colormaps.py`,
+including a categorical mode and a `jet` map) are small numpy-only LUTs, no
+matplotlib; unit conversion (`wrftools/units.py`, e.g. K -> degC, m/s ->
+knots) is a small explicit table, not a general unit-parsing library.
 
 ## Setup
 
@@ -60,7 +67,7 @@ one it finds first. `setup.sh` prints a note if it detects this.
 ## Run
 
 ```
-uv run domainwizard
+uv run wrftools
 ```
 
 ## Packaging
@@ -69,15 +76,42 @@ uv run domainwizard
 ./build.sh
 ```
 
-Produces a standalone single-file executable at `dist/domainwizard`, on
-both Linux and macOS. See the comments in `build.sh` for why it needs a
+Produces a standalone single-file executable at `dist/wrftools` on
+Linux, or an app bundle at `dist/wrftools.app` on macOS (launch with
+`open dist/wrftools.app`, or run the executable inside it directly -
+both work correctly). See the comments in `build.sh` for why it needs a
 few things PyInstaller's automatic analysis misses (numpy's BLAS backend
 on some Linux distros, GDAL/PROJ data files, a numpy submodule GDAL's C
 extension imports in a way static analysis can't see) and adjust the
-paths there if your system layout differs. On macOS the built binary is
+paths there if your system layout differs. On macOS the built app is
 ad-hoc signed by PyInstaller; Gatekeeper may still require right-click ->
-Open the first time, or `xattr -d com.apple.quarantine dist/domainwizard`
+Open the first time, or `xattr -dr com.apple.quarantine dist/wrftools.app`
 if it was downloaded/copied from another machine.
+
+**On macOS, this needs `--onedir --windowed`, not `--onefile`** (which
+`build.sh` selects automatically there - see the mode-selection comment
+in `build.sh` for the reasoning in full). Getting either half wrong
+produces a binary that *looks* fine (builds cleanly, launches with no
+error) but never actually shows a window:
+
+- Without `--windowed`, the build has no Info.plist/app-bundle identity,
+  so macOS never grants it real foreground-application status - Qt's cocoa
+  platform plugin loads fine and the event loop runs, but no window ever
+  becomes visible and nothing is printed, since nothing crashed.
+- `--onefile` on macOS is worse than just unnecessary once `--windowed` is
+  in the mix: a onefile build re-extracts its entire payload (every
+  bundled GDAL/Qt/numpy `.so`/`.dylib` - several hundred files) to a fresh
+  temp directory on *every launch*, and macOS's ad-hoc-signature
+  validation can't cache "already validated" across launches for files at
+  a new path each time (unlike a real, once-installed `.app`, which it
+  does cache). Confirmed by hand: sampling the running-but-windowless
+  process showed it stuck almost entirely in dyld's signature-validation
+  path minutes after launch, until macOS killed it outright for taking too
+  long to present a window (a managed termination, not a crash - so still
+  no error anywhere). `--onedir` extracts once, at build time, into a
+  stable bundle layout, which avoids this entirely - PyInstaller itself
+  flags onefile+windowed on macOS as deprecated specifically because of
+  this clash with macOS's security model.
 
 **On Linux, running `build.sh` directly only produces a binary that works
 on machines with glibc >= the build machine's** (this doesn't apply to
@@ -118,48 +152,70 @@ machine, not just redundant.
 
 ## Project layout
 
-- `src/domainwizard/tilemap.py` - the map widget: tile math, HTTP fetch +
-  disk cache via `QtNetwork`, mouse pan/zoom, lon/lat overlay drawing.
-- `src/domainwizard/domainform.py` - the domain wizard form, ported from
+- `src/wrftools/tilemap.py` - the map widget: tile math, HTTP fetch +
+  disk cache via `QtNetwork`, mouse pan/zoom, lon/lat overlay drawing, and
+  `export_image()` (a plain `grab().save(path)` of the current view, wired to
+  `app.py`'s `File > Export Map Image...`) - whatever's currently on the
+  widget (basemap, every overlay group, the legend), not a re-render at a
+  different resolution.
+- `src/wrftools/domainform.py` - the domain wizard form, ported from
   GIS4WRF's `widget_domains.py`. No QGIS `iface` dependency: reads the map's
   current view extent directly, and "Set from File" reads a raster/vector
   file's extent via GDAL/OGR instead of relying on a QGIS layer list.
-- `src/domainwizard/domainoverlay.py` - turns a `gis4wrf.core.Project`'s
+- `src/wrftools/domainoverlay.py` - turns a `gis4wrf.core.Project`'s
   domains into lon/lat polygons for the map widget (reprojects and densifies
   via GDAL/OSR so curved projections like Lambert Conformal render
   accurately, not as straight-edged boxes).
-- `src/domainwizard/fileextent.py` - GDAL/OGR-based file extent reader.
-- `src/domainwizard/formhelpers.py` - validated line-edit widgets, ported
+- `src/wrftools/fileextent.py` - GDAL/OGR-based file extent reader.
+- `src/wrftools/formhelpers.py` - validated line-edit widgets, ported
   from GIS4WRF's `plugin/ui/helpers.py`.
-- `src/domainwizard/wrfreader.py` - opens WRF/WPS NetCDF files via GDAL
+- `src/wrftools/wrfreader.py` - opens WRF/WPS NetCDF files via GDAL
   (no `netCDF4`) and exposes their variables/time steps/vertical levels,
   CRS, and geotransform. Not a port of GIS4WRF's (unvendored)
   `wrf_netcdf_to_gdal.py` - reimplemented against GDAL's own netCDF driver;
   see the module docstring for the several real orientation/coordinate
-  pitfalls this involved.
-- `src/domainwizard/colormaps.py` - small numpy-only named color LUTs
-  (viridis, plasma, magma, cividis, coolwarm, terrain, greys) plus a
-  categorical LUT for landuse-style variables, reusing
-  `gis4wrf.core.readers.categories`. GIS4WRF has no per-layer colormap
-  choice at all (continuous variables render as plain greyscale), so this
-  is new, not ported.
-- `src/domainwizard/rasterlayer.py` - the View tab's layer model
+  pitfalls this involved. Also flags known categorical variables
+  (`WRFVariable.category_scheme`: `LU_INDEX`/`IVGTYP` resolved against the
+  file's own `MMINLU` landuse scheme, soil-type fields and any
+  `units == 'category'` variable flagged with an unnamed scheme) for
+  `rasterlayer.py`'s categorical rendering path.
+- `src/wrftools/colormaps.py` - small numpy-only named color LUTs
+  (viridis, plasma, magma, cividis, coolwarm, terrain, greys, jet) plus a
+  categorical LUT (`colormaps.CATEGORICAL`) for landuse-style variables,
+  reusing `gis4wrf.core.readers.categories`. GIS4WRF has no per-layer
+  colormap choice at all (continuous variables render as plain greyscale),
+  so this is new, not ported.
+- `src/wrftools/units.py` - a small explicit unit-conversion table
+  (K -> degC/degF, m/s -> km/h/knots/mph, Pa -> hPa/inHg, m -> ft/km, and a
+  couple of precipitation units) for the View tab's per-layer unit picker.
+  Not a general unit-parsing library - WRF/WPS output uses a small, fixed
+  set of unit strings.
+- `src/wrftools/rasterlayer.py` - the View tab's layer model
   (`RasterLayer`) and its three-tier render/cache pipeline
   (`LayerRenderer`): open file handles, a byte-bounded cache of warped
   (EPSG:3857) arrays, and a count-bounded cache of colormapped images.
-  `RasterLayer.interpolate` controls smooth vs. nearest-neighbor display
-  (`RasterOverlay.smooth`, `QPainter.RenderHint.SmoothPixmapTransform`) -
-  paint-time only, like opacity/visibility, so it never invalidates a cache
-  entry.
-- `src/domainwizard/colorbar.py` - builds the View tab's on-map colorbar
-  legend (a QPixmap: gradient + variable/units label + min/mid/max ticks)
-  for the selected layer's colormap and effective range
-  (`LayerRenderer.effective_range`); drawn fixed in the map's top-right
-  corner via `TileMapWidget.set_legend()`, independent of the
+  `RasterLayer.interpolate`, and its colorbar tick count/format/decimals,
+  control display only (`RasterOverlay.smooth`,
+  `QPainter.RenderHint.SmoothPixmapTransform`, and the legend respectively)
+  - paint-time only, like opacity/visibility, so none of them invalidate a
+  cache entry. `RasterLayer.units`, unlike those, *is* part of the image
+  cache key, since it changes the rendered pixels.
+- `src/wrftools/colorbar.py` - builds the View tab's on-map colorbar
+  legend as a QPixmap: `build_legend_pixmap()` draws a gradient with a
+  configurable number of evenly spaced ticks (`RasterLayer.tick_count`) in
+  a configurable format (`RasterLayer.tick_format`/`tick_decimals`: auto/
+  fixed/scientific) for the selected layer's colormap and effective range
+  (`LayerRenderer.effective_range`); `build_categorical_legend_pixmap()`
+  draws a color-swatch-per-class list instead, for a categorical layer
+  (`LayerRenderer.categorical_legend`). Both are drawn fixed in the map's
+  top-right corner via `TileMapWidget.set_legend()`, independent of the
   geo-referenced overlay groups.
-- `src/domainwizard/viewform.py` - the View tab: open files, add/remove/
+- `src/wrftools/viewform.py` - the View tab: open files, add/remove/
   reorder layers, and configure each layer's variable/time/level/colormap/
-  opacity/range/interpolate.
+  units/opacity/range/interpolate/colorbar-ticks. A categorical variable
+  auto-selects the categorical colormap (still manually overridable via the
+  same dropdown); the unit picker is hidden entirely for a variable with no
+  known conversions.
 - `src/gis4wrf/core/` - **vendored**, see below.
 
 ## Vendored `gis4wrf.core`

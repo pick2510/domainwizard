@@ -52,6 +52,19 @@ _COORD_VAR_NAMES = {
 # each band's own NoData value).
 _WRF_FILL_VALUE = 9.9692099683868690e+36
 
+# WRF variables whose values are class indices, not physical quantities -
+# LU_INDEX/IVGTYP index the file's own MMINLU landuse scheme (the same one
+# _build_extra_dim looks up for land_cat's level labels below); the soil-type
+# fields use a separate scheme WRF's LANDUSE.TBL (and so categories.py)
+# doesn't carry, so they get generated colors/labels instead of named ones
+# (see colormaps.categorical_lut's fallback path). Deliberately excludes
+# LANDUSEF/SOILCTOP/GREENFRAC - those are *fractions per category level*,
+# genuinely continuous, not category indices themselves.
+_CATEGORICAL_VARS = {
+    'LU_INDEX': 'landuse', 'IVGTYP': 'landuse',
+    'ISLTYP': 'soil', 'SCT_DOM': 'soil', 'SCB_DOM': 'soil',
+}
+
 # Extra (non-spatial) dimensions this app knows how to label, mirroring
 # gis4wrf.core's (unvendored) get_wrf_nc_extra_dims whitelist.
 _EXTRA_DIM_LABELS = {
@@ -72,6 +85,13 @@ class WRFVariable:
     extra_dim: Optional[str]  # dimension name, e.g. 'bottom_top'; None for 2D
     n_times: int
     n_levels: int  # 1 for 2D variables
+    # None => a continuous physical quantity. Otherwise this variable's
+    # values are category indices: the file's MMINLU landuse scheme name for
+    # a known landuse-indexing variable, or '' when it's categorical but this
+    # app has no named scheme for it (soil-type fields, or a units=='category'
+    # variable outside _CATEGORICAL_VARS) - '' still renders correctly via
+    # colormaps.categorical_lut's generated-color fallback.
+    category_scheme: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -280,13 +300,23 @@ class WRFFile:
                 n_times = var_ds.RasterCount
 
             description = var_md.get(f'{var_name}#description', '') or ''
-            units = var_md.get(f'{var_name}#units', '') or ''
+            units = (var_md.get(f'{var_name}#units', '') or '').strip()
             if units.strip('-').strip().lower() in ('', 'dimensionless', 'no units'):
                 units = ''
 
+            category_scheme: Optional[str]
+            if var_name in _CATEGORICAL_VARS:
+                scheme_kind = _CATEGORICAL_VARS[var_name]
+                category_scheme = mminlu if scheme_kind == 'landuse' and mminlu else ''
+            elif units.lower() == 'category':
+                category_scheme = ''
+            else:
+                category_scheme = None
+
             self.variables[var_name] = WRFVariable(
-                name=var_name, description=description.strip(), units=units.strip(),
-                extra_dim=extra_dim_name, n_times=n_times, n_levels=n_levels)
+                name=var_name, description=description.strip(), units=units,
+                extra_dim=extra_dim_name, n_times=n_times, n_levels=n_levels,
+                category_scheme=category_scheme)
 
         if not self.variables:
             raise UserError(f'{self.name} has no variables this app knows how to display.')

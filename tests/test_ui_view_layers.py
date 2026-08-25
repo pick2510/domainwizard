@@ -25,8 +25,8 @@ import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
-from domainwizard.tilemap import TileMapWidget, Z_RASTER
-from domainwizard.viewform import ViewForm, LAYER_ID_ROLE
+from wrftools.tilemap import TileMapWidget, Z_RASTER
+from wrftools.viewform import ViewForm, LAYER_ID_ROLE
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 GEO_EM = os.path.join(FIXTURES_DIR, 'geo_em_small.nc')
@@ -188,6 +188,106 @@ def test_interpolate_checkbox_toggles_the_layer_and_overlay_smoothing(form):
     assert overlay.smooth is True
 
 
+# --- categorical colormap auto-detect -----------------------------------
+
+def test_categorical_colormap_auto_selected_for_lu_index(form):
+    from wrftools import colormaps
+
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()  # default variable is HGT_M (continuous)
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    assert form._layers[0].colormap != colormaps.CATEGORICAL
+
+    lu_index = form.variable_combo.findData('LU_INDEX')
+    form.variable_combo.setCurrentIndex(lu_index)
+    assert form._layers[0].colormap == colormaps.CATEGORICAL
+    assert form.colormap_combo.findData(colormaps.CATEGORICAL) >= 0
+    assert form.map_widget._legend is not None  # a discrete swatch legend built successfully
+
+
+def test_switching_away_from_categorical_variable_reverts_the_colormap(form):
+    from wrftools import colormaps
+
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    lu_index = form.variable_combo.findData('LU_INDEX')
+    form.variable_combo.setCurrentIndex(lu_index)
+    assert form._layers[0].colormap == colormaps.CATEGORICAL
+
+    hgt_index = form.variable_combo.findData('HGT_M')
+    form.variable_combo.setCurrentIndex(hgt_index)
+    assert form._layers[0].colormap != colormaps.CATEGORICAL
+    assert form.colormap_combo.findData(colormaps.CATEGORICAL) == -1  # no longer offered
+
+
+def test_categorical_colormap_can_still_be_manually_overridden(form):
+    from wrftools import colormaps
+
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    lu_index = form.variable_combo.findData('LU_INDEX')
+    form.variable_combo.setCurrentIndex(lu_index)
+    assert form._layers[0].colormap == colormaps.CATEGORICAL
+
+    plasma_index = form.colormap_combo.findData('plasma')
+    form.colormap_combo.setCurrentIndex(plasma_index)
+    assert form._layers[0].colormap == 'plasma'
+
+
+# --- unit conversion -----------------------------------------------------
+
+def test_units_combo_hidden_for_a_variable_with_no_known_conversions(form):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()  # HGT_M: units is blank in this fixture
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    assert not form.widget_units.isVisible()
+
+
+def test_units_combo_shown_and_changes_the_layer_and_colorbar_title(form, map_widget):
+    _open(form, WRFOUT)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    t2_index = form.variable_combo.findData('T2')
+    form.variable_combo.setCurrentIndex(t2_index)
+    assert form.widget_units.isVisible()  # T2 is Kelvin, convertible
+
+    kelvin_legend = map_widget._legend
+    degc_index = form.units_combo.findData('degC')
+    assert degc_index >= 0
+    form.units_combo.setCurrentIndex(degc_index)
+    assert form._layers[0].units == 'degC'
+    assert map_widget._legend.toImage() != kelvin_legend.toImage()
+
+
+# --- colorbar tick/format controls ----------------------------------------
+
+def test_tick_count_spinbox_updates_the_layer_and_the_legend(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    assert form.tick_count_spin.value() == 3  # default
+    before = map_widget._legend
+    form.tick_count_spin.setValue(7)
+    assert form._layers[0].tick_count == 7
+    assert map_widget._legend.toImage() != before.toImage()
+
+
+def test_tick_format_combo_enables_decimals_spinbox_only_when_not_auto(form):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    assert not form.tick_decimals_spin.isEnabled()  # 'auto' by default
+    fixed_index = form.tick_format_combo.findData('fixed')
+    form.tick_format_combo.setCurrentIndex(fixed_index)
+    assert form._layers[0].tick_format == 'fixed'
+    assert form.tick_decimals_spin.isEnabled()
+
+
 # --- colorbar legend ----------------------------------------------------
 
 def test_colorbar_shown_for_selected_visible_layer(form, map_widget):
@@ -253,7 +353,7 @@ def test_manual_range_overrides_auto(form):
 def test_invalid_range_raises_usererror():
     from gis4wrf.core import UserError
     app = QApplication.instance() or QApplication([])
-    from domainwizard.tilemap import TileMapWidget
+    from wrftools.tilemap import TileMapWidget
     map_widget = TileMapWidget('https://example.invalid/{z}/{x}/{y}.png')
     form = ViewForm(map_widget)
     form.show()

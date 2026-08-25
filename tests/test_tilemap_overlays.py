@@ -16,8 +16,8 @@ from PyQt6.QtGui import QColor, QImage, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 import gis4wrf.core as core
-from domainwizard.domainform import DomainForm
-from domainwizard.tilemap import (
+from wrftools.domainform import DomainForm
+from wrftools.tilemap import (
     TileMapWidget, Overlay, RasterOverlay, Z_RASTER, Z_VECTOR,
     lonlat_to_tile_xy, mercator_to_world_px, TILE_SIZE,
 )

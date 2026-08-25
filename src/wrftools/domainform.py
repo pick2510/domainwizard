@@ -39,10 +39,10 @@ from gis4wrf.core import (
     UserError,
 )
 
-from domainwizard.tilemap import TileMapWidget, Z_VECTOR
-from domainwizard.domainoverlay import compute_domain_overlays, domain_lonlat_bounds
-from domainwizard.fileextent import read_extent_and_srs
-from domainwizard.formhelpers import (
+from wrftools.tilemap import TileMapWidget, Z_VECTOR
+from wrftools.domainoverlay import compute_domain_overlays, domain_lonlat_bounds
+from wrftools.fileextent import read_extent_and_srs
+from wrftools.formhelpers import (
     MyLineEdit, add_grid_lineedit, update_input_validation_style,
     RATIO_VALIDATOR, DIM_VALIDATOR,
 )

@@ -16,8 +16,8 @@ import pytest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
 import gis4wrf.core as core
-from domainwizard.domainform import DomainForm, DOMAIN_NUMBER_ROLE
-from domainwizard.tilemap import TileMapWidget
+from wrftools.domainform import DomainForm, DOMAIN_NUMBER_ROLE
+from wrftools.tilemap import TileMapWidget
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 SIBLINGS_WPS = os.path.join(FIXTURES_DIR, 'namelist_siblings.wps')

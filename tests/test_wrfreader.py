@@ -22,7 +22,7 @@ import pytest
 from osgeo import gdal
 
 from gis4wrf.core.errors import UnsupportedError, UserError
-from domainwizard.wrfreader import WRFFile, _build_crs
+from wrftools.wrfreader import WRFFile, _build_crs
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 GEO_EM = os.path.join(FIXTURES_DIR, 'geo_em_small.nc')

@@ -1,6 +1,6 @@
 """The View tab's layer model and rendering/caching pipeline: turns a
 (file, variable, time, level, colormap, range) selection into a
-domainwizard.tilemap.RasterOverlay ready to hand to TileMapWidget.
+wrftools.tilemap.RasterOverlay ready to hand to TileMapWidget.
 
 Split into three cache tiers because the two expensive-vs-cheap operations
 here differ by orders of magnitude in cost:
@@ -29,14 +29,18 @@ import numpy as np
 from osgeo import gdal
 from PyQt6.QtGui import QImage
 
-from domainwizard import colormaps
-from domainwizard.tilemap import RasterOverlay
-from domainwizard.wrfreader import WRFFile
+from wrftools import colormaps, units as units_module
+from wrftools.tilemap import RasterOverlay
+from wrftools.wrfreader import WRFFile
 
 gdal.UseExceptions()
 
 SliceKey = Tuple[str, str, int, int]  # (file_path, variable, time_index, level_index)
-ImageKey = Tuple[str, str, int, int, str, Optional[float], Optional[float]]
+# units is part of this key (unlike tick_count/tick_format/tick_decimals
+# below) because it changes the rendered pixels - manual vmin/vmax are
+# interpreted in the layer's displayed unit, and colormaps.apply() colors
+# from the converted array.
+ImageKey = Tuple[str, str, int, int, str, Optional[float], Optional[float], Optional[str]]
 
 # Bytes budget for the warped-array cache (tier 2, the expensive one).
 DEFAULT_SLICE_CACHE_BYTES = 256 * 1024 * 1024
@@ -55,14 +59,21 @@ class RasterLayer:
     opacity: float = 0.8
     visible: bool = True
     interpolate: bool = True  # paint-time only, like opacity/visible - see below
-    vmin: Optional[float] = None  # None => auto from the slice's own data
+    vmin: Optional[float] = None  # None => auto from the slice's own data; in *displayed* units
     vmax: Optional[float] = None
+    units: Optional[str] = None  # target unit key (units.Unit.key); None => file-native unit
+    # Colorbar legend appearance only - deliberately excluded from image_key()
+    # (like opacity/visible/interpolate below): they never change the
+    # rendered raster, so a tick tweak must not invalidate the image cache.
+    tick_count: int = 3
+    tick_format: str = 'auto'  # 'auto' (.3g) | 'fixed' | 'scientific'
+    tick_decimals: int = 2
 
     def slice_key(self) -> SliceKey:
         return (self.file_path, self.variable, self.time_index, self.level_index)
 
     def image_key(self) -> ImageKey:
-        return self.slice_key() + (self.colormap, self.vmin, self.vmax)
+        return self.slice_key() + (self.colormap, self.vmin, self.vmax, self.units)
 
     def label(self) -> str:
         file_name = self.file_path.rsplit('/', 1)[-1]
@@ -84,6 +95,12 @@ class _SliceData:
 class _ImageData:
     image_rgba: np.ndarray  # kept alive: QImage(buffer) doesn't copy
     bounds_3857: Tuple[float, float, float, float]
+    # Set only for a categorical layer (colormap == colormaps.CATEGORICAL) -
+    # the swatch/label legend colorbar.build_categorical_legend_pixmap needs,
+    # computed here so ViewForm's legend doesn't have to redo this work.
+    categorical_lut: Optional[np.ndarray] = None
+    categorical_labels: Optional[Dict[int, str]] = None
+    present_categories: Optional[List[int]] = None
 
 
 @dataclass
@@ -168,19 +185,35 @@ class LayerRenderer:
             smooth=layer.interpolate, _buffer=rgba)
 
     def effective_range(self, layer: RasterLayer) -> Optional[Tuple[float, float]]:
-        """Returns the (vmin, vmax) actually used to colormap this layer -
-        the manual override if set, else the slice's own auto range (the
-        same computation _get_image does internally). Used by the View
-        tab's on-map colorbar, which needs the range without needing a
-        full colormapped image. Returns None if the file isn't open yet."""
+        """Returns the (vmin, vmax) actually used to colormap this layer, in
+        the layer's displayed unit - the manual override if set (already in
+        displayed units - see RasterLayer.vmin/vmax), else the slice's own
+        auto range converted from native units (the same computation
+        _get_image does internally). Used by the View tab's on-map colorbar,
+        which needs the range without needing a full colormapped image.
+        Returns None if the file isn't open yet."""
         if layer.file_path not in self._files:
             return None
         slice_data = self._get_slice(layer)
         if slice_data is None:
             return None
-        vmin = layer.vmin if layer.vmin is not None else slice_data.auto_vmin
-        vmax = layer.vmax if layer.vmax is not None else slice_data.auto_vmax
+        unit = self._unit_for(layer)
+        auto_vmin, auto_vmax = self._auto_range_in_unit(slice_data, unit)
+        vmin = layer.vmin if layer.vmin is not None else auto_vmin
+        vmax = layer.vmax if layer.vmax is not None else auto_vmax
         return vmin, vmax
+
+    def categorical_legend(self, layer: RasterLayer) -> Optional[Tuple[np.ndarray, Dict[int, str], List[int]]]:
+        """Returns (lut, labels, present_categories) for a categorical
+        layer's current selection - what colorbar.build_categorical_legend_pixmap
+        needs - or None if the file isn't open, the slice can't be read, or
+        the layer isn't using the categorical colormap."""
+        if layer.file_path not in self._files or layer.colormap != colormaps.CATEGORICAL:
+            return None
+        image_data = self._get_image(layer)
+        if image_data is None or image_data.categorical_lut is None:
+            return None
+        return image_data.categorical_lut, image_data.categorical_labels, image_data.present_categories
 
     def prefetch(self, layer: RasterLayer) -> None:
         """Populates the slice cache only (no colormapping/QImage) - used to
@@ -231,16 +264,61 @@ class LayerRenderer:
         if slice_data is None:
             return None
 
-        vmin = layer.vmin if layer.vmin is not None else slice_data.auto_vmin
-        vmax = layer.vmax if layer.vmax is not None else slice_data.auto_vmax
-        lut = colormaps.get(layer.colormap)
-        rgba = colormaps.apply(slice_data.array, vmin, vmax, lut)
+        # Converted here, not in _get_slice(): the slice cache is keyed by
+        # (file, variable, time, level) and shared across every layer built
+        # from that same data, so converting units there would corrupt it
+        # for a second layer viewing the same slice in a different unit (or
+        # the native one).
+        unit = self._unit_for(layer)
+        array = units_module.convert(slice_data.array, unit) if unit.key != 'native' else slice_data.array
 
-        data = _ImageData(image_rgba=rgba, bounds_3857=slice_data.bounds_3857)
+        if layer.colormap == colormaps.CATEGORICAL:
+            wrf_file = self._files[layer.file_path]
+            var = wrf_file.variables[layer.variable]
+            finite = array[np.isfinite(array)]
+            if finite.size:
+                rounded = finite.round().astype(np.intp)
+                cmin, cmax = int(rounded.min()), int(rounded.max())
+                present = sorted(int(v) for v in np.unique(rounded))
+            else:
+                cmin, cmax, present = 0, 0, []
+            lut, labels = colormaps.categorical_lut(var.category_scheme or '', cmin, cmax)
+            rgba = colormaps.apply_categorical(array, lut)
+            data = _ImageData(
+                image_rgba=rgba, bounds_3857=slice_data.bounds_3857,
+                categorical_lut=lut, categorical_labels=labels, present_categories=present)
+        else:
+            auto_vmin, auto_vmax = self._auto_range_in_unit(slice_data, unit)
+            vmin = layer.vmin if layer.vmin is not None else auto_vmin
+            vmax = layer.vmax if layer.vmax is not None else auto_vmax
+            lut = colormaps.get(layer.colormap)
+            rgba = colormaps.apply(array, vmin, vmax, lut)
+            data = _ImageData(image_rgba=rgba, bounds_3857=slice_data.bounds_3857)
+
         self._image_cache[key] = data
         while len(self._image_cache) > self._image_cache_size:
             self._image_cache.popitem(last=False)
         return data
+
+    def _unit_for(self, layer: RasterLayer) -> units_module.Unit:
+        """The units.Unit this layer displays in - the file-native identity
+        unit if layer.units is None or the variable is unknown/unopened."""
+        wrf_file = self._files.get(layer.file_path)
+        var = wrf_file.variables.get(layer.variable) if wrf_file else None
+        native_units = var.units if var is not None else ''
+        if layer.units is None:
+            return units_module.Unit(key='native', label=native_units, scale=1.0, offset=0.0)
+        return units_module.find(native_units, layer.units)
+
+    @staticmethod
+    def _auto_range_in_unit(slice_data: '_SliceData', unit: units_module.Unit) -> Tuple[float, float]:
+        """Converts a slice's native-unit auto range into `unit`, sorting the
+        result - a conversion with negative scale would otherwise swap min
+        and max (none of units.py's shipped conversions do, but this removes
+        the trap for a future one)."""
+        lo = units_module.convert(slice_data.auto_vmin, unit)
+        hi = units_module.convert(slice_data.auto_vmax, unit)
+        return (lo, hi) if lo <= hi else (hi, lo)
 
 
 def _warp_to_web_mercator(

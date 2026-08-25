@@ -24,12 +24,12 @@ def install() -> None:
 
 def _handle_exception(exc_type, exc_value, exc_tb) -> None:
     if issubclass(exc_type, UserError):
-        QMessageBox.warning(None, 'Domain Wizard', str(exc_value))
+        QMessageBox.warning(None, 'WRF Tools', str(exc_value))
         return
 
     details = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
     print(details, file=sys.stderr)
-    box = QMessageBox(QMessageBox.Icon.Critical, 'Domain Wizard - Unexpected Error',
+    box = QMessageBox(QMessageBox.Icon.Critical, 'WRF Tools - Unexpected Error',
                        f'{exc_type.__name__}: {exc_value}')
     box.setDetailedText(details)
     box.exec()

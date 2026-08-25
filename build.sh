@@ -1,5 +1,8 @@
 #!/bin/bash
-# Builds a single-file executable with PyInstaller.
+# Builds a standalone executable with PyInstaller: --onefile (a single
+# binary) on Linux, --onedir (a directory bundle, wrapped as a macOS .app
+# by --windowed) on macOS - see the mode-selection comment below for why
+# these need to differ per platform, unlike everything else in this script.
 #
 # Two things need bundling that PyInstaller's automatic dependency analysis
 # doesn't catch, because both are loaded dynamically at runtime rather than
@@ -55,12 +58,38 @@ cd "$(dirname "$0")"
 GDAL_DATA_DIR=$(gdal-config --datadir)
 FLEXIBLAS_DIR=/usr/lib64/flexiblas
 
+# macOS needs both --onedir (NOT --onefile - see below) and --windowed:
+#
+# - --windowed makes PyInstaller wrap the build in a proper
+#   dist/wrftools.app bundle (Info.plist, bundle identity, etc). Without
+#   it, macOS never grants the process real foreground application/
+#   window-owning status - the executable still runs (Qt's cocoa platform
+#   plugin loads fine, the event loop spins), it just never gets an actual
+#   window, silently. See the Packaging section of the README for how to
+#   launch the result.
+#
+# - --onefile is actively wrong here, not just unnecessary: a onefile build
+#   re-extracts its entire payload (every bundled GDAL/Qt/numpy .so/.dylib -
+#   several hundred files) to a fresh temp directory on *every single
+#   launch*, and macOS's ad-hoc-signature validation (dyld/AMFI) has no way
+#   to cache "already validated" across launches for files at a new path
+#   each time (unlike a real, once-installed .app, which it does cache).
+#   Confirmed by hand: `sample` on the running (but windowless) process
+#   showed ~99% of samples stuck in dyld's registerSignature()/fcntl() path
+#   minutes after launch, and macOS eventually kills it outright (no crash
+#   report - a managed termination, not a crash) for taking too long to
+#   present a window. --onedir extracts once, at build time, into a stable
+#   bundle layout instead, which is what avoids this entirely - PyInstaller
+#   itself flags onefile+windowed on macOS as deprecated specifically
+#   because of this clash with macOS's security model.
 case "$(uname -s)" in
   Darwin)
     PROJ_DB="$(brew --prefix proj)/share/proj/proj.db"
+    MODE_ARGS=(--onedir --windowed)
     ;;
   *)
     PROJ_DB=/usr/share/proj/proj.db
+    MODE_ARGS=(--onefile)
     ;;
 esac
 
@@ -75,14 +104,21 @@ fi
 # because macOS's default /bin/bash is stuck on 3.2 (last GPLv2 release) -
 # under `set -u`, bash 3.2 treats expanding an *empty* array as an unbound
 # variable and aborts, unlike bash 4+ (the Linux default). This form skips
-# the expansion entirely when the array is empty, working on both.
-uv run pyinstaller --onefile --name domainwizard --paths src \
+# the expansion entirely when the array is empty, working on both. (Not
+# needed for MODE_ARGS - it's never empty.)
+uv run pyinstaller --name wrftools --paths src \
+  "${MODE_ARGS[@]}" \
   "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
   --add-data "${GDAL_DATA_DIR}:share/gdal" \
   --add-data "${PROJ_DB}:share/proj" \
   --add-data "src/gis4wrf/core/readers/nml_schemas:gis4wrf/core/readers/nml_schemas" \
   --hidden-import numpy.core._multiarray_umath \
-  src/domainwizard/app.py
+  src/wrftools/app.py
 
 echo
-echo "Built: dist/domainwizard ($(du -h dist/domainwizard | cut -f1))"
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "Built: dist/wrftools.app ($(du -sh dist/wrftools.app | cut -f1))"
+  echo "Run with: open dist/wrftools.app"
+else
+  echo "Built: dist/wrftools ($(du -h dist/wrftools | cut -f1))"
+fi

@@ -15,7 +15,7 @@ from PyQt6.QtGui import QBrush, QColor, QPen
 
 import gis4wrf.core as core
 
-from domainwizard.tilemap import LonLat, Overlay
+from wrftools.tilemap import LonLat, Overlay
 
 # geo.py's update_domain_outline_layers() used a fixed red-for-main/blue-for-
 # parent scheme, which relied on there being exactly one "main" domain (the

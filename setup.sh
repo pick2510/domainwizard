@@ -51,4 +51,4 @@ GDAL_VERSION=$(gdal-config --version)
 echo "Detected system libgdal $GDAL_VERSION, pinning Python bindings to match..."
 uv add "gdal==${GDAL_VERSION}" --no-build-isolation-package gdal
 
-echo "Done. Run with: uv run domainwizard"
+echo "Done. Run with: uv run wrftools"
