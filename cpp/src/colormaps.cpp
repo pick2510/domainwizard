@@ -39,4 +39,18 @@ std::vector<Rgba> applyColormap(std::span<const float> values, float minimum, fl
     for (std::size_t i = 0; i < values.size(); ++i) if (std::isfinite(values[i])) { const int index = std::clamp(static_cast<int>(std::lround((values[i] - minimum) / (maximum - minimum) * 255)), 0, 255); result[i] = {lut[index][0], lut[index][1], lut[index][2], 255}; }
     return result;
 }
+const ColorLut& categoricalColormap() {
+    static const auto value = [] {
+        ColorLut result{};
+        constexpr std::array<Rgb, 8> fallback{{{166,206,227},{31,120,180},{178,223,138},{51,160,44},{251,154,153},{227,26,28},{253,191,111},{255,127,0}}};
+        for (int index = 0; index < 256; ++index) result[index] = fallback[index % fallback.size()];
+        return result;
+    }();
+    return value;
+}
+std::vector<Rgba> applyCategoricalColormap(std::span<const float> values, const ColorLut& lut) {
+    std::vector<Rgba> result(values.size(), {0, 0, 0, 0});
+    for (std::size_t i = 0; i < values.size(); ++i) if (std::isfinite(values[i])) { const int index = static_cast<int>(std::lround(values[i])); if (index >= 0 && index < 256) result[i] = {lut[index][0], lut[index][1], lut[index][2], 255}; }
+    return result;
+}
 }  // namespace wrftools

@@ -29,6 +29,7 @@ add_executable(wrftools_cpp
     cpp/src/main.cpp
     cpp/src/main_window.cpp
     cpp/src/view_form.cpp
+    cpp/src/domain_form.cpp
     cpp/src/tile_map_widget.cpp
 )
 set_target_properties(wrftools_cpp PROPERTIES OUTPUT_NAME wrftools)

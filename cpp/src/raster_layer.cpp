@@ -17,7 +17,8 @@ RenderedRaster renderLayer(const WrfFile& file, const RasterLayer& layer) {
     if (!std::isfinite(automaticMinimum)) { automaticMinimum = 0; automaticMaximum = 1; }
     const float minimum = layer.minimum.value_or(automaticMinimum), maximum = layer.maximum.value_or(automaticMaximum);
     const auto dimensions = file.size();
-    return {applyColormap(values, minimum, maximum, colormap(layer.colormap)), dimensions[0], dimensions[1], minimum, maximum};
+    const auto pixels = layer.colormap == "categorical" ? applyCategoricalColormap(values, categoricalColormap()) : applyColormap(values, minimum, maximum, colormap(layer.colormap));
+    return {pixels, dimensions[0], dimensions[1], minimum, maximum};
 }
 
 QImage rasterImage(const RenderedRaster& raster) {

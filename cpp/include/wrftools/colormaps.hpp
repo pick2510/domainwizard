@@ -12,4 +12,6 @@ using ColorLut = std::array<Rgb, 256>;
 [[nodiscard]] std::vector<std::string> colormapNames();
 [[nodiscard]] const ColorLut& colormap(const std::string& name);
 [[nodiscard]] std::vector<Rgba> applyColormap(std::span<const float> values, float minimum, float maximum, const ColorLut& lut);
+[[nodiscard]] const ColorLut& categoricalColormap();
+[[nodiscard]] std::vector<Rgba> applyCategoricalColormap(std::span<const float> values, const ColorLut& lut);
 }  // namespace wrftools

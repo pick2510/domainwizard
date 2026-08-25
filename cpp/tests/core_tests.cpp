@@ -174,6 +174,15 @@ TEST_CASE("colormaps preserve end points and transparent no-data") {
     CHECK(image.back()[3] == 0);
 }
 
+TEST_CASE("categorical colormap indexes classes directly") {
+    const std::vector<float> values{1.0f, 2.0f, -1.0f, std::numeric_limits<float>::quiet_NaN()};
+    const auto pixels = applyCategoricalColormap(values, categoricalColormap());
+    CHECK(pixels[0][3] == 255);
+    CHECK(pixels[1] != pixels[0]);
+    CHECK(pixels[2][3] == 0);
+    CHECK(pixels[3][3] == 0);
+}
+
 TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
     WrfFile file("tests/fixtures/wrfout_multitime.nc");
     const auto automatic = renderLayer(file, {.variable = "T2"});

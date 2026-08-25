@@ -1,6 +1,7 @@
 #include "wrftools/main_window.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
+#include "wrftools/domain_form.hpp"
 
 #include <QFileDialog>
 #include <QLabel>
@@ -14,7 +15,7 @@ MainWindow::MainWindow() {
     resize(1300, 800);
     auto* tabs = new QTabWidget;
     tabs->setMinimumWidth(340);
-    tabs->addTab(new QLabel("Domains are being ported to C++.", tabs), "Domains");
+    tabs->addTab(new DomainForm(tabs), "Domains");
     map_ = new TileMapWidget;
     tabs->addTab(new ViewForm(map_, tabs), "View");
     auto* splitter = new QSplitter;

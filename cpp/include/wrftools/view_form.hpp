@@ -7,6 +7,8 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QSpinBox;
+class QCheckBox;
+class QTimer;
 
 namespace wrftools { class WrfFile; class TileMapWidget; }
 
@@ -25,6 +27,8 @@ private:
     QComboBox* units_{};
     QSpinBox* time_{};
     QSpinBox* level_{};
+    QCheckBox* play_{};
+    QTimer* playbackTimer_{};
     QLabel* preview_{};
     QLabel* status_{};
 };
