@@ -84,6 +84,18 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     propertiesGroup_->setLayout(form);
     layout->addWidget(propertiesGroup_);
 
+    colorbarGroup_ = new QGroupBox("Colorbar", this);
+    auto* colorbarForm = new QFormLayout;
+    tickCount_ = new QSpinBox(this); tickCount_->setRange(2, 11); tickCount_->setValue(3);
+    tickFormat_ = new QComboBox(this);
+    tickFormat_->addItem("Auto", "auto"); tickFormat_->addItem("Fixed", "fixed"); tickFormat_->addItem("Scientific", "scientific");
+    tickDecimals_ = new QSpinBox(this); tickDecimals_->setRange(0, 10); tickDecimals_->setValue(2); tickDecimals_->setEnabled(false);
+    colorbarForm->addRow("Tick count", tickCount_);
+    colorbarForm->addRow("Tick format", tickFormat_);
+    colorbarForm->addRow("Tick decimals", tickDecimals_);
+    colorbarGroup_->setLayout(colorbarForm);
+    layout->addWidget(colorbarGroup_);
+
     zoomGroup_ = new QGroupBox("View", this);
     auto* zoomLayout = new QVBoxLayout;
     auto* zoomButton = new QPushButton("Zoom to Layer", this);
@@ -115,6 +127,9 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(minimum_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsToSelectedLayer(); });
     connect(maximum_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsToSelectedLayer(); });
     connect(interpolate_, &QCheckBox::toggled, this, [this] { applyFieldsToSelectedLayer(); });
+    connect(tickCount_, &QSpinBox::valueChanged, this, [this] { onTickSettingsChanged(); });
+    connect(tickFormat_, &QComboBox::currentIndexChanged, this, [this](int) { tickDecimals_->setEnabled(tickFormat_->currentData().toString() != "auto"); onTickSettingsChanged(); });
+    connect(tickDecimals_, &QSpinBox::valueChanged, this, [this] { onTickSettingsChanged(); });
     connect(zoomButton, &QPushButton::clicked, this, [this] { zoomToSelectedLayer(); });
     playbackTimer_->setInterval(600);
     connect(play_, &QCheckBox::toggled, this, [this](bool enabled) { if (enabled) playbackTimer_->start(); else playbackTimer_->stop(); });
@@ -277,6 +292,7 @@ void ViewForm::onLayerCheckStateChanged(QTreeWidgetItem* item) {
 void ViewForm::updatePanelVisibility() {
     const bool hasSelection = selectedLayerId_.has_value();
     propertiesGroup_->setVisible(hasSelection);
+    colorbarGroup_->setVisible(hasSelection);
     zoomGroup_->setVisible(hasSelection);
     removeLayerButton_->setEnabled(hasSelection);
     const auto index = selectedLayerIndex();
@@ -336,6 +352,13 @@ void ViewForm::populatePropertiesPanel() {
             maximum_->blockSignals(true); maximum_->setValue(layer->settings.maximum.value_or(0)); maximum_->blockSignals(false);
         }
         interpolate_->blockSignals(true); interpolate_->setChecked(layer->settings.interpolate); interpolate_->blockSignals(false);
+
+        tickCount_->blockSignals(true); tickCount_->setValue(layer->settings.tickCount); tickCount_->blockSignals(false);
+        const auto tickFormatOld = tickFormat_->blockSignals(true);
+        tickFormat_->setCurrentIndex(std::max(0, tickFormat_->findData(QString::fromStdString(layer->settings.tickFormat))));
+        tickFormat_->blockSignals(tickFormatOld);
+        tickDecimals_->blockSignals(true); tickDecimals_->setValue(layer->settings.tickDecimals); tickDecimals_->blockSignals(false);
+        tickDecimals_->setEnabled(layer->settings.tickFormat != "auto");
     } catch (const std::exception& error) { status_->setText(error.what()); }
 }
 
@@ -371,6 +394,18 @@ void ViewForm::applyFieldsToSelectedLayer() {
     refreshMap();
 }
 
+void ViewForm::onTickSettingsChanged() {
+    auto* layer = selectedLayer();
+    if (!layer) return;
+    layer->settings.tickCount = tickCount_->value();
+    layer->settings.tickFormat = tickFormat_->currentData().toString().toStdString();
+    layer->settings.tickDecimals = tickDecimals_->value();
+    // Cosmetic legend-only change - tick fields are excluded from
+    // LayerRenderer's cache keys, so this must not re-render/invalidate
+    // anything; just rebuild the colorbar pixmap directly.
+    updateColorbar();
+}
+
 void ViewForm::refreshMap() {
     std::vector<RasterOverlay> overlays;
     for (auto& layer : layers_) {  // bottom-first: draw order
@@ -401,7 +436,8 @@ void ViewForm::updateColorbar() {
         if (layer->settings.colormap == kCategoricalColormap)
             map_->setLegend(buildCategoricalLegend(rendered.categoricalPalette, rendered.categoricalLabels, rendered.presentCategories, title));
         else
-            map_->setLegend(buildColorbar(title, rendered.minimum, rendered.maximum, colormap(layer->settings.colormap)));
+            map_->setLegend(buildColorbar(title, rendered.minimum, rendered.maximum, colormap(layer->settings.colormap),
+                layer->settings.tickCount, layer->settings.tickFormat, layer->settings.tickDecimals));
         const auto timeLabel = time_->currentIndex() >= 0 ? time_->currentText().toStdString() : std::string{};
         map_->setInfoText(QString::fromStdString(title + "  —  " + timeLabel));
     } catch (const std::exception&) { map_->setLegend({}); map_->setInfoText({}); }

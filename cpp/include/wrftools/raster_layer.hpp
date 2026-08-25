@@ -23,6 +23,14 @@ struct RasterLayer {
     double opacity{0.8};
     bool visible{true};
     bool interpolate{true};
+    // Colorbar legend appearance only - never affects the rendered raster,
+    // so these are irrelevant to renderLayer/colorizeWarped and deliberately
+    // excluded from LayerRenderer's cache keys (layer_renderer.hpp): a tick
+    // tweak must not invalidate a cached slice/image. Mirrors
+    // rasterlayer.RasterLayer's tick_count/tick_format/tick_decimals.
+    int tickCount{3};
+    std::string tickFormat{"auto"};  // "auto" | "fixed" | "scientific"
+    int tickDecimals{2};
 };
 struct RenderedRaster {
     std::vector<Rgba> pixels;

@@ -63,6 +63,7 @@ private:
     void populatePropertiesPanel();
     void onVariableChanged();
     void applyFieldsToSelectedLayer();
+    void onTickSettingsChanged();
 
     void refreshMap();
     void updateColorbar();
@@ -84,6 +85,7 @@ private:
     QPushButton* moveUpButton_{};
     QPushButton* moveDownButton_{};
     QWidget* propertiesGroup_{};
+    QWidget* colorbarGroup_{};
     QWidget* zoomGroup_{};
 
     QComboBox* variable_{};
@@ -99,6 +101,10 @@ private:
     QCheckBox* interpolate_{};
     QCheckBox* play_{};
     QTimer* playbackTimer_{};
+
+    QSpinBox* tickCount_{};
+    QComboBox* tickFormat_{};
+    QSpinBox* tickDecimals_{};
 
     QLabel* preview_{};
     QLabel* status_{};

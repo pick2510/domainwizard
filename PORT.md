@@ -39,8 +39,13 @@ the feature-complete behavioral reference.
   root's projection/reference-point fields on the domain itself rather than
   a separate project-level struct. The parser handles an array value wrapped
   across multiple lines; the writer's output shape matches
-  `project_to_wps_namelist`'s exactly (`nocolons`, the synthetic
-  `&metgrid` group).
+  `project_to_wps_namelist`'s exactly (`nocolons`, the synthetic `&metgrid`
+  group) - including that neither reference preserves an imported
+  namelist's other fields (`start_date`/`geog_data_*`/`&ungrib`/
+  `&mod_levs`, ...): `convert_project_to_wps_namelist` reconstructs from
+  `Project` fields too, verified by diffing a real round-trip, so that data
+  loss was never a C++-only gap (an earlier version of this doc claimed
+  otherwise).
 - Domains UI: import/export, tree display (domain id carried in
   `Qt::UserRole`, not parsed from display text), add child, cascade remove,
   **editable root panel** (projection, truelat1/2, stand_lon, resolution,
@@ -98,37 +103,23 @@ the feature-complete behavioral reference.
   `setCurrentItem`) and `ViewForm` (a 4-file series collapsing to one file
   row, a 2-layer stack built and hidden via real checkbox clicks) in a new
   `wrftools_ui_tests` binary. Current local result: all CTest targets pass
-  (25 CTest entries; `wrftools_ui_tests` alone runs 5 Catch2 cases).
+  (25 CTest entries; `wrftools_ui_tests` alone runs 6 Catch2 cases).
+- `RasterLayer` carries per-layer `tickCount`/`tickFormat`/`tickDecimals`,
+  wired to a "Colorbar" group in `ViewForm` (tick format `auto`/`fixed`/
+  `scientific`, decimals only enabled for the latter two). Deliberately
+  excluded from `LayerRenderer`'s cache keys and routed straight to
+  `updateColorbar()` rather than `refreshMap()` - a cosmetic legend tweak
+  must not re-render or touch the slice/image cache, matching
+  `wrftools.viewform`'s tick handlers.
 
 ## Still required for feature parity
-
-### View tab and rendering
-
-- Tick-count/format/decimals controls exist at the `colorbar` level but
-  aren't exposed as UI controls in `ViewForm` yet (always `tickCount=3`,
-  `"auto"` format).
-
-### Domains tab
-
-- The namelist parser now handles a value wrapped across multiple lines
-  (valid Fortran namelist syntax the old strictly-line-oriented parser
-  silently truncated) and the writer matches
-  `gis4wrf.core.transforms.project_to_wps_namelist`'s exact output shape
-  (`nocolons`, the synthetic `&metgrid fg_name = 'FILE'` group). Correction
-  to an earlier note here: the *Python* reference's own export is also a
-  reconstruction from `Project` fields, not a preserve-and-patch of the
-  imported file - it likewise drops `start_date`/`geog_data_*`/`&ungrib`/
-  `&mod_levs` on a plain WPS import (verified by diffing a real round-trip
-  through `convert_project_to_wps_namelist`). That data loss is therefore
-  not a C++-only gap to close; nothing further is planned here unless the
-  Python behavior itself changes.
 
 ### Packaging and verification
 
 - Bundle Qt, GDAL, PROJ, GDAL data, and `proj.db` into a macOS `.app` and a
   portable Linux artifact; test both artifacts on clean machines.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown from 17 to 25 CTest entries / ~27 Catch2 cases but is
+  suite has grown from 17 to 25 CTest entries / ~28 Catch2 cases but is
   still far short) - especially `tests/test_ui_view_layers.py`'s 43 cases,
   now that the layer stack exists to test against.
 - Run and require the macOS CI job, then address any Homebrew-specific

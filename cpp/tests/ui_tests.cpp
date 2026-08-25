@@ -76,6 +76,18 @@ TEST_CASE("view form builds a multi-layer stack that reorders and hides") {
     CHECK_FALSE(form.layers().back().settings.visible);
 }
 
+TEST_CASE("view form layers default to auto tick formatting") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    REQUIRE(form.layers().size() == 1);
+    const auto& settings = form.layers().front().settings;
+    CHECK(settings.tickCount == 3);
+    CHECK(settings.tickFormat == "auto");
+    CHECK(settings.tickDecimals == 2);
+}
+
 TEST_CASE("domain form selection follows real tree clicks") {
     TileMapWidget map;
     DomainForm form(&map);
