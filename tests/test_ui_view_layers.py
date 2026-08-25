@@ -595,6 +595,18 @@ def test_colorbar_legend_starts_in_the_default_corner_and_can_be_dragged(form, m
     assert map_widget._legend_rect.topLeft() == QPointF(5, 5)
 
 
+def test_north_arrow_checkbox_toggles_the_map_overlay(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    assert map_widget._north_arrow_visible is False
+    form.north_arrow_check.setChecked(True)
+    assert map_widget._north_arrow_visible is True
+    form.north_arrow_check.setChecked(False)
+    assert map_widget._north_arrow_visible is False
+
+
 def test_info_overlay_hidden_by_default_and_shown_when_checked(form, map_widget):
     _open_multi(form, SERIES_PATHS)
     form.on_add_layer_button_clicked()

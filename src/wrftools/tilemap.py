@@ -161,6 +161,35 @@ class RasterOverlay(BaseOverlay):
         painter.restore()
 
 
+# Fixed screen-space size of the north-arrow overlay box (see
+# _paint_north_arrow) - unlike the legend (a pixmap) or the info text (sized
+# from its own text), there's no natural size to derive this from.
+_NORTH_ARROW_SIZE = QSize(28, 44)
+
+
+def _paint_north_arrow(painter: QPainter, rect: QRectF) -> None:
+    """Draws a simple upward-pointing arrow with an 'N' label inside `rect` -
+    always straight up, since TileMapWidget never rotates the map (see
+    set_north_arrow)."""
+    painter.save()
+    cx = rect.center().x()
+    triangle_top = rect.top() + 2
+    triangle_bottom = rect.top() + rect.height() * 0.6
+    half_width = rect.width() * 0.3
+    path = QPainterPath()
+    path.moveTo(cx, triangle_top)
+    path.lineTo(cx - half_width, triangle_bottom)
+    path.lineTo(cx + half_width, triangle_bottom)
+    path.closeSubpath()
+    painter.setPen(QPen(QColor(60, 60, 60), 1))
+    painter.setBrush(QBrush(QColor(220, 40, 40)))
+    painter.drawPath(path)
+    painter.setPen(QColor(0, 0, 0))
+    text_rect = QRectF(rect.left(), triangle_bottom, rect.width(), rect.bottom() - triangle_bottom)
+    painter.drawText(text_rect, int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), 'N')
+    painter.restore()
+
+
 class TileMapWidget(QWidget):
     """A pannable/zoomable XYZ tile map with lon/lat overlay support."""
 
@@ -219,10 +248,20 @@ class TileMapWidget(QWidget):
         self._info_pos: Optional[QPointF] = None
         self._info_rect = QRectF()
 
+        # A third movable overlay: a simple "points up" arrow + "N" label.
+        # Always straight up because this widget never rotates the map
+        # (screen-space up is always geographic north here) - if that ever
+        # changes, this would need to rotate with the current bearing.
+        # Defaults to the bottom-left corner so it doesn't start out
+        # overlapping the legend (top-right) or the info text (top-left).
+        self._north_arrow_visible = False
+        self._north_arrow_pos: Optional[QPointF] = None
+        self._north_arrow_rect = QRectF()
+
         # Which movable overlay (if any) mouseMoveEvent should reposition
         # instead of panning the map - set in mousePressEvent, cleared on
         # release. None means an ordinary map drag.
-        self._drag_target: Optional[str] = None  # None | 'legend' | 'info'
+        self._drag_target: Optional[str] = None  # None | 'legend' | 'info' | 'north_arrow'
         self._drag_offset = QPointF()
 
     # --- public API -----------------------------------------------------
@@ -264,6 +303,14 @@ class TileMapWidget(QWidget):
         defaulting to the top-left corner, or wherever the user last dragged
         it to - e.g. "T2 (degC) - 2025-03-14 00:30"."""
         self._info_text = text
+        self.update()
+
+    def set_north_arrow(self, visible: bool) -> None:
+        """Shows or hides a small movable north-arrow overlay - defaulting
+        to the bottom-left corner, or wherever the user last dragged it to.
+        Always points straight up (see the module/`__init__` docstrings for
+        why that's always correct here)."""
+        self._north_arrow_visible = visible
         self.update()
 
     def fit_bounds(self, min_lon: float, min_lat: float, max_lon: float, max_lat: float, padding_frac: float = 0.1) -> None:
@@ -364,6 +411,12 @@ class TileMapWidget(QWidget):
         else:
             self._info_rect = QRectF()
 
+        if self._north_arrow_visible:
+            self._north_arrow_rect = self._movable_rect(_NORTH_ARROW_SIZE, self._north_arrow_pos, 'bottom-left')
+            _paint_north_arrow(painter, self._north_arrow_rect)
+        else:
+            self._north_arrow_rect = QRectF()
+
         if self._attribution:
             painter.setPen(QColor(0, 0, 0))
             painter.fillRect(QRectF(0, self.height() - 18, self.width(), 18), QColor(255, 255, 255, 180))
@@ -379,6 +432,8 @@ class TileMapWidget(QWidget):
             x, y = pos.x(), pos.y()
         elif default_corner == 'top-right':
             x, y = self.width() - size.width() - margin, margin
+        elif default_corner == 'bottom-left':
+            x, y = margin, self.height() - size.height() - margin
         else:
             x, y = margin, margin
         x = max(0.0, min(x, max(0.0, self.width() - size.width())))
@@ -474,6 +529,10 @@ class TileMapWidget(QWidget):
             self._drag_target = 'info'
             self._drag_offset = pos - self._info_rect.topLeft()
             return
+        if self._north_arrow_visible and self._north_arrow_rect.contains(pos):
+            self._drag_target = 'north_arrow'
+            self._drag_offset = pos - self._north_arrow_rect.topLeft()
+            return
         self._drag_target = None
         self._dragging = True
         self._drag_last_pos = pos
@@ -485,6 +544,10 @@ class TileMapWidget(QWidget):
             return
         if self._drag_target == 'info':
             self._info_pos = event.position() - self._drag_offset
+            self.update()
+            return
+        if self._drag_target == 'north_arrow':
+            self._north_arrow_pos = event.position() - self._drag_offset
             self.update()
             return
 

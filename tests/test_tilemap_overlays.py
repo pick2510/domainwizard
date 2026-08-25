@@ -160,6 +160,41 @@ def test_dragging_the_info_overlay_moves_it_independently_of_the_legend(map_widg
     assert map_widget._legend_pos == legend_pos_before  # untouched
 
 
+def test_north_arrow_hidden_by_default_shown_at_bottom_left_when_enabled(map_widget):
+    map_widget.resize(400, 300)
+    assert map_widget._north_arrow_visible is False
+    map_widget.grab()
+    assert map_widget._north_arrow_rect.isEmpty()
+
+    map_widget.set_north_arrow(True)
+    map_widget.grab()
+    assert map_widget._north_arrow_pos is None
+    assert map_widget._north_arrow_rect.left() == pytest.approx(10, abs=1)
+    assert map_widget._north_arrow_rect.bottom() == pytest.approx(map_widget.height() - 10, abs=1)
+
+    map_widget.set_north_arrow(False)
+    map_widget.grab()
+    assert map_widget._north_arrow_rect.isEmpty()
+
+
+def test_dragging_the_north_arrow_moves_it_and_does_not_pan_the_map(map_widget):
+    map_widget.resize(400, 300)
+    map_widget.set_center(10.0, 20.0, zoom=4)
+    map_widget.set_north_arrow(True)
+    map_widget.grab()
+
+    center = map_widget._north_arrow_rect.center()
+    _press(map_widget, center)
+    assert map_widget._drag_target == 'north_arrow'
+    _move(map_widget, QPointF(200, 100))
+    map_widget.grab()
+    _release(map_widget, QPointF(200, 100))
+
+    assert map_widget._north_arrow_pos is not None
+    assert map_widget._center_lon == pytest.approx(10.0)
+    assert map_widget._center_lat == pytest.approx(20.0)
+
+
 def test_dragging_empty_map_area_still_pans_as_before(map_widget):
     map_widget.resize(400, 300)
     map_widget.set_center(0.0, 0.0, zoom=4)

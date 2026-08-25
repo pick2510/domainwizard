@@ -20,8 +20,10 @@ stays put across redraws; a known-categorical variable (`LU_INDEX`,
 legend instead of a gradient, using the file's own WRF `LANDUSE.TBL` colors
 where available. An optional, independently movable info overlay ("Show
 Info Overlay" in the Colorbar box) shows the selected layer's variable,
-unit, and current time as one label. For a multi-timestep layer (typically
-a `wrfseries.WRFFileSeries`), a Play button next to the time step steps
+unit, and current time as one label. An optional, also-movable north arrow
+("Show North Arrow" in the View box) always points straight up, since the
+map itself never rotates. For a multi-timestep layer (typically a
+`wrfseries.WRFFileSeries`), a Play button next to the time step steps
 through every timestep automatically, looping back to the start at the end.
 The whole map view - basemap, layers, outlines, legend - can be exported as
 a PNG/JPEG via `File > Export Map Image...`.

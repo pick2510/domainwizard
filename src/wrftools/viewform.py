@@ -247,6 +247,12 @@ class ViewForm(QWidget):
         zoom_to_layer_button = QPushButton('Zoom to Layer')
         zoom_to_layer_button.clicked.connect(self.on_zoom_to_layer_button_clicked)
         vbox_zoom.addWidget(zoom_to_layer_button)
+        # A plain map decoration, not tied to the selected layer's data -
+        # always points straight up, since the map itself never rotates
+        # (see TileMapWidget.set_north_arrow).
+        self.north_arrow_check = QCheckBox('Show North Arrow')
+        self.north_arrow_check.toggled.connect(self.on_north_arrow_toggled)
+        vbox_zoom.addWidget(self.north_arrow_check)
         self.gbox_zoom.setLayout(vbox_zoom)
 
         layout = QVBoxLayout()
@@ -790,6 +796,10 @@ class ViewForm(QWidget):
         if layer is None:
             return
         self._zoom_to_layer(layer)
+
+    @pyqtSlot(bool)
+    def on_north_arrow_toggled(self, checked: bool) -> None:
+        self.map_widget.set_north_arrow(checked)
 
     def _zoom_to_layer(self, layer: RasterLayer) -> None:
         overlay = self._renderer.overlay_for(layer)
