@@ -37,7 +37,10 @@ the feature-complete behavioral reference.
 - WPS namelist import/export for the currently supported domain subset
   (including sibling and linear-chain fixtures), now also carrying the
   root's projection/reference-point fields on the domain itself rather than
-  a separate project-level struct.
+  a separate project-level struct. The parser handles an array value wrapped
+  across multiple lines; the writer's output shape matches
+  `project_to_wps_namelist`'s exactly (`nocolons`, the synthetic
+  `&metgrid` group).
 - Domains UI: import/export, tree display (domain id carried in
   `Qt::UserRole`, not parsed from display text), add child, cascade remove,
   **editable root panel** (projection, truelat1/2, stand_lon, resolution,
@@ -86,7 +89,7 @@ the feature-complete behavioral reference.
   `setCurrentItem`) and `ViewForm` (a 4-file series collapsing to one file
   row, a 2-layer stack built and hidden via real checkbox clicks) in a new
   `wrftools_ui_tests` binary. Current local result: all CTest targets pass
-  (23 CTest entries; `wrftools_ui_tests` alone runs 5 Catch2 cases).
+  (24 CTest entries; `wrftools_ui_tests` alone runs 5 Catch2 cases).
 
 ## Still required for feature parity
 
@@ -104,19 +107,25 @@ the feature-complete behavioral reference.
 
 ### Domains tab
 
-- Namelist import is still line-oriented and will silently truncate a
-  multi-line array continuation (uncommon but valid WPS syntax); export is
-  still lossy - it drops every namelist group/key outside the `geogrid`
-  domain subset (`start_date`, `geog_data_*`, `&metgrid`, `&ungrib`,
-  `&mod_levs`, ...), so round-tripping a real namelist through the app loses
-  data.
+- The namelist parser now handles a value wrapped across multiple lines
+  (valid Fortran namelist syntax the old strictly-line-oriented parser
+  silently truncated) and the writer matches
+  `gis4wrf.core.transforms.project_to_wps_namelist`'s exact output shape
+  (`nocolons`, the synthetic `&metgrid fg_name = 'FILE'` group). Correction
+  to an earlier note here: the *Python* reference's own export is also a
+  reconstruction from `Project` fields, not a preserve-and-patch of the
+  imported file - it likewise drops `start_date`/`geog_data_*`/`&ungrib`/
+  `&mod_levs` on a plain WPS import (verified by diffing a real round-trip
+  through `convert_project_to_wps_namelist`). That data loss is therefore
+  not a C++-only gap to close; nothing further is planned here unless the
+  Python behavior itself changes.
 
 ### Packaging and verification
 
 - Bundle Qt, GDAL, PROJ, GDAL data, and `proj.db` into a macOS `.app` and a
   portable Linux artifact; test both artifacts on clean machines.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown from 17 to 23 CTest entries / ~25 Catch2 cases but is
+  suite has grown from 17 to 24 CTest entries / ~26 Catch2 cases but is
   still far short) - especially `tests/test_ui_view_layers.py`'s 43 cases,
   now that the layer stack exists to test against.
 - Run and require the macOS CI job, then address any Homebrew-specific

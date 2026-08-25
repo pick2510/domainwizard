@@ -200,6 +200,22 @@ TEST_CASE("WPS parser gives user errors for malformed domain cardinality") {
     std::filesystem::remove(path);
 }
 
+TEST_CASE("WPS parser handles array values wrapped across lines") {
+    // tests/fixtures/namelist_wrapped.wps deliberately wraps parent_id and
+    // j_parent_start mid-array onto a continuation line with no '=' on it -
+    // valid Fortran namelist syntax the old line-oriented-only parser
+    // silently truncated (it would see "parent_id = 1," as a complete
+    // one-element array and drop the wrapped "1," entirely).
+    const auto project = readWpsNamelist("tests/fixtures/namelist_wrapped.wps");
+    const auto& domains = project.domains.domains();
+    REQUIRE(domains.size() == 2);
+    CHECK(domains[0].parentId == 1);
+    CHECK(domains[1].parentId == 1);
+    CHECK(domains[1].paddingLeft == 9);   // i_parent_start = 10 -> 0-based 9
+    CHECK(domains[1].paddingBottom == 9); // j_parent_start wrapped across two lines
+    CHECK(domains[1].columns == 60);      // e_we = 61 -> domain_size 60
+}
+
 TEST_CASE("WPS linear-chain fixture remains valid") {
     const auto project = readWpsNamelist("tests/fixtures/namelist_hongkong.wps");
     REQUIRE(project.domains.domains().size() == 3);

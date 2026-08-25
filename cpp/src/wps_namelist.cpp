@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <fstream>
 #include <map>
+#include <regex>
 #include <sstream>
 
 namespace wrftools {
@@ -17,23 +18,56 @@ std::string trim(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
+// Whitespace-only trim, deliberately NOT stripping a trailing comma like
+// trim() does: used while joining a value that may still be wrapped across
+// further lines, where a trailing comma is the only thing separating this
+// line's last element from the next line's first one. Stripping it early
+// (as trim() would) silently fuses two array elements into one token, which
+// values() then can't split back apart.
+std::string trimWhitespace(std::string value) {
+    const auto first = value.find_first_not_of(" \t\r");
+    if (first == std::string::npos) return {};
+    const auto last = value.find_last_not_of(" \t\r");
+    return value.substr(first, last - first + 1);
+}
+
+std::string lowered(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+// Matches a Fortran namelist assignment starting a new variable, e.g.
+// "parent_id = 1, 1," or "dx=6250.0" - used to tell a continuation line
+// (part of the previous variable's value, wrapped across lines - valid and
+// not uncommon Fortran namelist syntax) from the start of the next one.
+const std::regex kAssignmentStart(R"(^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$)");
+
 std::map<std::string, Group> parseGroups(std::istream& input) {
     std::map<std::string, Group> groups;
-    std::string line, current;
+    std::string line, current, pendingKey, pendingValue;
+    const auto flushPending = [&] { if (!pendingKey.empty()) { groups[current][pendingKey] = trim(pendingValue); pendingKey.clear(); pendingValue.clear(); } };
     while (std::getline(input, line)) {
         const auto comment = line.find('!');
         if (comment != std::string::npos) line.resize(comment);
-        const auto clean = trim(line);
+        const auto clean = trimWhitespace(line);
         if (clean.empty()) continue;
-        if (clean.front() == '&') { current = clean.substr(1); continue; }
-        if (clean == "/") { current.clear(); continue; }
+        if (clean.front() == '&') { flushPending(); current = clean.substr(1); continue; }
+        if (clean == "/") { flushPending(); current.clear(); continue; }
         if (current.empty()) continue;
-        const auto equals = clean.find('=');
-        if (equals == std::string::npos) continue;
-        auto key = trim(clean.substr(0, equals));
-        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        groups[current][key] = trim(clean.substr(equals + 1));
+        std::smatch match;
+        if (std::regex_match(clean, match, kAssignmentStart)) {
+            flushPending();
+            pendingKey = lowered(match[1].str());
+            pendingValue = match[2].str();
+        } else if (!pendingKey.empty()) {
+            // A continuation of the current variable's value, wrapped onto
+            // its own line - e.g. WPS namelists commonly wrap a long
+            // i_parent_start/j_parent_start array this way.
+            pendingValue += ' ';
+            pendingValue += clean;
+        }
     }
+    flushPending();
     return groups;
 }
 
@@ -99,9 +133,15 @@ void writeWpsNamelist(const WpsProject& project, const std::filesystem::path& pa
     const auto& root = domains.front();
     std::ofstream out(path);
     if (!out) throw UserError("Could not write namelist: " + path.string());
-    out << "&share\n max_dom = " << domains.size() << ",\n/\n\n&geogrid\n"
+    // Shape (group set, nocolons, the synthetic &metgrid group) matches
+    // gis4wrf.core.transforms.project_to_wps_namelist's own export exactly:
+    // that function reconstructs a namelist from Project fields too, not a
+    // preserve-and-patch of whatever was imported, so this isn't a
+    // C++-only gap - fields like start_date/geog_data_path/&ungrib that
+    // aren't derived from Domain aren't part of either reference's export.
+    out << "&share\n nocolons = .true.,\n max_dom = " << domains.size() << ",\n/\n\n&geogrid\n"
         << " parent_id = " << joined(parent) << ",\n parent_grid_ratio = " << joined(ratio) << ",\n i_parent_start = " << joined(startI) << ",\n j_parent_start = " << joined(startJ) << ",\n e_we = " << joined(eWe) << ",\n e_sn = " << joined(eSn) << ",\n"
         << " map_proj = '" << root.mapProj << "',\n dx = " << root.dx << ",\n dy = " << root.dy << ",\n ref_lon = " << root.centerLon << ",\n ref_lat = " << root.centerLat << ",\n"
-        << " truelat1 = " << root.trueLat1 << ",\n truelat2 = " << root.trueLat2 << ",\n stand_lon = " << root.standLon << ",\n/\n";
+        << " truelat1 = " << root.trueLat1 << ",\n truelat2 = " << root.trueLat2 << ",\n stand_lon = " << root.standLon << ",\n/\n\n&metgrid\n fg_name = 'FILE',\n/\n";
 }
 }  // namespace wrftools
