@@ -33,6 +33,16 @@ void TileMapWidget::setCenter(double longitude, double latitude, int zoom) {
     zoom_ = std::clamp(zoom, 0, 19);
     update();
 }
+void TileMapWidget::zoomToBounds(LonLat southWest, LonLat northEast) {
+    const int availableWidth = std::max(1, width() - 40), availableHeight = std::max(1, height() - 40);
+    int selectedZoom = 0;
+    for (int zoom = 19; zoom >= 0; --zoom) {
+        const auto lower = worldPixel(southWest.longitude, southWest.latitude, zoom);
+        const auto upper = worldPixel(northEast.longitude, northEast.latitude, zoom);
+        if (std::abs(upper.x() - lower.x()) <= availableWidth && std::abs(upper.y() - lower.y()) <= availableHeight) { selectedZoom = zoom; break; }
+    }
+    setCenter((southWest.longitude + northEast.longitude) / 2.0, (southWest.latitude + northEast.latitude) / 2.0, selectedZoom);
+}
 
 void TileMapWidget::setVectorOverlays(std::vector<VectorOverlay> overlays) {
     vectorOverlays_ = std::move(overlays);

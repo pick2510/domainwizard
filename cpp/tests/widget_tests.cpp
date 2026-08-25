@@ -17,6 +17,7 @@ TEST_CASE("native map exports a readable image without downloaded tiles") {
     wrftools::TileMapWidget map;
     map.resize(480, 320);
     map.setCenter(8.54, 47.37, 10);
+    map.zoomToBounds({8.535, 47.365}, {8.545, 47.375});
     QImage raster(8, 8, QImage::Format_RGBA8888);
     raster.fill(QColor(255, 0, 0, 150));
     map.setRasterOverlays({{raster, {8.535, 47.365}, {8.545, 47.375}, 0.8, true}});

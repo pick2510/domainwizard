@@ -10,6 +10,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QFileDialog>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QMessageBox>
@@ -25,11 +26,14 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     layout->addWidget(open);
     auto* form = new QFormLayout;
     variable_ = new QComboBox(this); colormap_ = new QComboBox(this); units_ = new QComboBox(this);
-    time_ = new QSpinBox(this); level_ = new QSpinBox(this); play_ = new QCheckBox("Play", this); playbackTimer_ = new QTimer(this);
+    time_ = new QSpinBox(this); level_ = new QSpinBox(this); play_ = new QCheckBox("Play", this); visible_ = new QCheckBox("Visible", this); visible_->setChecked(true); playbackTimer_ = new QTimer(this);
+    opacity_ = new QDoubleSpinBox(this); minimum_ = new QDoubleSpinBox(this); maximum_ = new QDoubleSpinBox(this);
     time_->setMinimum(1); level_->setMinimum(1);
+    opacity_->setRange(0.0, 1.0); opacity_->setSingleStep(0.1); opacity_->setValue(0.8);
+    for (auto* range : {minimum_, maximum_}) { range->setRange(-1e30, 1e30); range->setDecimals(4); range->setSpecialValueText("Auto"); range->setValue(-1e30); }
     for (const auto& name : colormapNames()) colormap_->addItem(QString::fromStdString(name));
     colormap_->addItem("categorical");
-    form->addRow("Variable", variable_); form->addRow("Time step", time_); form->addRow("", play_); form->addRow("Vertical level", level_); form->addRow("Colormap", colormap_); form->addRow("Units", units_);
+    form->addRow("Variable", variable_); form->addRow("Time step", time_); form->addRow("", play_); form->addRow("", visible_); form->addRow("Vertical level", level_); form->addRow("Colormap", colormap_); form->addRow("Units", units_); form->addRow("Opacity", opacity_); form->addRow("Minimum", minimum_); form->addRow("Maximum", maximum_);
     layout->addLayout(form);
     preview_ = new QLabel("Open a WRF/WPS NetCDF file to add a native raster layer.", this);
     preview_->setMinimumSize(280, 180); preview_->setScaledContents(false); preview_->setWordWrap(true);
@@ -40,6 +44,10 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(units_, &QComboBox::currentIndexChanged, this, [this] { renderSelected(); });
     connect(time_, &QSpinBox::valueChanged, this, [this] { renderSelected(); });
     connect(level_, &QSpinBox::valueChanged, this, [this] { renderSelected(); });
+    connect(visible_, &QCheckBox::toggled, this, [this] { renderSelected(); });
+    connect(opacity_, &QDoubleSpinBox::valueChanged, this, [this] { renderSelected(); });
+    connect(minimum_, &QDoubleSpinBox::valueChanged, this, [this] { renderSelected(); });
+    connect(maximum_, &QDoubleSpinBox::valueChanged, this, [this] { renderSelected(); });
     playbackTimer_->setInterval(500);
     connect(play_, &QCheckBox::toggled, this, [this](bool enabled) { if (enabled) playbackTimer_->start(); else playbackTimer_->stop(); });
     connect(playbackTimer_, &QTimer::timeout, this, [this] { time_->setValue(time_->value() == time_->maximum() ? time_->minimum() : time_->value() + 1); });
@@ -47,7 +55,7 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
 void ViewForm::openFile() {
     const auto path = QFileDialog::getOpenFileName(this, "Open WRF/WPS NetCDF", {}, "NetCDF files (*.nc);;All files (*)");
     if (path.isEmpty()) return;
-    try { file_ = std::make_unique<WrfFile>(path.toStdString()); refreshVariables(); renderSelected(); }
+    try { file_ = std::make_unique<WrfFile>(path.toStdString()); hasAutoZoomed_ = false; refreshVariables(); renderSelected(); }
     catch (const std::exception& error) { QMessageBox::critical(this, "Could not open file", error.what()); }
 }
 void ViewForm::refreshVariables() {
@@ -66,12 +74,15 @@ void ViewForm::refreshVariables() {
 }
 void ViewForm::renderSelected() {
     if (!file_ || variable_->currentIndex() < 0) return;
+    if (!visible_->isChecked()) { map_->setRasterOverlays({}); map_->setLegend({}); preview_->clear(); status_->setText("Layer hidden"); return; }
     try {
-        RasterLayer layer{.variable = variable_->currentText().toStdString(), .timeIndex = time_->value() - 1, .levelIndex = level_->value() - 1, .colormap = colormap_->currentText().toStdString(), .minimum = std::nullopt, .maximum = std::nullopt, .unitKey = units_->currentData().toString().toStdString()};
+        const auto autoValue = -1e30;
+        RasterLayer layer{.variable = variable_->currentText().toStdString(), .timeIndex = time_->value() - 1, .levelIndex = level_->value() - 1, .colormap = colormap_->currentText().toStdString(), .minimum = minimum_->value() == autoValue ? std::nullopt : std::optional<float>(minimum_->value()), .maximum = maximum_->value() == autoValue ? std::nullopt : std::optional<float>(maximum_->value()), .unitKey = units_->currentData().toString().toStdString(), .opacity = opacity_->value()};
         const auto rendered = renderLayer(*file_, layer);
         const auto image = rasterImage(rendered);
         const auto& bounds = file_->geographicBounds();
         map_->setRasterOverlays({{image, {bounds.west, bounds.south}, {bounds.east, bounds.north}, layer.opacity, layer.interpolate}});
+        if (!hasAutoZoomed_) { map_->zoomToBounds({bounds.west, bounds.south}, {bounds.east, bounds.north}); hasAutoZoomed_ = true; }
         const auto& selected = file_->variables().at(static_cast<std::size_t>(variable_->currentIndex()));
         const auto unit = findUnit(selected.units, layer.unitKey);
         if (layer.colormap == "categorical") map_->setLegend({});

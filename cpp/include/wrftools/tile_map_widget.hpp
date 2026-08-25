@@ -21,6 +21,7 @@ class TileMapWidget final : public QWidget {
 public:
     explicit TileMapWidget(QWidget* parent = nullptr);
     void setCenter(double longitude, double latitude, int zoom);
+    void zoomToBounds(LonLat southWest, LonLat northEast);
     void setVectorOverlays(std::vector<VectorOverlay> overlays);
     void setRasterOverlays(std::vector<RasterOverlay> overlays);
     void setLegend(QPixmap legend);

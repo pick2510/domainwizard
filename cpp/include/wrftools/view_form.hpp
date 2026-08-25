@@ -9,6 +9,7 @@ class QPushButton;
 class QSpinBox;
 class QCheckBox;
 class QTimer;
+class QDoubleSpinBox;
 
 namespace wrftools { class WrfFile; class TileMapWidget; }
 
@@ -22,13 +23,18 @@ private:
     void renderSelected();
     std::unique_ptr<WrfFile> file_;
     TileMapWidget* map_{};
+    bool hasAutoZoomed_{false};
     QComboBox* variable_{};
     QComboBox* colormap_{};
     QComboBox* units_{};
     QSpinBox* time_{};
     QSpinBox* level_{};
     QCheckBox* play_{};
+    QCheckBox* visible_{};
     QTimer* playbackTimer_{};
+    QDoubleSpinBox* opacity_{};
+    QDoubleSpinBox* minimum_{};
+    QDoubleSpinBox* maximum_{};
     QLabel* preview_{};
     QLabel* status_{};
 };
