@@ -30,6 +30,7 @@ from wrftools import colorbar, colormaps
 from wrftools import units as units_module
 from wrftools.formhelpers import add_grid_lineedit
 from wrftools.wrfreader import WRFFile, WRFVariable
+from wrftools import wrfseries
 
 DECIMALS = 50
 RANGE_VALIDATOR = QDoubleValidator(-1e30, 1e30, DECIMALS)
@@ -242,11 +243,23 @@ class ViewForm(QWidget):
 
     @pyqtSlot()
     def on_open_file_button_clicked(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, caption='Open WRF/WPS NetCDF file')
-        if not file_path:
+        # Multi-select so a whole WRF output series (one file per timestep,
+        # e.g. wrfout_d03_2025-03-14_00_00_00, ..._00_30_00, ...) can be
+        # opened in one go - group_paths() groups same-domain files sharing
+        # a recognized WRF/WPS naming pattern into a single series entry
+        # (wrfseries.WRFFileSeries) automatically; anything else (or a
+        # single selected file, the common case) opens exactly as before.
+        file_paths, _ = QFileDialog.getOpenFileNames(self, caption='Open WRF/WPS NetCDF file(s)')
+        if not file_paths:
             return
-        self._renderer.open_file(file_path)  # raises UserError on a bad file
-        self._rebuild_file_list(select_path=file_path)
+        groups, singles = wrfseries.group_paths(file_paths)
+        select_path = None
+        for group in groups:
+            select_path = self._renderer.open_files(group).path  # raises UserError on a mismatched series
+        for path in singles:
+            self._renderer.open_file(path)  # raises UserError on a bad file
+            select_path = path
+        self._rebuild_file_list(select_path=select_path)
 
     @pyqtSlot()
     def on_close_file_button_clicked(self) -> None:
@@ -273,7 +286,11 @@ class ViewForm(QWidget):
         self.file_list.blockSignals(True)
         self.file_list.clear()
         for path in self._open_file_paths():
-            item = QTreeWidgetItem([path.rsplit('/', 1)[-1]])
+            # Goes through the renderer's own name (not a raw path split) so
+            # a multi-file series (wrfseries.WRFFileSeries) shows its
+            # descriptive name ("wrfout_d03 (12 files, ...)") instead of
+            # looking like just its first file.
+            item = QTreeWidgetItem([self._renderer.open_file(path).name])
             item.setData(0, LAYER_ID_ROLE, path)
             self.file_list.addTopLevelItem(item)
             if path == select_path:
@@ -357,6 +374,14 @@ class ViewForm(QWidget):
                 return index
         return None
 
+    def _layer_label(self, layer: RasterLayer) -> str:
+        """RasterLayer.label()'s format, but through the renderer's own
+        .name (like _rebuild_file_list's file labels) rather than a raw path
+        split - a layer built from a multi-file series shows the series'
+        descriptive name instead of just its first file's basename."""
+        file_name = self._renderer.open_file(layer.file_path).name
+        return f'{layer.variable} — {file_name} (t={layer.time_index + 1})'
+
     def _rebuild_layer_tree(self, select_id: Optional[int] = None) -> None:
         self._updating_tree = True
         self.layer_tree.blockSignals(True)
@@ -364,7 +389,7 @@ class ViewForm(QWidget):
         # self._layers is bottom-first (draw order); display topmost first,
         # matching the usual GIS convention that the top row is the top layer.
         for layer in reversed(self._layers):
-            item = QTreeWidgetItem([layer.label()])
+            item = QTreeWidgetItem([self._layer_label(layer)])
             item.setData(0, LAYER_ID_ROLE, layer.layer_id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked)

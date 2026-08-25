@@ -22,7 +22,7 @@ paint-time only (passed straight to RasterOverlay), so the opacity slider,
 a layer's checkbox, and the interpolate toggle never invalidate anything.
 """
 from dataclasses import dataclass
-from typing import Dict, List, Optional, OrderedDict as OrderedDictType, Tuple
+from typing import Dict, List, Optional, OrderedDict as OrderedDictType, Tuple, Union
 from collections import OrderedDict
 
 import numpy as np
@@ -32,8 +32,14 @@ from PyQt6.QtGui import QImage
 from wrftools import colormaps, units as units_module
 from wrftools.tilemap import RasterOverlay
 from wrftools.wrfreader import WRFFile
+from wrftools.wrfseries import WRFFileSeries
 
 gdal.UseExceptions()
+
+# Anything LayerRenderer can hold open and read from - a single WRFFile, or
+# several combined into one WRFFileSeries (see wrfseries.py's module
+# docstring for why the two are interchangeable everywhere below).
+WRFFileLike = Union[WRFFile, WRFFileSeries]
 
 SliceKey = Tuple[str, str, int, int]  # (file_path, variable, time_index, level_index)
 # units is part of this key (unlike tick_count/tick_format/tick_decimals
@@ -123,7 +129,7 @@ class LayerRenderer:
         self._slice_cache_bytes = slice_cache_bytes
         self._image_cache_size = image_cache_size
 
-        self._files: Dict[str, WRFFile] = {}
+        self._files: Dict[str, WRFFileLike] = {}
         self._slice_cache: 'OrderedDictType[SliceKey, _SliceData]' = OrderedDict()
         self._slice_cache_bytes_used = 0
         self._image_cache: 'OrderedDictType[ImageKey, _ImageData]' = OrderedDict()
@@ -132,12 +138,27 @@ class LayerRenderer:
 
     # --- file handles ---------------------------------------------------
 
-    def open_file(self, path: str) -> WRFFile:
-        """Opens (or returns the already-open) file. Raises UserError (via
-        WRFFile) if it isn't a recognized WRF/WPS NetCDF file."""
+    def open_file(self, path: str) -> WRFFileLike:
+        """Opens (or returns the already-open) file or file series. Raises
+        UserError (via WRFFile/WRFFileSeries) if it isn't a recognized
+        WRF/WPS NetCDF file, or (for a series key) was never registered by
+        open_files()."""
         if path not in self._files:
             self._files[path] = WRFFile(path)
         return self._files[path]
+
+    def open_files(self, paths: List[str]) -> WRFFileLike:
+        """Opens one path as a plain WRFFile (identical to open_file), or
+        several as one WRFFileSeries keyed by the group's first (earliest)
+        path - see wrfseries.py. Raises UserError if 2+ paths don't form one
+        coherent series (mismatched grid/levels) or aren't recognized
+        WRF/WPS files at all."""
+        if len(paths) == 1:
+            return self.open_file(paths[0])
+        series = WRFFileSeries(paths)
+        if series.path not in self._files:
+            self._files[series.path] = series
+        return self._files[series.path]
 
     @property
     def open_paths(self) -> List[str]:

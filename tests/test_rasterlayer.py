@@ -21,6 +21,11 @@ from wrftools.tilemap import RasterOverlay
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 GEO_EM = os.path.join(FIXTURES_DIR, 'geo_em_small.nc')
 WRFOUT = os.path.join(FIXTURES_DIR, 'wrfout_multitime.nc')
+SERIES_PATHS = [
+    os.path.join(FIXTURES_DIR, 'wrfout_d01_2020-01-01_00_00_00.nc'),
+    os.path.join(FIXTURES_DIR, 'wrfout_d01_2020-01-01_00_30_00.nc'),
+    os.path.join(FIXTURES_DIR, 'wrfout_d01_2020-01-01_01_00_00.nc'),
+]
 
 
 @pytest.fixture
@@ -293,6 +298,34 @@ def test_tick_settings_do_not_invalidate_either_cache_tier(renderer):
     assert renderer.stats.slice_hits == before.slice_hits
     assert renderer.stats.image_misses == before.image_misses
     assert renderer.stats.image_hits == before.image_hits + 1
+
+
+# --- multi-file series (LayerRenderer.open_files) -------------------------
+
+def test_open_files_with_a_single_path_behaves_like_open_file(renderer):
+    single = renderer.open_files([GEO_EM])
+    assert single is renderer.open_file(GEO_EM)
+
+
+def test_open_files_with_a_series_registers_one_entry(renderer):
+    series = renderer.open_files(SERIES_PATHS)
+    assert SERIES_PATHS[0] in renderer.open_paths
+    assert all(p not in renderer.open_paths for p in SERIES_PATHS[1:])
+    assert series.path == SERIES_PATHS[0]
+
+
+def test_overlay_for_works_at_every_time_index_of_a_series(renderer):
+    series = renderer.open_files(SERIES_PATHS)
+    for time_index in range(len(series.times)):
+        layer = RasterLayer(layer_id=1, file_path=series.path, variable='T2', time_index=time_index)
+        overlay = renderer.overlay_for(layer)
+        assert overlay is not None
+
+
+def test_reopening_the_same_series_is_a_cache_hit(renderer):
+    first = renderer.open_files(SERIES_PATHS)
+    second = renderer.open_files(SERIES_PATHS)
+    assert first is second
 
 
 # --- eviction ----------------------------------------------------------------

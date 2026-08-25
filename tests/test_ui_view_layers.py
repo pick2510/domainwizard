@@ -31,6 +31,11 @@ from wrftools.viewform import ViewForm, LAYER_ID_ROLE
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 GEO_EM = os.path.join(FIXTURES_DIR, 'geo_em_small.nc')
 WRFOUT = os.path.join(FIXTURES_DIR, 'wrfout_multitime.nc')
+SERIES_PATHS = [
+    os.path.join(FIXTURES_DIR, 'wrfout_d01_2020-01-01_00_00_00.nc'),
+    os.path.join(FIXTURES_DIR, 'wrfout_d01_2020-01-01_00_30_00.nc'),
+    os.path.join(FIXTURES_DIR, 'wrfout_d01_2020-01-01_01_00_00.nc'),
+]
 
 
 @pytest.fixture(scope='session')
@@ -51,7 +56,12 @@ def form(qapp, map_widget):
 
 
 def _open(form, path):
-    QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (path, ''))
+    QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: ([path], ''))
+    form.on_open_file_button_clicked()
+
+
+def _open_multi(form, paths):
+    QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: (paths, ''))
     form.on_open_file_button_clicked()
 
 
@@ -80,6 +90,42 @@ def test_add_layer_button_is_enabled_right_after_opening_the_first_file(form):
 def test_adding_a_layer_with_no_open_file_is_a_noop(form):
     form.on_add_layer_button_clicked()
     assert form._layers == []
+
+
+# --- multi-file series ---------------------------------------------------
+
+def test_multi_selecting_a_series_opens_one_files_entry(form):
+    _open_multi(form, SERIES_PATHS)
+    assert form.file_list.topLevelItemCount() == 1
+    assert form._open_file_paths() == [SERIES_PATHS[0]]
+    item = form.file_list.topLevelItem(0)
+    assert item.text(0).startswith('wrfout_d01 (3 files')
+
+
+def test_series_time_combo_shows_real_timestamps(form):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    labels = [form.time_combo.itemText(i) for i in range(form.time_combo.count())]
+    assert labels == ['2020-01-01 00:00', '2020-01-01 00:30', '2020-01-01 01:00']
+
+
+def test_stepping_time_on_a_series_layer_updates_the_map(form, map_widget):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    form.time_combo.setCurrentIndex(2)
+    assert form._layers[0].time_index == 2
+    overlay = form._renderer.overlay_for(form._layers[0])
+    assert overlay is not None
+
+
+def test_multi_selecting_a_single_file_behaves_like_the_normal_open(form):
+    _open_multi(form, [WRFOUT])
+    assert form.file_list.topLevelItemCount() == 1
+    assert form._open_file_paths() == [WRFOUT]
 
 
 # --- layer selection and property panel ----------------------------------

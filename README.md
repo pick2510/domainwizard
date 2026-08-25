@@ -5,9 +5,12 @@ map: **Domains**, for defining nested model domains and importing/exporting
 `namelist.wps` (extracted from the
 [GIS4WRF](https://github.com/GIS4WRF/gis4wrf) QGIS plugin's domain wizard);
 and **View**, for opening WRF/WPS NetCDF files (`geo_em*`, `met_em*`,
-`wrfinput*`, `wrfout*`) and drawing a configurable stack of colored raster
-layers - one per (variable, time step, vertical level, colormap, unit,
-opacity, interpolate-on-display) selection - over the same basemap, so
+`wrfinput*`, `wrfout*` - including a multi-select of several same-domain
+files from a split-per-timestep run, auto-combined into one file with a
+single time axis, see `wrfseries.py`) and drawing a configurable stack of
+colored raster layers - one per (variable, time step, vertical level,
+colormap, unit, opacity, interpolate-on-display) selection - over the same
+basemap, so
 terrain/land-use/meteorology can be checked against where the domains were
 actually configured. A colorbar for the selected layer (with configurable
 tick count/number format) is drawn directly on the map
@@ -179,6 +182,20 @@ machine, not just redundant.
   file's own `MMINLU` landuse scheme, soil-type fields and any
   `units == 'category'` variable flagged with an unnamed scheme) for
   `rasterlayer.py`'s categorical rendering path.
+- `src/wrftools/wrfseries.py` - groups several same-domain WRF/WPS files
+  (the common `frames_per_outfile=1` convention - one output file per
+  timestep, e.g. `wrfout_d03_2025-03-14_00_00_00`, `..._00_30_00`, ...) into
+  a `WRFFileSeries` with one time axis spanning all of them, purely from
+  recognizing the filename pattern (`wrfout`/`wrfrst`/`met_em`, domain
+  number, valid time) - no changes needed anywhere else, since
+  `WRFFileSeries` exposes the exact same interface as a single `WRFFile`
+  (`.read()`/`.crs`/`.geotransform`/`.variables`/`.times`/`.name`, ...).
+  Lazy: opening a series only opens its first file (needed immediately for
+  its grid/variables), not the rest - each other file opens on first read of
+  one of its own timesteps; see Known limitations for what that trades off.
+  Since each file's own name carries its exact valid time, a series shows
+  real timestamps in the Time dropdown instead of `wrfreader.py`'s
+  placeholder `Step N of M` labels.
 - `src/wrftools/colormaps.py` - small numpy-only named color LUTs
   (viridis, plasma, magma, cividis, coolwarm, terrain, greys, jet) plus a
   categorical LUT (`colormaps.CATEGORICAL`) for landuse-style variables,
@@ -210,12 +227,14 @@ machine, not just redundant.
   (`LayerRenderer.categorical_legend`). Both are drawn fixed in the map's
   top-right corner via `TileMapWidget.set_legend()`, independent of the
   geo-referenced overlay groups.
-- `src/wrftools/viewform.py` - the View tab: open files, add/remove/
-  reorder layers, and configure each layer's variable/time/level/colormap/
-  units/opacity/range/interpolate/colorbar-ticks. A categorical variable
-  auto-selects the categorical colormap (still manually overridable via the
-  same dropdown); the unit picker is hidden entirely for a variable with no
-  known conversions.
+- `src/wrftools/viewform.py` - the View tab: open files (multi-select; files
+  sharing a recognized WRF domain+kind naming pattern auto-combine into one
+  `wrfseries.WRFFileSeries` entry, everything else opens individually as
+  before), add/remove/reorder layers, and configure each layer's
+  variable/time/level/colormap/units/opacity/range/interpolate/colorbar-ticks.
+  A categorical variable auto-selects the categorical colormap (still
+  manually overridable via the same dropdown); the unit picker is hidden
+  entirely for a variable with no known conversions.
 - `src/gis4wrf/core/` - **vendored**, see below.
 
 ## Vendored `gis4wrf.core`
@@ -288,10 +307,27 @@ after any re-sync.
   namelist import/export and for building them directly in the UI (select a
   domain, "Add Child Domain" twice for two siblings). See
   `PLAN_TREE_DOMAINS.md`.
-- View tab: time steps are labelled by index ("Step N of M"), not by their
-  real timestamp - the `Times` char variable isn't readable through either
-  of GDAL's netCDF APIs on the files this was checked against (see
-  `wrfreader.py`'s docstring). Only NetCDF WRF/WPS files are supported (no
-  WPS *binary* geographical datasets - GIS4WRF's separate
+- View tab: time steps within a single file are labelled by index ("Step N
+  of M"), not by their real timestamp - the `Times` char variable isn't
+  readable through either of GDAL's netCDF APIs on the files this was
+  checked against (see `wrfreader.py`'s docstring). A multi-file series
+  (`wrfseries.py`) opened via multi-select *does* show real timestamps,
+  since each file's own name carries its exact valid time - unless any file
+  in the series has more than one internal timestep itself, in which case it
+  falls back to the same step-index labeling. Only NetCDF WRF/WPS files are
+  supported (no WPS *binary* geographical datasets - GIS4WRF's separate
   `wps_binary_to_gdal.py` path, not ported). `U`/`V` are destaggered by a
   simple adjacent-cell average.
+- Multi-file series (`wrfseries.py`) open lazily: only the first file is
+  opened when the series itself is opened (~1.3s for a real 12-file/
+  164-variable series, down from ~17s opening all 12 up front), and every
+  other file opens - and is checked against the first file's grid - only the
+  first time one of its own timesteps is actually read, so a mismatch deep
+  in a long series surfaces when the user steps to that time, not when the
+  series is opened. The one case that still opens every file up front is a
+  series whose files themselves contain more than one internal timestep
+  each (`frames_per_outfile > 1`) - a file's name alone can't say how many
+  timesteps it holds. Grouping is filename-based only (domain number + a
+  recognized naming pattern); it can't tell two different runs apart if
+  their output happens to share a directory and domain number and produces
+  the same grid by coincidence.
