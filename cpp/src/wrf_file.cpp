@@ -14,12 +14,12 @@ namespace wrftools {
 namespace {
 constexpr const char* kCoordinateVariables[] = {"XLAT", "XLONG", "XLAT_M", "XLONG_M", "XLAT_U", "XLONG_U", "XLAT_V", "XLONG_V", "XLAT_C", "XLONG_C", "CLAT", "CLONG", "Times"};
 
-std::string metadataValue(char** metadata, const char* key) {
+std::string metadataValue(CSLConstList metadata, const char* key) {
     const char* value = CSLFetchNameValue(metadata, key);
     return value ? value : "";
 }
 
-std::string variableMetadata(char** metadata, const std::string& variable, const char* key) {
+std::string variableMetadata(CSLConstList metadata, const std::string& variable, const char* key) {
     const auto bare = metadataValue(metadata, key);
     if (!bare.empty()) return bare;
     return metadataValue(metadata, (variable + "#" + key).c_str());
@@ -50,7 +50,7 @@ WrfFile::WrfFile(std::filesystem::path path)
     if (dataset_->GetGeoTransform(transform) == CE_None) std::copy(transform, transform + 6, geotransform_.begin());
 
     std::set<std::string> knownCoordinates(std::begin(kCoordinateVariables), std::end(kCoordinateVariables));
-    char** subdatasets = dataset_->GetMetadata("SUBDATASETS");
+    CSLConstList subdatasets = dataset_->GetMetadata("SUBDATASETS");
     for (int i = 0; subdatasets && subdatasets[i]; ++i) {
         const std::string target = subdatasetName(subdatasets[i]);
         if (target.empty()) continue;
@@ -60,7 +60,7 @@ WrfFile::WrfFile(std::filesystem::path path)
         std::unique_ptr<GDALDataset, decltype(&GDALClose)> field(
             static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
         if (!field || field->GetRasterCount() == 0) continue;
-        char** metadata = field->GetMetadata();
+        CSLConstList metadata = field->GetMetadata();
         const auto memoryOrder = variableMetadata(metadata, name, "MemoryOrder");
         // GDAL exposes vertical-only arrays as narrow rasters; only WRF's XY
         // fields can be located and rendered on the mass grid.

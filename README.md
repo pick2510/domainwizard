@@ -91,6 +91,13 @@ On Debian install the native development dependencies:
 sudo apt install cmake ninja-build g++ pkg-config qt6-base-dev libgdal-dev libproj-dev catch2
 ```
 
+On macOS with Homebrew:
+
+```
+brew install cmake ninja qt gdal proj catch2
+cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+```
+
 Build and test without touching the Python environment:
 
 ```

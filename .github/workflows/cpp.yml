@@ -1,0 +1,33 @@
+name: Native C++ build
+
+on:
+  push:
+    branches: [cplusplus]
+  pull_request:
+    branches: [cplusplus]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev catch2
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja qt gdal proj catch2
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+      - name: Build
+        run: cmake --build build-cpp
+      - name: Test
+        run: ctest --test-dir build-cpp --output-on-failure
