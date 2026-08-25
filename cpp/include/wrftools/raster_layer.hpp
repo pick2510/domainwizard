@@ -3,6 +3,7 @@
 #include "wrftools/colormaps.hpp"
 #include "wrftools/crs.hpp"
 #include "wrftools/wrf_file.hpp"
+#include "wrftools/wrf_source.hpp"
 
 #include <optional>
 #include <string>
@@ -39,6 +40,6 @@ struct RenderedRaster {
     std::map<int, std::string> categoricalLabels;
     std::vector<int> presentCategories;
 };
-[[nodiscard]] RenderedRaster renderLayer(const WrfFile& file, const RasterLayer& layer);
+[[nodiscard]] RenderedRaster renderLayer(WrfSource& source, const RasterLayer& layer);
 [[nodiscard]] QImage rasterImage(const RenderedRaster& raster);
 }  // namespace wrftools

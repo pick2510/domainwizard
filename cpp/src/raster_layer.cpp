@@ -8,16 +8,17 @@
 #include <limits>
 
 namespace wrftools {
-RenderedRaster renderLayer(const WrfFile& file, const RasterLayer& layer) {
-    const auto variable = std::find_if(file.variables().begin(), file.variables().end(), [&layer](const WrfVariable& value) { return value.name == layer.variable; });
-    if (variable == file.variables().end()) throw UserError("Layer variable is not available: " + layer.variable);
-    const auto native = file.read(layer.variable, layer.timeIndex, layer.levelIndex);
+RenderedRaster renderLayer(WrfSource& source, const RasterLayer& layer) {
+    const auto& variables = source.variables();
+    const auto variable = std::find_if(variables.begin(), variables.end(), [&layer](const WrfVariable& value) { return value.name == layer.variable; });
+    if (variable == variables.end()) throw UserError("Layer variable is not available: " + layer.variable);
+    const auto native = source.read(layer.variable, layer.timeIndex, layer.levelIndex);
     // Warp in native units, like the Python reference: unit conversion is
     // affine (a straight scale+offset), so it commutes with bilinear
     // resampling and the order makes no visible difference - matching it
     // anyway keeps this pinned against wrftools.rasterlayer's own cache.
-    const auto dimensions = file.size();
-    auto warped = warpToWebMercator(native, dimensions[0], dimensions[1], file.projectionWkt(), file.geotransform());
+    const auto dimensions = source.size();
+    auto warped = warpToWebMercator(native, dimensions[0], dimensions[1], source.projectionWkt(), source.geotransform());
     convertInPlace(warped.values, findUnit(variable->units, layer.unitKey));
 
     if (layer.colormap == kCategoricalColormap) {

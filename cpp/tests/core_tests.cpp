@@ -276,14 +276,15 @@ TEST_CASE("warped raster bounds match the Python reference") {
 }
 
 TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
-    WrfFile file("tests/fixtures/wrfout_multitime.nc");
-    const auto automatic = renderLayer(file, {.variable = "T2"});
+    WrfSourceRegistry registry;
+    auto& source = registry.open({"tests/fixtures/wrfout_multitime.nc"});
+    const auto automatic = renderLayer(source, {.variable = "T2"});
     REQUIRE(automatic.pixels.size() == 64);
     CHECK(automatic.width == 8);
     CHECK(automatic.maximum > automatic.minimum);
     CHECK(automatic.bounds3857.maxX > automatic.bounds3857.minX);
     CHECK(automatic.bounds3857.maxY > automatic.bounds3857.minY);
-    const auto manual = renderLayer(file, {.variable = "T2", .minimum = 270.0f, .maximum = 310.0f, .unitKey = "native"});
+    const auto manual = renderLayer(source, {.variable = "T2", .minimum = 270.0f, .maximum = 310.0f, .unitKey = "native"});
     CHECK(manual.minimum == 270.0f);
     CHECK(manual.maximum == 310.0f);
     CHECK(manual.pixels != automatic.pixels);

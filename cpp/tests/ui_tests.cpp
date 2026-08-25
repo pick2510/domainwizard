@@ -4,6 +4,7 @@
 // fixtures resolve as "tests/fixtures/...".
 #include "wrftools/domain_form.hpp"
 #include "wrftools/tile_map_widget.hpp"
+#include "wrftools/view_form.hpp"
 #include "wrftools/wps_namelist.hpp"
 
 #include <QApplication>
@@ -38,6 +39,41 @@ TEST_CASE("domain form builds a tree matching the sibling namelist") {
     REQUIRE(domain2->childCount() == 2);
     CHECK(form.project()->domains.domains()[2].parentId == 2);
     CHECK(form.project()->domains.domains()[3].parentId == 2);
+}
+
+TEST_CASE("view form opens a series as one file row with real timestamp labels") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_02_00_00.nc",
+    });
+    // Four files sharing one (kind, domain) group in one WRFFileSeries -
+    // one row, not four.
+    REQUIRE(form.fileTreeWidget()->topLevelItemCount() == 1);
+}
+
+TEST_CASE("view form builds a multi-layer stack that reorders and hides") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    REQUIRE(form.fileTreeWidget()->topLevelItemCount() == 1);
+
+    form.addLayer();
+    form.addLayer();
+    REQUIRE(form.layers().size() == 2);
+    // layers() is bottom-first (draw order); the tree displays topmost
+    // first - see rebuildLayerTree.
+    CHECK(form.layerTreeWidget()->topLevelItemCount() == 2);
+
+    // Selecting the top row (the second/most-recently-added layer) and
+    // hiding it via its checkbox is real widget interaction, matching
+    // on_layer_item_changed in the Python reference.
+    auto* topRow = form.layerTreeWidget()->topLevelItem(0);
+    topRow->setCheckState(0, Qt::Unchecked);
+    CHECK_FALSE(form.layers().back().settings.visible);
 }
 
 TEST_CASE("domain form selection follows real tree clicks") {

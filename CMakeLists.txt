@@ -25,6 +25,7 @@ add_library(wrftools_core
     cpp/src/wps_namelist.cpp
     cpp/src/wrf_file.cpp
     cpp/src/wrf_series.cpp
+    cpp/src/wrf_source.cpp
 )
 target_include_directories(wrftools_core PUBLIC cpp/include)
 target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui)

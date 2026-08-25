@@ -62,38 +62,45 @@ the feature-complete behavioral reference.
   have no table), RGBA output, Qt image conversion, colorbar pixmap with
   `auto`/`fixed`/`scientific` tick formatting, and a **categorical swatch
   legend** (20-row cap + "+N more").
-- View UI: open/close a file, variable/time/level/units/colormap controls,
-  preview, map overlay (now placed via the warp pipeline above), auto-zoom,
-  colorbar (continuous and categorical), visibility, and looping playback.
+- **View UI (`wrf_source.hpp`/`.cpp`, rewritten `view_form.hpp`/`.cpp`)**: a
+  real multi-layer stack - `WrfSource`/`WrfSourceRegistry` let `WrfFile` and
+  `WrfFileSeries` be opened and rendered interchangeably (mirroring
+  `wrfseries.py`'s "mirrors WRFFile's surface exactly" design), keyed by
+  path so a file already open (singly or as part of a series) is reused, not
+  reopened. Files tree (multi-select open, close-with-layers-in-use
+  confirmation) and Layers tree (checkable visibility, add/remove, move up/
+  down, topmost-first display over a bottom-first draw-order list) are
+  separate, independently populated widgets. Each layer carries its own
+  variable/time/level/colormap/units/opacity/range/interpolate; a
+  `WrfFileSeries` shows one file row with its real `%Y-%m-%d %H:%M`
+  timestamp labels instead of "Step i of N", and a lazily-detected series
+  mismatch drops just that layer's overlay (caught around each `renderLayer`
+  call in `refreshMap`) instead of failing the whole redraw. Zoom-to-layer,
+  categorical/continuous colorbar and movable info-text overlay, and
+  looping playback are wired per the selected layer.
 - Native regression suite, now including cross-language pins: CRS/geotransform,
   warped-raster bounds, domain bboxes, and LANDUSE palette values are each
   checked against a value produced by running the Python reference on the
   same fixture, not just internal self-consistency. Real Qt widget-interaction
   tests for `DomainForm` (tree shape from a real namelist, selection via
-  `setCurrentItem`) in a new `wrftools_ui_tests` binary. Current local
-  result: all CTest targets pass (23 cases).
+  `setCurrentItem`) and `ViewForm` (a 4-file series collapsing to one file
+  row, a 2-layer stack built and hidden via real checkbox clicks) in a new
+  `wrftools_ui_tests` binary. Current local result: all CTest targets pass
+  (23 CTest entries; `wrftools_ui_tests` alone runs 5 Catch2 cases).
 
 ## Still required for feature parity
 
 ### View tab and rendering
 
-- Add a true multi-layer stack: Files/Layers tree widgets, add/remove/
-  reorder, independently stored per-layer settings, simultaneous map
-  overlays (the overlay-group plumbing this needs already exists in
-  `TileMapWidget`; `ViewForm` itself still holds one `WrfFile` and renders
-  one layer).
-- Add byte-bounded warped-slice and count-bounded rendered-image caches
-  (`WrfFile::read`/`renderLayer` still reopen and re-warp on every call).
-- Connect `WrfFileSeries` to the View UI (it exists and is tested at the
-  core level, but nothing in `view_form.cpp` opens one), including real
-  `%Y-%m-%d %H:%M` timestamp labels and lazy mismatch errors degrading to
-  "no overlay" instead of propagating.
-- Add zoom-to-selected-layer, interpolation control, confirmation dialogs on
-  close-file-in-use, and the remaining close/remove edge cases from the
-  Python UI.
-- Tick-count/format/decimals controls and the movable info overlay exist at
-  the `TileMapWidget`/`colorbar` level but aren't wired into `ViewForm`'s UI
-  yet.
+- No caching: `WrfFile::read`/`renderLayer` reopen the GDAL subdataset and
+  re-warp on every call (every UI change, every playback tick, every layer
+  in `refreshMap`'s loop), rather than the Python reference's byte-bounded
+  warped-slice + count-bounded rendered-image cache tiers. Fine for the
+  small test fixtures; will be visibly slow on real wrfout-sized grids with
+  more than a couple of layers.
+- Tick-count/format/decimals controls exist at the `colorbar` level but
+  aren't exposed as UI controls in `ViewForm` yet (always `tickCount=3`,
+  `"auto"` format).
 
 ### Domains tab
 
@@ -109,9 +116,9 @@ the feature-complete behavioral reference.
 - Bundle Qt, GDAL, PROJ, GDAL data, and `proj.db` into a macOS `.app` and a
   portable Linux artifact; test both artifacts on clean machines.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown from 17 to 23 cases but is still far short) - especially
-  `tests/test_ui_view_layers.py`'s 43 cases, which have no native
-  counterpart yet since the layer stack itself isn't built.
+  suite has grown from 17 to 23 CTest entries / ~25 Catch2 cases but is
+  still far short) - especially `tests/test_ui_view_layers.py`'s 43 cases,
+  now that the layer stack exists to test against.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 
