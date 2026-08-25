@@ -79,6 +79,35 @@ one it finds first. `setup.sh` prints a note if it detects this.
 uv run wrftools
 ```
 
+## C++ port (experimental)
+
+The `cplusplus` branch also contains the in-progress native port in `cpp/`.
+It is a separate C++20/Qt 6/GDAL build; the Python application remains the
+feature-complete reference until the C++ parity test suite is complete.
+
+On Debian install the native development dependencies:
+
+```
+sudo apt install cmake ninja-build g++ pkg-config qt6-base-dev libgdal-dev libproj-dev catch2
+```
+
+Build and test without touching the Python environment:
+
+```
+cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cpp
+ctest --test-dir build-cpp --output-on-failure
+./build-cpp/wrftools
+```
+
+The current native milestone includes the Qt application shell; an
+OpenStreetMap-backed map with raster/vector/legend overlays and image export;
+WPS-native domain-tree validation and namelist I/O; GDAL-backed WRF NetCDF
+discovery, reads, destaggering, and lazy multi-file series; and unit,
+colormap, raster-image, and colorbar primitives. The complete Domains and
+View forms, CRS/warp parity, categorical styling, cache management, and
+release packaging remain to be ported for full feature parity.
+
 ## Packaging
 
 ```

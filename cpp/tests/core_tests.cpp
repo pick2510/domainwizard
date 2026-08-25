@@ -1,0 +1,185 @@
+#include "wrftools/domain.hpp"
+#include "wrftools/error.hpp"
+#include "wrftools/wrf_series.hpp"
+#include "wrftools/wrf_file.hpp"
+#include "wrftools/wps_namelist.hpp"
+#include "wrftools/colormaps.hpp"
+#include "wrftools/units.hpp"
+#include "wrftools/raster_layer.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <numeric>
+#include <limits>
+
+using namespace wrftools;
+
+TEST_CASE("WRF series names are parsed and ordered") {
+    const auto parsed = parseWrfFilename("wrfout_d03_2025-03-14_00_30_00");
+    REQUIRE(parsed);
+    CHECK(parsed->kind == "wrfout");
+    CHECK(parsed->domain == "03");
+    const auto grouped = groupWrfPaths({"wrfout_d03_2025-03-14_01_00_00", "wrfout_d03_2025-03-14_00_30_00", "geo_em.d01.nc"});
+    REQUIRE(grouped.groups.size() == 1);
+    CHECK(grouped.groups[0][0].filename() == "wrfout_d03_2025-03-14_00_30_00");
+    CHECK(grouped.singles.size() == 1);
+}
+
+TEST_CASE("WRF naming accepts every supported separator and rejects invalid names") {
+    const auto colon = parseWrfFilename("wrfout_d03_2025-03-14_00:30:00");
+    REQUIRE(colon);
+    const auto met = parseWrfFilename("met_em.d01.2025-03-14_00:00:00.nc");
+    REQUIRE(met);
+    CHECK(met->kind == "met_em");
+    CHECK_FALSE(parseWrfFilename("geo_em.d01.nc"));
+    CHECK_FALSE(parseWrfFilename("wrfinput_d01"));
+    CHECK_FALSE(parseWrfFilename("wrfout_d03_2025-02-30_00_00_00"));
+    CHECK_FALSE(parseWrfFilename("wrfout_d03_2025-03-14_25_00_00"));
+}
+
+TEST_CASE("WRF grouping keeps domains separate and lone files single") {
+    const auto grouped = groupWrfPaths({"wrfout_d01_2020-01-01_00_00_00", "wrfout_d02_2020-01-01_00_00_00", "wrfout_d01_2020-01-01_00_30_00", "geo_em.d01.nc"});
+    REQUIRE(grouped.groups.size() == 1);
+    CHECK(grouped.groups.front().size() == 2);
+    REQUIRE(grouped.singles.size() == 2);
+    CHECK(std::find(grouped.singles.begin(), grouped.singles.end(), "wrfout_d02_2020-01-01_00_00_00") != grouped.singles.end());
+}
+
+TEST_CASE("WRF series opens lazily and reads a selected timestamp") {
+    WrfFileSeries series({"tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    CHECK(series.openedFileCount() == 1);
+    REQUIRE(series.times().size() == 3);
+    CHECK(series.times()[1] == "2020-01-01 00:30");
+    CHECK(series.read("T2", 1).size() == 64);
+    CHECK(series.openedFileCount() == 2);
+    CHECK_THROWS_AS(series.read("T2", 3), UserError);
+}
+
+TEST_CASE("domain projects accept siblings and reject invalid parent ids") {
+    DomainProject project({{1, 1, 1, 0, 0, 100, 100}, {2, 1, 3, 0, 0, 30, 30}, {3, 1, 3, 0, 0, 30, 30}});
+    CHECK(project.domains().size() == 3);
+    CHECK_THROWS_AS(DomainProject({{1, 1, 1, 0, 0, 10, 10}, {2, 2, 3, 0, 0, 3, 3}}), UserError);
+}
+
+TEST_CASE("domain containment and subtree removal are validated") {
+    Domain parent{.id = 1, .parentId = 1, .columns = 100, .rows = 100, .bounds = Bounds{0, 0, 100, 100}};
+    Domain child{.id = 2, .parentId = 1, .ratio = 3, .columns = 10, .rows = 10, .bounds = Bounds{10, 10, 20, 20}};
+    Domain sibling{.id = 3, .parentId = 1, .ratio = 3, .columns = 10, .rows = 10, .bounds = Bounds{30, 30, 40, 40}};
+    Domain grandchild{.id = 4, .parentId = 2, .ratio = 3, .columns = 5, .rows = 5, .bounds = Bounds{12, 12, 15, 15}};
+    DomainProject project({parent, child, sibling, grandchild});
+    project.removeSubtree(2);
+    REQUIRE(project.domains().size() == 2);
+    CHECK(project.domains()[1].id == 2);
+    CHECK(project.domains()[1].parentId == 1);
+    child.bounds = Bounds{90, 90, 110, 110};
+    CHECK_THROWS_AS(DomainProject({parent, child}), UserError);
+}
+
+TEST_CASE("GDAL-backed reader discovers fixture variables") {
+    WrfFile file("tests/fixtures/geo_em_small.nc");
+    REQUIRE_FALSE(file.variables().empty());
+    CHECK(std::any_of(file.variables().begin(), file.variables().end(), [](const WrfVariable& value) { return value.name == "LU_INDEX"; }));
+}
+
+TEST_CASE("GDAL-backed reader reads real multi-time rasters") {
+    WrfFile file("tests/fixtures/wrfout_multitime.nc");
+    REQUIRE(std::any_of(file.variables().begin(), file.variables().end(), [](const WrfVariable& value) { return value.name == "T2"; }));
+    const auto first = file.read("T2", 1);
+    const auto second = file.read("T2", 2);
+    REQUIRE(first.size() == 64);
+    REQUIRE(second.size() == 64);
+    const auto firstMean = std::accumulate(first.begin(), first.end(), 0.0) / static_cast<double>(first.size());
+    const auto secondMean = std::accumulate(second.begin(), second.end(), 0.0) / static_cast<double>(second.size());
+    CHECK(secondMean > firstMean);
+    CHECK_THROWS_AS(file.read("T2", 99), UserError);
+    CHECK_THROWS_AS(file.read("NOT_A_REAL_VARIABLE"), UserError);
+}
+
+TEST_CASE("GDAL-backed reader reports dimensions and destaggers wind fields") {
+    WrfFile file("tests/fixtures/wrfout_multitime.nc");
+    CHECK(file.size() == std::array<int, 2>{8, 8});
+    const auto wind = std::find_if(file.variables().begin(), file.variables().end(), [](const WrfVariable& value) { return value.name == "U"; });
+    REQUIRE(wind != file.variables().end());
+    CHECK(wind->timeCount == 3);
+    CHECK(wind->levelCount == 3);
+    const auto values = file.read("U", 0, 0);
+    CHECK(values.size() == 64);
+    CHECK_THROWS_AS(file.read("U", 0, 3), UserError);
+}
+
+TEST_CASE("WPS sibling fixture imports and exports") {
+    const auto project = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
+    REQUIRE(project.domains.domains().size() == 4);
+    CHECK(project.domains.domains()[2].parentId == 2);
+    CHECK(project.domains.domains()[3].parentId == 2);
+    const auto output = std::filesystem::temp_directory_path() / "wrftools-cpp-namelist.wps";
+    writeWpsNamelist(project, output);
+    CHECK(readWpsNamelist(output).domains.domains().size() == 4);
+    std::filesystem::remove(output);
+}
+
+TEST_CASE("WPS export preserves nesting and root projection fields") {
+    const auto original = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
+    const auto output = std::filesystem::temp_directory_path() / "wrftools-cpp-roundtrip.wps";
+    writeWpsNamelist(original, output);
+    const auto reread = readWpsNamelist(output);
+    CHECK(reread.mapProjection == original.mapProjection);
+    CHECK(std::abs(reread.referenceLongitude - original.referenceLongitude) < 1e-12);
+    CHECK(reread.domains.domains()[1].ratio == original.domains.domains()[1].ratio);
+    CHECK(reread.domains.domains()[3].paddingBottom == original.domains.domains()[3].paddingBottom);
+    std::filesystem::remove(output);
+}
+
+TEST_CASE("WPS parser gives user errors for malformed domain cardinality") {
+    const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-invalid.wps";
+    std::ofstream out(path);
+    out << "&share\n max_dom = 2,\n/\n&geogrid\n parent_id = 1,\n parent_grid_ratio = 1,\n i_parent_start = 1,\n j_parent_start = 1,\n e_we = 10,\n e_sn = 10,\n map_proj = 'mercator',\n dx = 1000,\n dy = 1000,\n ref_lon = 0,\n ref_lat = 0,\n/\n";
+    out.close();
+    CHECK_THROWS_AS(readWpsNamelist(path), UserError);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("WPS linear-chain fixture remains valid") {
+    const auto project = readWpsNamelist("tests/fixtures/namelist_hongkong.wps");
+    REQUIRE(project.domains.domains().size() == 3);
+    CHECK(project.domains.domains()[1].parentId == 1);
+    CHECK(project.domains.domains()[2].parentId == 2);
+}
+
+TEST_CASE("unit conversions match WRF display choices") {
+    const auto temperature = conversionsFor(" K ");
+    REQUIRE(temperature.size() == 3);
+    CHECK(convert(273.15, findUnit("K", "degC")) == Catch::Approx(0.0));
+    std::vector<float> wind{1.0f, 2.0f};
+    convertInPlace(wind, findUnit("m/s", "kmh"));
+    CHECK(wind == std::vector<float>{3.6f, 7.2f});
+    CHECK_THROWS_AS(findUnit("K", "kn"), std::out_of_range);
+}
+
+TEST_CASE("colormaps preserve end points and transparent no-data") {
+    const auto& lut = colormap("viridis");
+    CHECK(lut.front() == Rgb{68, 1, 84});
+    CHECK(lut.back() == Rgb{253, 231, 37});
+    const std::vector<float> values{0.0f, 0.5f, 1.0f, std::numeric_limits<float>::quiet_NaN()};
+    const auto image = applyColormap(values, 0, 1, lut);
+    CHECK(image.front() == Rgba{68, 1, 84, 255});
+    CHECK(image[2] == Rgba{253, 231, 37, 255});
+    CHECK(image.back()[3] == 0);
+}
+
+TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
+    WrfFile file("tests/fixtures/wrfout_multitime.nc");
+    const auto automatic = renderLayer(file, {.variable = "T2"});
+    REQUIRE(automatic.pixels.size() == 64);
+    CHECK(automatic.width == 8);
+    CHECK(automatic.maximum > automatic.minimum);
+    const auto manual = renderLayer(file, {.variable = "T2", .minimum = 270.0f, .maximum = 310.0f, .unitKey = "native"});
+    CHECK(manual.minimum == 270.0f);
+    CHECK(manual.maximum == 310.0f);
+    CHECK(manual.pixels != automatic.pixels);
+}
