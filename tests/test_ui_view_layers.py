@@ -512,3 +512,102 @@ def test_adding_a_second_layer_does_not_recenter_the_map(form, map_widget):
     form.on_add_layer_button_clicked()  # second layer, same file
     assert map_widget._center_lon == pytest.approx(0.0, abs=0.01)
     assert map_widget._center_lat == pytest.approx(0.0, abs=0.01)
+
+
+# --- play button ----------------------------------------------------------
+
+def test_play_button_disabled_for_a_single_timestep_file(form):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    assert not form.play_button.isEnabled()
+
+
+def test_play_button_enabled_for_a_multi_file_series(form):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    assert form.play_button.isEnabled()
+
+
+def test_checking_play_starts_the_timer_and_advances_time_on_tick(form):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    form.play_button.setChecked(True)
+    assert form._play_timer.isActive()
+    assert form.time_combo.currentIndex() == 0
+
+    form._advance_play()
+    assert form.time_combo.currentIndex() == 1
+
+
+def test_play_wraps_back_to_the_first_frame_after_the_last(form):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    form.time_combo.setCurrentIndex(form.time_combo.count() - 1)
+
+    form._advance_play()
+    assert form.time_combo.currentIndex() == 0
+
+
+def test_unchecking_play_stops_the_timer(form):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    form.play_button.setChecked(True)
+    form.play_button.setChecked(False)
+    assert not form._play_timer.isActive()
+
+
+def test_switching_layer_selection_stops_playback(form):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.on_add_layer_button_clicked()
+    items = [form.layer_tree.topLevelItem(i) for i in range(form.layer_tree.topLevelItemCount())]
+    form.layer_tree.setCurrentItem(items[0])
+    form.play_button.setChecked(True)
+    assert form._play_timer.isActive()
+
+    form.layer_tree.setCurrentItem(items[1])
+    assert not form.play_button.isChecked()
+    assert not form._play_timer.isActive()
+
+
+# --- movable colorbar / info overlay ---------------------------------------
+
+def test_colorbar_legend_starts_in_the_default_corner_and_can_be_dragged(form, map_widget):
+    _open(form, GEO_EM)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+    map_widget.resize(400, 300)
+    map_widget.grab()  # force a paint so _legend_rect reflects the current pixmap
+
+    assert map_widget._legend_pos is None
+    default_rect = map_widget._legend_rect
+    assert default_rect.right() == pytest.approx(map_widget.width() - 10, abs=1)
+
+    from PyQt6.QtCore import QPointF
+    map_widget._legend_pos = QPointF(5, 5)
+    map_widget.grab()
+    assert map_widget._legend_rect.topLeft() == QPointF(5, 5)
+
+
+def test_info_overlay_hidden_by_default_and_shown_when_checked(form, map_widget):
+    _open_multi(form, SERIES_PATHS)
+    form.on_add_layer_button_clicked()
+    form.layer_tree.setCurrentItem(form.layer_tree.topLevelItem(0))
+
+    assert map_widget._info_text is None
+
+    form.show_info_check.setChecked(True)
+    assert map_widget._info_text is not None
+    assert '2020-01-01 00:00' in map_widget._info_text
+
+    form.time_combo.setCurrentIndex(1)
+    assert '2020-01-01 00:30' in map_widget._info_text
+
+    form.show_info_check.setChecked(False)
+    assert map_widget._info_text is None

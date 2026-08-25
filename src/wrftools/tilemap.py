@@ -18,7 +18,7 @@ import math
 import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import QPointF, QRectF, QStandardPaths, Qt
+from PyQt6.QtCore import QPointF, QRectF, QSize, QStandardPaths, Qt
 from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent, QMouseEvent, QPaintEvent, QResizeEvent
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import QWidget
@@ -200,10 +200,30 @@ class TileMapWidget(QWidget):
         self._dragging = False
         self._drag_last_pos = QPointF()
 
-        # A single small fixed-position overlay (e.g. the View tab's
-        # colorbar), independent of the geo-referenced overlay groups above -
-        # it's drawn directly in screen space, not projected from lon/lat.
+        # A single small movable overlay (e.g. the View tab's colorbar),
+        # independent of the geo-referenced overlay groups above - it's
+        # drawn directly in screen space, not projected from lon/lat.
+        # `_legend_pos` is None until the user drags it at least once, which
+        # means "use the default top-right corner"; once set it's an
+        # absolute top-left screen position that sticks across redraws
+        # (new pixmap, resize, etc.) until dragged again.
         self._legend: Optional[QPixmap] = None
+        self._legend_pos: Optional[QPointF] = None
+        self._legend_rect = QRectF()
+
+        # A single small movable text overlay (e.g. "T2 (degC) - 2025-03-14
+        # 00:30") - same movable-corner-box mechanism as the legend above,
+        # but text instead of a pixmap and anchored to the top-left by
+        # default so the two don't start out overlapping.
+        self._info_text: Optional[str] = None
+        self._info_pos: Optional[QPointF] = None
+        self._info_rect = QRectF()
+
+        # Which movable overlay (if any) mouseMoveEvent should reposition
+        # instead of panning the map - set in mousePressEvent, cleared on
+        # release. None means an ordinary map drag.
+        self._drag_target: Optional[str] = None  # None | 'legend' | 'info'
+        self._drag_offset = QPointF()
 
     # --- public API -----------------------------------------------------
 
@@ -231,11 +251,19 @@ class TileMapWidget(QWidget):
         return list(self._groups.get(name, (0, []))[1])
 
     def set_legend(self, pixmap: Optional[QPixmap]) -> None:
-        """Sets (or clears, with None) a small fixed-position overlay drawn
-        in the top-right corner - e.g. the View tab's colorbar. Unlike the
-        overlay groups above, this isn't geo-referenced: it's drawn directly
-        in screen space every paint, so it needs no repositioning logic."""
+        """Sets (or clears, with None) a small movable overlay - defaulting
+        to the top-right corner, or wherever the user last dragged it to -
+        e.g. the View tab's colorbar. Unlike the overlay groups above, this
+        isn't geo-referenced: it's drawn directly in screen space every
+        paint, so it needs no map-coordinate repositioning logic."""
         self._legend = pixmap
+        self.update()
+
+    def set_info_text(self, text: Optional[str]) -> None:
+        """Sets (or clears, with None) a small movable text overlay -
+        defaulting to the top-left corner, or wherever the user last dragged
+        it to - e.g. "T2 (degC) - 2025-03-14 00:30"."""
+        self._info_text = text
         self.update()
 
     def fit_bounds(self, min_lon: float, min_lat: float, max_lon: float, max_lat: float, padding_frac: float = 0.1) -> None:
@@ -313,13 +341,49 @@ class TileMapWidget(QWidget):
         self._paint_overlays(painter, top_left_world_px)
 
         if self._legend is not None:
-            margin = 10
-            painter.drawPixmap(self.width() - self._legend.width() - margin, margin, self._legend)
+            self._legend_rect = self._movable_rect(self._legend.size(), self._legend_pos, 'top-right')
+            painter.drawPixmap(self._legend_rect.topLeft().toPoint(), self._legend)
+        else:
+            self._legend_rect = QRectF()
+
+        if self._info_text:
+            fm = painter.fontMetrics()
+            text_size = fm.boundingRect(self._info_text).size()
+            padding = 6
+            box_size = QSize(text_size.width() + padding * 2, text_size.height() + padding * 2)
+            self._info_rect = self._movable_rect(box_size, self._info_pos, 'top-left')
+            painter.save()
+            painter.setBrush(QColor(255, 255, 255, 220))
+            painter.setPen(QColor(120, 120, 120))
+            painter.drawRect(self._info_rect)
+            painter.setPen(QColor(0, 0, 0))
+            painter.drawText(
+                self._info_rect.adjusted(padding, padding, -padding, -padding),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self._info_text)
+            painter.restore()
+        else:
+            self._info_rect = QRectF()
 
         if self._attribution:
             painter.setPen(QColor(0, 0, 0))
             painter.fillRect(QRectF(0, self.height() - 18, self.width(), 18), QColor(255, 255, 255, 180))
             painter.drawText(4, self.height() - 5, self._attribution)
+
+    def _movable_rect(self, size: QSize, pos: Optional[QPointF], default_corner: str, margin: int = 10) -> QRectF:
+        """Screen-space rect for a movable overlay of `size`: `pos` (an
+        absolute top-left, once the user has dragged it) if set, otherwise
+        `default_corner`'s usual margin-from-the-edge position. Either way
+        the result is clamped to stay fully inside the widget, so a resize
+        (or a pixmap that grew) can't leave it stranded off-screen."""
+        if pos is not None:
+            x, y = pos.x(), pos.y()
+        elif default_corner == 'top-right':
+            x, y = self.width() - size.width() - margin, margin
+        else:
+            x, y = margin, margin
+        x = max(0.0, min(x, max(0.0, self.width() - size.width())))
+        y = max(0.0, min(y, max(0.0, self.height() - size.height())))
+        return QRectF(x, y, size.width(), size.height())
 
     def _paint_overlays(self, painter: QPainter, top_left_world_px: QPointF) -> None:
         viewport = QRectF(self.rect())
@@ -396,11 +460,34 @@ class TileMapWidget(QWidget):
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._dragging = True
-            self._drag_last_pos = event.position()
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = event.position()
+        # Hit-test the movable overlays (legend first, matching paint order
+        # - it's drawn last/on top - though the two never overlap by
+        # default) before falling back to an ordinary map drag.
+        if self._legend is not None and self._legend_rect.contains(pos):
+            self._drag_target = 'legend'
+            self._drag_offset = pos - self._legend_rect.topLeft()
+            return
+        if self._info_text and self._info_rect.contains(pos):
+            self._drag_target = 'info'
+            self._drag_offset = pos - self._info_rect.topLeft()
+            return
+        self._drag_target = None
+        self._dragging = True
+        self._drag_last_pos = pos
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_target == 'legend':
+            self._legend_pos = event.position() - self._drag_offset
+            self.update()
+            return
+        if self._drag_target == 'info':
+            self._info_pos = event.position() - self._drag_offset
+            self.update()
+            return
+
         if not self._dragging:
             return
         delta = event.position() - self._drag_last_pos
@@ -416,6 +503,7 @@ class TileMapWidget(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
+            self._drag_target = None
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)

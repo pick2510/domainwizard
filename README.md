@@ -14,11 +14,17 @@ basemap, so
 terrain/land-use/meteorology can be checked against where the domains were
 actually configured. A colorbar for the selected layer (with configurable
 tick count/number format) is drawn directly on the map
-(`wrftools/colorbar.py`); a known-categorical variable (`LU_INDEX`,
+(`wrftools/colorbar.py`) as a movable overlay - drag it anywhere and it
+stays put across redraws; a known-categorical variable (`LU_INDEX`,
 `IVGTYP`, soil-type fields, ...) auto-selects a discrete swatch-per-class
 legend instead of a gradient, using the file's own WRF `LANDUSE.TBL` colors
-where available. The whole map view - basemap, layers, outlines, legend -
-can be exported as a PNG/JPEG via `File > Export Map Image...`.
+where available. An optional, independently movable info overlay ("Show
+Info Overlay" in the Colorbar box) shows the selected layer's variable,
+unit, and current time as one label. For a multi-timestep layer (typically
+a `wrfseries.WRFFileSeries`), a Play button next to the time step steps
+through every timestep automatically, looping back to the start at the end.
+The whole map view - basemap, layers, outlines, legend - can be exported as
+a PNG/JPEG via `File > Export Map Image...`.
 
 Deliberately lightweight: no QGIS, no Chromium/QWebEngine, no third-party
 map/web library, and no `netCDF4` dependency for reading WRF files - GDAL's
@@ -224,9 +230,11 @@ machine, not just redundant.
   fixed/scientific) for the selected layer's colormap and effective range
   (`LayerRenderer.effective_range`); `build_categorical_legend_pixmap()`
   draws a color-swatch-per-class list instead, for a categorical layer
-  (`LayerRenderer.categorical_legend`). Both are drawn fixed in the map's
-  top-right corner via `TileMapWidget.set_legend()`, independent of the
-  geo-referenced overlay groups.
+  (`LayerRenderer.categorical_legend`). Both are drawn via
+  `TileMapWidget.set_legend()` as a *movable* overlay - defaulting to the
+  map's top-right corner, but draggable anywhere with the mouse (its
+  position persists across redraws until dragged again) - independent of
+  the geo-referenced overlay groups.
 - `src/wrftools/viewform.py` - the View tab: open files (multi-select; files
   sharing a recognized WRF domain+kind naming pattern auto-combine into one
   `wrfseries.WRFFileSeries` entry, everything else opens individually as
@@ -234,7 +242,13 @@ machine, not just redundant.
   variable/time/level/colormap/units/opacity/range/interpolate/colorbar-ticks.
   A categorical variable auto-selects the categorical colormap (still
   manually overridable via the same dropdown); the unit picker is hidden
-  entirely for a variable with no known conversions.
+  entirely for a variable with no known conversions. A Play button next to
+  the time step control (enabled whenever the selected layer's file has more
+  than one timestep) steps through every timestep on a timer, looping back
+  to the start at the end - handy for a multi-file series. "Show Info
+  Overlay" in the Colorbar box adds a second, independently movable overlay
+  (`TileMapWidget.set_info_text()`) showing the selected layer's variable,
+  unit, and current time as one label, kept in sync as either changes.
 - `src/gis4wrf/core/` - **vendored**, see below.
 
 ## Vendored `gis4wrf.core`

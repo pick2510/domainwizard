@@ -12,7 +12,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import numpy as np
 import pytest
-from PyQt6.QtGui import QColor, QImage, QPen, QPixmap
+from PyQt6.QtCore import QEvent, QPointF, Qt
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication
 
 import gis4wrf.core as core
@@ -88,6 +89,108 @@ def test_legend_defaults_to_none_and_can_be_set_and_cleared(map_widget):
 
     map_widget.set_legend(None)
     assert map_widget._legend is None
+
+
+def test_info_text_defaults_to_none_and_can_be_set_and_cleared(map_widget):
+    assert map_widget._info_text is None
+
+    map_widget.set_info_text('T2 (degC)  —  2020-01-01 00:30')
+    assert map_widget._info_text == 'T2 (degC)  —  2020-01-01 00:30'
+
+    map_widget.set_info_text(None)
+    assert map_widget._info_text is None
+
+
+# --- movable legend / info overlay -------------------------------------------
+
+def test_legend_defaults_to_top_right_corner(map_widget):
+    map_widget.resize(400, 300)
+    map_widget.set_legend(QPixmap(60, 30))
+    map_widget.grab()  # forces a real paintEvent, populating _legend_rect
+    assert map_widget._legend_pos is None
+    assert map_widget._legend_rect.right() == pytest.approx(map_widget.width() - 10, abs=1)
+    assert map_widget._legend_rect.top() == pytest.approx(10, abs=1)
+
+
+def test_info_text_defaults_to_top_left_corner(map_widget):
+    map_widget.resize(400, 300)
+    map_widget.set_info_text('T2 (degC)')
+    map_widget.grab()
+    assert map_widget._info_pos is None
+    assert map_widget._info_rect.left() == pytest.approx(10, abs=1)
+    assert map_widget._info_rect.top() == pytest.approx(10, abs=1)
+
+
+def test_dragging_the_legend_moves_it_and_does_not_pan_the_map(map_widget):
+    map_widget.resize(400, 300)
+    map_widget.set_center(10.0, 20.0, zoom=4)
+    map_widget.set_legend(QPixmap(60, 30))
+    map_widget.grab()
+
+    center = map_widget._legend_rect.center()
+    offset = center - map_widget._legend_rect.topLeft()
+    _press(map_widget, center)
+    assert map_widget._drag_target == 'legend'
+    _move(map_widget, QPointF(20, 250))
+    map_widget.grab()
+    assert map_widget._legend_pos == QPointF(20, 250) - offset
+    _release(map_widget, QPointF(20, 250))
+    assert map_widget._drag_target is None
+
+    # A drag targeting the legend must not have panned the underlying map.
+    assert map_widget._center_lon == pytest.approx(10.0)
+    assert map_widget._center_lat == pytest.approx(20.0)
+
+
+def test_dragging_the_info_overlay_moves_it_independently_of_the_legend(map_widget):
+    map_widget.resize(400, 300)
+    map_widget.set_legend(QPixmap(60, 30))
+    map_widget.set_info_text('T2 (degC)')
+    map_widget.grab()
+
+    legend_pos_before = map_widget._legend_pos
+    center = map_widget._info_rect.center()
+    _press(map_widget, center)
+    assert map_widget._drag_target == 'info'
+    _move(map_widget, QPointF(150, 150))
+    map_widget.grab()
+    _release(map_widget, QPointF(150, 150))
+
+    assert map_widget._info_pos is not None
+    assert map_widget._legend_pos == legend_pos_before  # untouched
+
+
+def test_dragging_empty_map_area_still_pans_as_before(map_widget):
+    map_widget.resize(400, 300)
+    map_widget.set_center(0.0, 0.0, zoom=4)
+    map_widget.set_legend(QPixmap(60, 30))
+    map_widget.grab()
+
+    _press(map_widget, QPointF(200, 150))  # far from the legend's top-right box
+    assert map_widget._drag_target is None
+    assert map_widget._dragging is True
+    _move(map_widget, QPointF(150, 150))
+    _release(map_widget, QPointF(150, 150))
+
+    assert (map_widget._center_lon, map_widget._center_lat) != (0.0, 0.0)
+
+
+def _press(map_widget, pos):
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonPress, pos, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    map_widget.mousePressEvent(event)
+
+
+def _move(map_widget, pos):
+    event = QMouseEvent(
+        QEvent.Type.MouseMove, pos, pos, Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    map_widget.mouseMoveEvent(event)
+
+
+def _release(map_widget, pos):
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonRelease, pos, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    map_widget.mouseReleaseEvent(event)
 
 
 def test_raster_group_paints_before_vector_group(map_widget):

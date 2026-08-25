@@ -15,7 +15,7 @@ involved - but the widget-building and redraw-funnel shape is the same.
 import math
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
@@ -34,6 +34,12 @@ from wrftools import wrfseries
 
 DECIMALS = 50
 RANGE_VALIDATOR = QDoubleValidator(-1e30, 1e30, DECIMALS)
+
+# Time between frames while "Play" is running (see on_play_button_toggled) -
+# fast enough to feel like an animation, slow enough that each frame's
+# raster (colormap + warp, cached but not free on a cache miss) has time to
+# actually finish before the next tick fires.
+PLAY_INTERVAL_MS = 600
 
 # EPSG:3857's spherical-Mercator radius (matches tilemap.py's MERC_HALF /
 # pi), used only to convert a layer's bounds back to lon/lat for "Zoom to
@@ -117,12 +123,25 @@ class ViewForm(QWidget):
         self.prev_time_button.clicked.connect(self.on_prev_time_button_clicked)
         self.next_time_button = QPushButton('›')
         self.next_time_button.clicked.connect(self.on_next_time_button_clicked)
+        # Only meaningful (and only enabled - see _populate_time_combo) for
+        # a layer with more than one timestep, i.e. mainly the multi-file
+        # WRF output series case (wrfseries.WRFFileSeries) this was added
+        # for, though any multi-timestep file qualifies too.
+        self.play_button = QPushButton('▶')
+        self.play_button.setCheckable(True)
+        self.play_button.setEnabled(False)
+        self.play_button.toggled.connect(self.on_play_button_toggled)
         grid_props.addWidget(QLabel('Time:'), 1, 0)
         grid_props.addWidget(self.time_combo, 1, 1)
         hbox_time_buttons = QHBoxLayout()
         hbox_time_buttons.addWidget(self.prev_time_button)
         hbox_time_buttons.addWidget(self.next_time_button)
+        hbox_time_buttons.addWidget(self.play_button)
         grid_props.addLayout(hbox_time_buttons, 1, 2)
+
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(PLAY_INTERVAL_MS)
+        self._play_timer.timeout.connect(self._advance_play)
 
         self.level_label = QLabel('Level:')
         self.level_combo = QComboBox()
@@ -209,6 +228,16 @@ class ViewForm(QWidget):
         self.tick_decimals_spin.valueChanged.connect(self.on_tick_decimals_changed)
         grid_colorbar.addWidget(QLabel('Decimals:'), 2, 0)
         grid_colorbar.addWidget(self.tick_decimals_spin, 2, 1)
+
+        # A separate, independently movable overlay (see TileMapWidget.
+        # set_info_text) from the colorbar itself - shows the selected
+        # layer's variable/unit/time as one draggable label, e.g.
+        # "T2 (degC) - 2025-03-14 00:30", handy once the colorbar has been
+        # dragged away from its default corner and no longer doubles as an
+        # at-a-glance readout of what's on screen.
+        self.show_info_check = QCheckBox('Show Info Overlay')
+        self.show_info_check.toggled.connect(self.on_show_info_toggled)
+        grid_colorbar.addWidget(self.show_info_check, 3, 0, 1, 2)
 
         self.gbox_colorbar.setLayout(grid_colorbar)
 
@@ -403,6 +432,7 @@ class ViewForm(QWidget):
             self._selected_layer_id = select_id
         else:
             self._selected_layer_id = None
+            self.play_button.setChecked(False)  # the layer it was playing may no longer exist
         self._update_panel_visibility()
         self._populate_properties_panel()
 
@@ -410,6 +440,10 @@ class ViewForm(QWidget):
     def on_layer_selection_changed(self) -> None:
         selected = self.layer_tree.selectedItems()
         self._selected_layer_id = selected[0].data(0, LAYER_ID_ROLE) if selected else None
+        # Playback is tied to whichever layer's time_index is advancing -
+        # switching layers mid-play would silently start driving a
+        # different layer's time, which is surprising, so just stop it.
+        self.play_button.setChecked(False)
         self._update_panel_visibility()
         self._populate_properties_panel()
         # Changing the selection alone (no property edit) doesn't go through
@@ -543,6 +577,7 @@ class ViewForm(QWidget):
             self.time_combo.addItem(label)
         self.time_combo.setCurrentIndex(min(layer.time_index, self.time_combo.count() - 1))
         self.time_combo.blockSignals(False)
+        self.play_button.setEnabled(self.time_combo.count() > 1)
 
     def _populate_level_combo(self, wrf_file: WRFFile, layer: RasterLayer) -> None:
         var = wrf_file.variables[layer.variable]
@@ -607,6 +642,23 @@ class ViewForm(QWidget):
     def on_next_time_button_clicked(self) -> None:
         if self.time_combo.currentIndex() < self.time_combo.count() - 1:
             self.time_combo.setCurrentIndex(self.time_combo.currentIndex() + 1)
+
+    @pyqtSlot(bool)
+    def on_play_button_toggled(self, checked: bool) -> None:
+        self.play_button.setText('❚❚' if checked else '▶')
+        if checked:
+            self._play_timer.start()
+        else:
+            self._play_timer.stop()
+
+    def _advance_play(self) -> None:
+        if self.time_combo.count() == 0:
+            return
+        # Loops back to the start rather than stopping at the end - an
+        # animation that just halts on the last frame reads as "it broke",
+        # not "it finished".
+        next_index = (self.time_combo.currentIndex() + 1) % self.time_combo.count()
+        self.time_combo.setCurrentIndex(next_index)
 
     @pyqtSlot(int)
     def on_level_changed(self, index: int) -> None:
@@ -726,6 +778,10 @@ class ViewForm(QWidget):
         layer.tick_decimals = value
         self._update_colorbar()
 
+    @pyqtSlot(bool)
+    def on_show_info_toggled(self, checked: bool) -> None:
+        self._update_colorbar()
+
     # --- view --------------------------------------------------------------
 
     @pyqtSlot()
@@ -768,6 +824,7 @@ class ViewForm(QWidget):
         layer = self._selected_layer()
         if layer is None or not layer.visible:
             self.map_widget.set_legend(None)
+            self._update_info_overlay(None, None, None)
             return
 
         wrf_file = self._renderer.open_file(layer.file_path)
@@ -776,6 +833,9 @@ class ViewForm(QWidget):
         unit_label = self._display_unit_label(var, layer) if var else ''
         if unit_label:
             title += f' ({unit_label})'
+
+        time_label = wrf_file.times[layer.time_index] if layer.time_index < len(wrf_file.times) else ''
+        self._update_info_overlay(layer.variable, unit_label, time_label)
 
         if layer.colormap == colormaps.CATEGORICAL:
             try:
@@ -803,6 +863,22 @@ class ViewForm(QWidget):
             layer.colormap, vmin, vmax, title,
             tick_count=layer.tick_count, tick_format=layer.tick_format, tick_decimals=layer.tick_decimals)
         self.map_widget.set_legend(pixmap)
+
+    def _update_info_overlay(self, variable: Optional[str], unit_label: Optional[str], time_label: Optional[str]) -> None:
+        """Drives the map's optional movable info-text overlay (see
+        TileMapWidget.set_info_text) - hidden unless both "Show Info
+        Overlay" is checked and there's an actual selected/visible layer to
+        describe (the three args are only ever all-None or all-populated,
+        from _update_colorbar's two call sites)."""
+        if not self.show_info_check.isChecked() or variable is None:
+            self.map_widget.set_info_text(None)
+            return
+        text = variable
+        if unit_label:
+            text += f' ({unit_label})'
+        if time_label:
+            text += f'  —  {time_label}'
+        self.map_widget.set_info_text(text)
 
     @staticmethod
     def _display_unit_label(var: WRFVariable, layer: RasterLayer) -> str:
