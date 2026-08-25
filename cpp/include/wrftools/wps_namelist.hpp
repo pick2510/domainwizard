@@ -7,14 +7,11 @@
 
 namespace wrftools {
 
+// Projection and the root's reference point live on domains.domains()[0]
+// (mapProj/trueLat1/trueLat2/standLon/centerLon/centerLat) - WPS defines one
+// projection per project regardless of nesting shape, same as gis4wrf.core.
 struct WpsProject {
     DomainProject domains;
-    std::string mapProjection;
-    double referenceLongitude{};
-    double referenceLatitude{};
-    double trueLatitude1{};
-    double trueLatitude2{};
-    double standardLongitude{};
 };
 
 // Supports the WPS domain subset used by WRF Tools. Unknown namelist groups

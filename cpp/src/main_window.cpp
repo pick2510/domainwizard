@@ -15,9 +15,14 @@ MainWindow::MainWindow() {
     resize(1300, 800);
     auto* tabs = new QTabWidget;
     tabs->setMinimumWidth(340);
-    tabs->addTab(new DomainForm(tabs), "Domains");
     map_ = new TileMapWidget;
+    auto* domainForm = new DomainForm(map_, tabs);
+    tabs->addTab(domainForm, "Domains");
     tabs->addTab(new ViewForm(map_, tabs), "View");
+    // Only the active tab's redraw should recenter the shared map - without
+    // this, e.g. every Domains-tab field edit would yank the camera back
+    // while the user is looking at View-tab raster layers.
+    connect(tabs, &QTabWidget::currentChanged, this, [domainForm, tabs](int index) { domainForm->setActive(tabs->widget(index) == domainForm); });
     auto* splitter = new QSplitter;
     splitter->addWidget(tabs);
     splitter->addWidget(map_);

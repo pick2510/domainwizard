@@ -1,4 +1,5 @@
 #include "wrftools/wrf_file.hpp"
+#include "wrftools/crs.hpp"
 #include "wrftools/error.hpp"
 
 #include <gdal_priv.h>
@@ -32,6 +33,40 @@ int dimensionValueCount(const std::string& value) {
     return static_cast<int>(std::count(body.begin(), body.end(), ',')) + 1;
 }
 
+std::string globalValue(CSLConstList metadata, const char* key) {
+    const auto prefixed = metadataValue(metadata, (std::string("NC_GLOBAL#") + key).c_str());
+    return prefixed.empty() ? metadataValue(metadata, key) : prefixed;
+}
+
+// Projection ids follow wrf-python/gis4wrf.core.constants.ProjectionTypes:
+// 1=Lambert Conformal, 2=Polar Stereographic, 3=Mercator, 6=lat/lon.
+Crs buildWrfCrs(CSLConstList metadata) {
+    const auto projectionText = globalValue(metadata, "MAP_PROJ");
+    if (projectionText.empty()) throw UserError("WRF/WPS file has no MAP_PROJ attribute.");
+    int projection{};
+    try { projection = std::stoi(projectionText); } catch (const std::exception&) { throw UserError("WRF/WPS file has an invalid MAP_PROJ attribute: " + projectionText); }
+    const auto optionalReal = [&metadata](const char* key) -> std::optional<double> {
+        const auto value = globalValue(metadata, key);
+        return value.empty() ? std::nullopt : std::optional<double>(std::stod(value));
+    };
+    const double truelat1 = optionalReal("TRUELAT1").value_or(0.0);
+    const double truelat2 = optionalReal("TRUELAT2").value_or(truelat1);
+    const double standLon = optionalReal("STAND_LON").value_or(0.0);
+    const double centerLat = optionalReal("MOAD_CEN_LAT").value_or(0.0);
+    switch (projection) {
+        case 1: return Crs::lambert(truelat1, truelat2, {standLon, centerLat});
+        case 2: return Crs::polar(truelat1, standLon);
+        case 3: return Crs::mercator(truelat1, standLon);
+        case 6: {
+            const auto poleLat = optionalReal("POLE_LAT"), poleLon = optionalReal("POLE_LON");
+            if ((poleLat && *poleLat != 90.0) || (poleLon && *poleLon != 0.0))
+                throw UnsupportedError("Geographic coordinate system with rotated pole is not supported.");
+            return Crs::lonLat();
+        }
+        default: throw UnsupportedError("Unsupported WRF MAP_PROJ: " + std::to_string(projection));
+    }
+}
+
 std::string subdatasetName(const char* entry) {
     const std::string value = entry ? entry : "";
     constexpr std::string_view suffix = "_NAME=";
@@ -47,6 +82,20 @@ float coordinateValue(const std::filesystem::path& path, const char* variable, i
     if (dataset->GetRasterBand(1)->RasterIO(GF_Read, x, y, 1, 1, &value, 1, 1, GDT_Float32, 0, 0) != CE_None) throw UserError("Could not read WRF coordinate variable.");
     return value;
 }
+
+// Top-down geotransform (x_min, dx, 0, y_max, 0, -dy), derived from the
+// staggered U/V coordinate grids (edge-based) rather than the mass grid
+// (cell-centered - using it would offset the raster by half a cell). GDAL's
+// classic API returns netCDF arrays top-down: row 0 is the northernmost row.
+std::array<double, 6> buildGeoTransform(const std::filesystem::path& path, const Crs& crs, int nx, int ny) {
+    const auto swU = crs.toXy({coordinateValue(path, "XLONG_U", 0, ny - 1), coordinateValue(path, "XLAT_U", 0, ny - 1)});
+    const auto seU = crs.toXy({coordinateValue(path, "XLONG_U", nx, ny - 1), coordinateValue(path, "XLAT_U", nx, ny - 1)});
+    const auto swV = crs.toXy({coordinateValue(path, "XLONG_V", 0, ny), coordinateValue(path, "XLAT_V", 0, ny)});
+    const auto nwV = crs.toXy({coordinateValue(path, "XLONG_V", 0, 0), coordinateValue(path, "XLAT_V", 0, 0)});
+    const double dx = (seU.x - swU.x) / nx;
+    const double dy = (nwV.y - swV.y) / ny;
+    return {swU.x, dx, 0.0, nwV.y, 0.0, -dy};
+}
 }
 
 WrfFile::WrfFile(std::filesystem::path path)
@@ -55,8 +104,8 @@ WrfFile::WrfFile(std::filesystem::path path)
     auto* raw = static_cast<GDALDataset*>(GDALOpenEx(path_.string().c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr));
     if (!raw) throw UserError("Could not open WRF/WPS NetCDF file: " + path_.string());
     dataset_.reset(raw);
-    double transform[6];
-    if (dataset_->GetGeoTransform(transform) == CE_None) std::copy(transform, transform + 6, geotransform_.begin());
+    const auto crs = buildWrfCrs(dataset_->GetMetadata());
+    projectionWkt_ = crs.wkt();
 
     std::set<std::string> knownCoordinates(std::begin(kCoordinateVariables), std::end(kCoordinateVariables));
     CSLConstList subdatasets = dataset_->GetMetadata("SUBDATASETS");
@@ -99,10 +148,21 @@ WrfFile::WrfFile(std::filesystem::path path)
         height = std::min(height, field->GetRasterYSize());
     }
     size_ = {width, height};
-    try {
-        geographicBounds_ = {.west = coordinateValue(path_, "XLONG", 0, height - 1), .south = coordinateValue(path_, "XLAT", 0, height - 1), .east = coordinateValue(path_, "XLONG", width - 1, 0), .north = coordinateValue(path_, "XLAT", width - 1, 0)};
-    } catch (const UserError&) {
-        geographicBounds_ = {.west = coordinateValue(path_, "XLONG_M", 0, height - 1), .south = coordinateValue(path_, "XLAT_M", 0, height - 1), .east = coordinateValue(path_, "XLONG_M", width - 1, 0), .north = coordinateValue(path_, "XLAT_M", width - 1, 0)};
+    geotransform_ = buildGeoTransform(path_, crs, width, height);
+    // Geographic bounds for camera framing only (pixel placement uses the
+    // projected geotransform above via the warp pipeline, not this box):
+    // the four projected raster corners transformed to lon/lat, so a
+    // rotated Lambert/Polar domain still frames correctly even though its
+    // true outline isn't an axis-aligned lon/lat rectangle.
+    {
+        const auto xMin = geotransform_[0], yMax = geotransform_[3];
+        const auto xMax = xMin + geotransform_[1] * width, yMin = yMax + geotransform_[5] * height;
+        const std::array<LonLat, 4> corners{crs.toLonLat({xMin, yMin}), crs.toLonLat({xMax, yMin}), crs.toLonLat({xMin, yMax}), crs.toLonLat({xMax, yMax})};
+        geographicBounds_ = {.west = corners[0].lon, .south = corners[0].lat, .east = corners[0].lon, .north = corners[0].lat};
+        for (const auto& corner : corners) {
+            geographicBounds_.west = std::min(geographicBounds_.west, corner.lon); geographicBounds_.east = std::max(geographicBounds_.east, corner.lon);
+            geographicBounds_.south = std::min(geographicBounds_.south, corner.lat); geographicBounds_.north = std::max(geographicBounds_.north, corner.lat);
+        }
     }
     for (const auto& variable : variables_) {
         const std::string target = "NETCDF:\"" + path_.string() + "\":" + variable.name;

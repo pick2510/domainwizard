@@ -181,40 +181,6 @@ wheels = [
 ]
 
 [[package]]
-name = "wrftools"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "f90nml" },
-    { name = "gdal" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pyqt6" },
-    { name = "requests" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pyinstaller" },
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "f90nml", specifier = ">=1.5" },
-    { name = "gdal", specifier = "==3.12.4" },
-    { name = "numpy", specifier = ">=2.4.6" },
-    { name = "pyqt6", specifier = ">=6.11.0" },
-    { name = "requests", specifier = ">=2.34.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyinstaller", specifier = ">=6.22.2" },
-    { name = "pytest", specifier = ">=9.1.1" },
-]
-
-[[package]]
 name = "f90nml"
 version = "1.5"
 source = { registry = "https://pypi.org/simple" }
@@ -226,9 +192,9 @@ wheels = [
 
 [[package]]
 name = "gdal"
-version = "3.12.4"
+version = "3.10.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ba/46/254240e849a086a9e47ce1d32dae65e9781fbd47a96056b7b1655eb219d2/gdal-3.12.4.tar.gz", hash = "sha256:cba3ae61b1acc83aae494f77980c2ec86cefba4d6bfd6cac84a5552efabe90bd", size = 899408, upload-time = "2026-04-24T12:21:49.178Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/f9/a9a9496c8dc558c4c16a0c53283501fe3098b26536d5f475d378c8ed3437/gdal-3.10.3.tar.gz", hash = "sha256:b5550650daeeae8e41091581d9aea7d75a9f15b0ebbeb8c96e37458fa02264cd", size = 838170, upload-time = "2025-04-07T09:57:20.729Z" }
 
 [[package]]
 name = "idna"
@@ -608,4 +574,38 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
+]
+
+[[package]]
+name = "wrftools"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "f90nml" },
+    { name = "gdal" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pyqt6" },
+    { name = "requests" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pyinstaller" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "f90nml", specifier = ">=1.5" },
+    { name = "gdal", specifier = "==3.10.3" },
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "pyqt6", specifier = ">=6.11.0" },
+    { name = "requests", specifier = ">=2.34.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pyinstaller", specifier = ">=6.22.2" },
+    { name = "pytest", specifier = ">=9.1.1" },
 ]

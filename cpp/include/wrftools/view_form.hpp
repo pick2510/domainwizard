@@ -19,6 +19,7 @@ public:
     explicit ViewForm(TileMapWidget* map, QWidget* parent = nullptr);
 private:
     void openFile();
+    void closeFile();
     void refreshVariables();
     void renderSelected();
     std::unique_ptr<WrfFile> file_;

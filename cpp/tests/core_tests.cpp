@@ -6,6 +6,7 @@
 #include "wrftools/colormaps.hpp"
 #include "wrftools/units.hpp"
 #include "wrftools/raster_layer.hpp"
+#include "wrftools/warp.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -61,9 +62,13 @@ TEST_CASE("WRF series opens lazily and reads a selected timestamp") {
 }
 
 TEST_CASE("domain projects accept siblings and reject invalid parent ids") {
-    DomainProject project({{1, 1, 1, 0, 0, 100, 100}, {2, 1, 3, 0, 0, 30, 30}, {3, 1, 3, 0, 0, 30, 30}});
+    DomainProject project({
+        Domain{.id = 1, .parentId = 1, .ratio = 1, .columns = 100, .rows = 100},
+        Domain{.id = 2, .parentId = 1, .ratio = 3, .columns = 30, .rows = 30},
+        Domain{.id = 3, .parentId = 1, .ratio = 3, .columns = 30, .rows = 30},
+    });
     CHECK(project.domains().size() == 3);
-    CHECK_THROWS_AS(DomainProject({{1, 1, 1, 0, 0, 10, 10}, {2, 2, 3, 0, 0, 3, 3}}), UserError);
+    CHECK_THROWS_AS(DomainProject({Domain{.id = 1, .parentId = 1, .ratio = 1, .columns = 10, .rows = 10}, Domain{.id = 2, .parentId = 2, .ratio = 3, .columns = 3, .rows = 3}}), UserError);
 }
 
 TEST_CASE("domain containment and subtree removal are validated") {
@@ -86,6 +91,27 @@ TEST_CASE("GDAL-backed reader discovers fixture variables") {
     CHECK(std::any_of(file.variables().begin(), file.variables().end(), [](const WrfVariable& value) { return value.name == "LU_INDEX"; }));
     CHECK(file.geographicBounds().north > file.geographicBounds().south);
     CHECK(file.geographicBounds().east > file.geographicBounds().west);
+    CHECK_FALSE(file.projectionWkt().empty());
+}
+
+// Pinned against the Python reference (wrftools.wrfreader.WRFFile) run
+// against the same fixtures: `uv run python -c "from wrftools.wrfreader
+// import WRFFile; f = WRFFile(path); print(f.geotransform)"`. Both fixtures
+// are Mercator (MAP_PROJ=3) - exactly the projection the old
+// srs.SetMercator(truelat1, standLon, 1.0, ...) construction got wrong
+// (truelat1 belongs at lat_ts, not as a scale-1 origin latitude).
+TEST_CASE("geotransform matches the Python reference for Mercator fixtures") {
+    for (const char* path : {"tests/fixtures/geo_em_small.nc", "tests/fixtures/wrfout_multitime.nc"}) {
+        WrfFile file(path);
+        const auto gt = file.geotransform();
+        CHECK(gt[0] == Catch::Approx(-3118.452108972693).epsilon(1e-6));
+        CHECK(gt[1] == Catch::Approx(250.05003010343663).epsilon(1e-6));
+        CHECK(gt[2] == 0.0);
+        CHECK(gt[3] == Catch::Approx(2353541.4751173565).epsilon(1e-6));
+        CHECK(gt[4] == 0.0);
+        CHECK(gt[5] == Catch::Approx(-249.9877820990514).epsilon(1e-6));
+        CHECK(file.projectionWkt().find("Mercator") != std::string::npos);
+    }
 }
 
 TEST_CASE("GDAL-backed reader reads real multi-time rasters") {
@@ -125,13 +151,41 @@ TEST_CASE("WPS sibling fixture imports and exports") {
     std::filesystem::remove(output);
 }
 
+// Pinned against gis4wrf.core.Project.bboxes for the same fixture:
+// `uv run python -c "from gis4wrf.core.readers.namelist import
+// read_namelist; from gis4wrf.core.transforms.wps_namelist_to_project
+// import convert_wps_nml_to_project; from gis4wrf.core.project import
+// Project; nml = read_namelist(path, schema_name='wps'); project =
+// convert_wps_nml_to_project(nml, Project.create()); print([bbox for bbox
+// in project.bboxes])"` - domains 3/4 are Lambert siblings sharing domain
+// 2 as their parent, exactly the tree shape fillDomains's single
+// forward pass has to get right.
+TEST_CASE("fillDomains bboxes match the Python reference for a sibling tree") {
+    auto project = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
+    project.domains.fillDomains();
+    const auto& domains = project.domains.domains();
+    const std::array<Bounds, 4> expected{{
+        {-281249.99999999994, -284375.0000000014, 281250.00000000006, 284374.9999999986},
+        {-156249.99999999994, -159375.0000000014, 156250.00000000006, 159374.9999999986},
+        {15000.000000000058, 8124.999999998603, 65000.00000000006, 59374.9999999986},
+        {-61249.99999999994, -64375.0000000014, -11249.999999999942, -13125.000000001397},
+    }};
+    for (std::size_t i = 0; i < domains.size(); ++i) {
+        REQUIRE(domains[i].bounds.has_value());
+        CHECK(domains[i].bounds->minX == Catch::Approx(expected[i].minX).margin(1e-3));
+        CHECK(domains[i].bounds->minY == Catch::Approx(expected[i].minY).margin(1e-3));
+        CHECK(domains[i].bounds->maxX == Catch::Approx(expected[i].maxX).margin(1e-3));
+        CHECK(domains[i].bounds->maxY == Catch::Approx(expected[i].maxY).margin(1e-3));
+    }
+}
+
 TEST_CASE("WPS export preserves nesting and root projection fields") {
     const auto original = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
     const auto output = std::filesystem::temp_directory_path() / "wrftools-cpp-roundtrip.wps";
     writeWpsNamelist(original, output);
     const auto reread = readWpsNamelist(output);
-    CHECK(reread.mapProjection == original.mapProjection);
-    CHECK(std::abs(reread.referenceLongitude - original.referenceLongitude) < 1e-12);
+    CHECK(reread.domains.domains().front().mapProj == original.domains.domains().front().mapProj);
+    CHECK(std::abs(reread.domains.domains().front().centerLon - original.domains.domains().front().centerLon) < 1e-12);
     CHECK(reread.domains.domains()[1].ratio == original.domains.domains()[1].ratio);
     CHECK(reread.domains.domains()[3].paddingBottom == original.domains.domains()[3].paddingBottom);
     std::filesystem::remove(output);
@@ -176,11 +230,49 @@ TEST_CASE("colormaps preserve end points and transparent no-data") {
 
 TEST_CASE("categorical colormap indexes classes directly") {
     const std::vector<float> values{1.0f, 2.0f, -1.0f, std::numeric_limits<float>::quiet_NaN()};
-    const auto pixels = applyCategoricalColormap(values, categoricalColormap());
+    const auto legend = categoricalLut("USGS", 1, 2);
+    const auto pixels = applyCategoricalColormap(values, legend.lut);
     CHECK(pixels[0][3] == 255);
     CHECK(pixels[1] != pixels[0]);
     CHECK(pixels[2][3] == 0);
     CHECK(pixels[3][3] == 0);
+}
+
+// Pinned against gis4wrf.core.readers.categories.LANDUSE: `uv run python -c
+// "from gis4wrf.core.readers.categories import LANDUSE;
+// print(LANDUSE['USGS'][1])"` -> ('Urban and Built-Up Land', '#FF0000').
+TEST_CASE("categorical LANDUSE table matches the Python reference for known values") {
+    const auto usgs = categoricalLut("USGS", 1, 3);
+    CHECK(usgs.labels.at(1) == "Urban and Built-Up Land");
+    CHECK(usgs.lut[1] == Rgb{0xFF, 0x00, 0x00});
+    CHECK(usgs.labels.at(2) == "Dryland Cropland and Pasture");
+
+    const auto modis = categoricalLut("MODIFIED_IGBP_MODIS_NOAH", 1, 1);
+    CHECK(modis.labels.at(1) == "Evergreen Needleleaf Forest");
+    CHECK(modis.lut[1] == Rgb{0x00, 0x80, 0x00});
+
+    // An unknown scheme (e.g. a soil-type field, which has no table) falls
+    // back to a generated label/color rather than failing.
+    const auto soil = categoricalLut("", 5, 5);
+    CHECK(soil.labels.at(5) == "Category 5");
+}
+
+// Pinned against `wrftools.rasterlayer._warp_to_web_mercator` run on the
+// same fixture/variable/time: `uv run python -c "from wrftools.rasterlayer
+// import _warp_to_web_mercator; from wrftools.wrfreader import WRFFile; f =
+// WRFFile(path); print(_warp_to_web_mercator(f.read('T2', 1, 0), f.crs.wkt,
+// f.geotransform))"`.
+TEST_CASE("warped raster bounds match the Python reference") {
+    WrfFile file("tests/fixtures/wrfout_multitime.nc");
+    const auto values = file.read("T2", 1, 0);
+    const auto size = file.size();
+    const auto warped = warpToWebMercator(values, size[0], size[1], file.projectionWkt(), file.geotransform());
+    CHECK(warped.width == 8);
+    CHECK(warped.height == 8);
+    CHECK(warped.bounds3857.minX == Catch::Approx(12706639.339934358).epsilon(1e-6));
+    CHECK(warped.bounds3857.minY == Catch::Approx(2544877.2370938584).epsilon(1e-6));
+    CHECK(warped.bounds3857.maxX == Catch::Approx(12708803.936988916).epsilon(1e-6));
+    CHECK(warped.bounds3857.maxY == Catch::Approx(2547041.834148416).epsilon(1e-6));
 }
 
 TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
@@ -189,6 +281,8 @@ TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
     REQUIRE(automatic.pixels.size() == 64);
     CHECK(automatic.width == 8);
     CHECK(automatic.maximum > automatic.minimum);
+    CHECK(automatic.bounds3857.maxX > automatic.bounds3857.minX);
+    CHECK(automatic.bounds3857.maxY > automatic.bounds3857.minY);
     const auto manual = renderLayer(file, {.variable = "T2", .minimum = 270.0f, .maximum = 310.0f, .unitKey = "native"});
     CHECK(manual.minimum == 270.0f);
     CHECK(manual.maximum == 310.0f);

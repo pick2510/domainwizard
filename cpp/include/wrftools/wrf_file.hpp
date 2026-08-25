@@ -33,6 +33,7 @@ public:
     [[nodiscard]] const std::array<double, 6>& geotransform() const noexcept { return geotransform_; }
     [[nodiscard]] std::array<int, 2> size() const noexcept { return size_; }
     [[nodiscard]] const GeographicBounds& geographicBounds() const noexcept { return geographicBounds_; }
+    [[nodiscard]] const std::string& projectionWkt() const noexcept { return projectionWkt_; }
     [[nodiscard]] std::vector<float> read(const std::string& variable, int timeIndex = 0, int levelIndex = 0) const;
 
 private:
@@ -41,6 +42,7 @@ private:
     std::array<double, 6> geotransform_{};
     std::array<int, 2> size_{};
     GeographicBounds geographicBounds_{};
+    std::string projectionWkt_;
     std::unordered_map<std::string, int> staggerAxis_;
     std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> dataset_{nullptr, nullptr};
 };

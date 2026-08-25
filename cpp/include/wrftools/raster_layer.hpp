@@ -1,6 +1,7 @@
 #pragma once
 
 #include "wrftools/colormaps.hpp"
+#include "wrftools/crs.hpp"
 #include "wrftools/wrf_file.hpp"
 
 #include <optional>
@@ -27,6 +28,16 @@ struct RenderedRaster {
     int height{};
     float minimum{};
     float maximum{};
+    // EPSG:3857 placement bounds of `pixels` - see warp.hpp. Absent for the
+    // fixture-literal RenderedRaster construction the widget tests use
+    // directly (no WrfFile behind it), where placement isn't under test.
+    Bounds2D bounds3857;
+    // Populated only when layer.colormap == kCategoricalColormap - what
+    // colorbar's categorical legend needs. Empty/default for a continuous
+    // layer.
+    ColorLut categoricalPalette{};
+    std::map<int, std::string> categoricalLabels;
+    std::vector<int> presentCategories;
 };
 [[nodiscard]] RenderedRaster renderLayer(const WrfFile& file, const RasterLayer& layer);
 [[nodiscard]] QImage rasterImage(const RenderedRaster& raster);
