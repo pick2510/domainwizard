@@ -22,15 +22,13 @@ private:
 class SeriesSource final : public WrfSource {
 public:
     explicit SeriesSource(std::vector<std::filesystem::path> paths) : series_(std::move(paths)) {}
-    const std::vector<WrfVariable>& variables() const override { return series_.firstFile().variables(); }
+    const std::vector<WrfVariable>& variables() const override { return series_.variables(); }
     const std::array<double, 6>& geotransform() const override { return series_.firstFile().geotransform(); }
     std::array<int, 2> size() const override { return series_.firstFile().size(); }
     const std::string& projectionWkt() const override { return series_.firstFile().projectionWkt(); }
     const GeographicBounds& geographicBounds() const override { return series_.firstFile().geographicBounds(); }
     const std::vector<std::string>* seriesTimes() const override { return &series_.times(); }
-    std::string displayName() const override {
-        return series_.firstFile().path().filename().string() + " (" + std::to_string(series_.times().size()) + " files)";
-    }
+    std::string displayName() const override { return series_.name(); }
     std::vector<float> read(const std::string& variable, int timeIndex, int levelIndex) override { return series_.read(variable, timeIndex, levelIndex); }
 
 private:

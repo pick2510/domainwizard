@@ -1,6 +1,7 @@
 #include "wrftools/wrf_series.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <regex>
 #include <iomanip>
@@ -44,35 +45,114 @@ GroupedPaths groupWrfPaths(const std::vector<std::filesystem::path>& paths) {
     return result;
 }
 
+namespace {
+constexpr double kGeotransformTolerance = 1e-6;
+
+std::string formatTimestamp(const std::chrono::sys_seconds& validTime) {
+    const auto day = std::chrono::floor<std::chrono::days>(validTime);
+    const std::chrono::year_month_day date{day};
+    const auto clock = std::chrono::hh_mm_ss{validTime - day};
+    std::ostringstream label;
+    label << int(date.year()) << '-' << std::setfill('0') << std::setw(2) << unsigned(date.month()) << '-'
+          << std::setw(2) << unsigned(date.day()) << ' ' << std::setw(2) << clock.hours().count() << ':'
+          << std::setw(2) << clock.minutes().count();
+    return label.str();
+}
+
+int fileTimeCount(const WrfFile& file) {
+    int maxCount = 1;
+    for (const auto& variable : file.variables()) maxCount = std::max(maxCount, variable.timeCount);
+    return maxCount;
+}
+
+void checkSameGrid(const WrfFile& first, const WrfFile& other) {
+    if (other.projectionWkt() != first.projectionWkt() || other.size() != first.size())
+        throw UserError("WRF series files have incompatible grids.");
+    const auto& a = first.geotransform();
+    const auto& b = other.geotransform();
+    for (std::size_t i = 0; i < a.size(); ++i)
+        if (std::abs(a[i] - b[i]) > kGeotransformTolerance) throw UserError("WRF series files have incompatible grids.");
+}
+}  // namespace
+
 WrfFileSeries::WrfFileSeries(std::vector<std::filesystem::path> paths) : paths_(std::move(paths)) {
     if (paths_.size() < 2) throw UserError("A WRF file series needs at least two files.");
-    std::sort(paths_.begin(), paths_.end(), [](const auto& left, const auto& right) { return parseWrfFilename(left)->validTime < parseWrfFilename(right)->validTime; });
-    for (const auto& path : paths_) {
-        const auto parsed = parseWrfFilename(path);
-        if (!parsed) throw UserError("A series file has no recognized WRF timestamp: " + path.string());
-        const auto day = std::chrono::floor<std::chrono::days>(parsed->validTime);
-        const std::chrono::year_month_day date{day};
-        const auto clock = std::chrono::hh_mm_ss{parsed->validTime - day};
-        std::ostringstream label;
-        label << int(date.year()) << '-' << std::setfill('0') << std::setw(2) << unsigned(date.month()) << '-' << std::setw(2) << unsigned(date.day()) << ' ' << std::setw(2) << clock.hours().count() << ':' << std::setw(2) << clock.minutes().count();
-        times_.push_back(label.str());
+    auto first = std::make_unique<WrfFile>(paths_.front());
+    variables_ = first->variables();
+
+    std::vector<std::optional<ParsedWrfName>> parsed;
+    parsed.reserve(paths_.size());
+    for (const auto& path : paths_) parsed.push_back(parseWrfFilename(path));
+    const bool allParsed = std::all_of(parsed.begin(), parsed.end(), [](const auto& p) { return p.has_value(); });
+
+    if (fileTimeCount(*first) == 1 && allParsed) {
+        // Fast path: every file's valid time comes straight from its
+        // filename, and the first file has exactly one internal timestep -
+        // no need to open anything else. See wrfseries.py's module
+        // docstring for why this matters for large series.
+        for (const auto& p : parsed) { times_.push_back(formatTimestamp(p->validTime)); }
+        for (std::size_t i = 0; i < paths_.size(); ++i) timeMap_.emplace_back(i, 0);
+        files_.emplace(0, std::move(first));
+    } else {
+        // Eager fallback: some file's timestep count can't be inferred from
+        // its name alone, so every file must be opened up front to build a
+        // real time map, and .variables() becomes the true cross-file
+        // intersection.
+        files_.emplace(0, std::move(first));
+        for (std::size_t i = 1; i < paths_.size(); ++i) fileAt(i);
+
+        std::vector<std::string> commonNames;
+        for (const auto& variable : files_.at(0)->variables()) {
+            bool inAll = true;
+            for (std::size_t i = 1; i < paths_.size() && inAll; ++i) {
+                const auto& others = files_.at(i)->variables();
+                inAll = std::any_of(others.begin(), others.end(), [&](const auto& v) { return v.name == variable.name; });
+            }
+            if (inAll) commonNames.push_back(variable.name);
+        }
+        variables_.clear();
+        for (const auto& variable : files_.at(0)->variables())
+            if (std::find(commonNames.begin(), commonNames.end(), variable.name) != commonNames.end()) variables_.push_back(variable);
+
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < paths_.size(); ++i) total += static_cast<std::size_t>(fileTimeCount(*files_.at(i)));
+        std::size_t step = 0;
+        for (std::size_t fileIndex = 0; fileIndex < paths_.size(); ++fileIndex) {
+            const int stepsInFile = fileTimeCount(*files_.at(fileIndex));
+            for (int local = 0; local < stepsInFile; ++local) {
+                ++step;
+                std::ostringstream label;
+                label << "File " << (fileIndex + 1) << ", Step " << (local + 1) << " of " << stepsInFile
+                      << " (" << step << " of " << total << ")";
+                times_.push_back(label.str());
+                timeMap_.emplace_back(fileIndex, local);
+            }
+        }
     }
-    fileAt(0);
+}
+
+std::string WrfFileSeries::name() const {
+    const auto firstParsed = parseWrfFilename(paths_.front());
+    const std::string prefix = firstParsed ? (firstParsed->kind + "_d" + firstParsed->domain) : files_.at(0)->path().filename().string();
+    const auto lastParsed = parseWrfFilename(paths_.back());
+    if (firstParsed && lastParsed) {
+        return prefix + " (" + std::to_string(paths_.size()) + " files, " + formatTimestamp(firstParsed->validTime) +
+               " - " + formatTimestamp(lastParsed->validTime) + ")";
+    }
+    return prefix + " (" + std::to_string(paths_.size()) + " files)";
 }
 
 WrfFile& WrfFileSeries::fileAt(std::size_t index) {
     if (const auto found = files_.find(index); found != files_.end()) return *found->second;
     auto opened = std::make_unique<WrfFile>(paths_.at(index));
-    if (!files_.empty()) {
-        const auto reference = files_.at(0)->size();
-        if (opened->size() != reference) throw UserError("WRF series files have incompatible grids.");
-    }
+    checkSameGrid(*files_.at(0), *opened);
     auto [it, inserted] = files_.emplace(index, std::move(opened));
     return *it->second;
 }
 
 std::vector<float> WrfFileSeries::read(const std::string& variable, int timeIndex, int levelIndex) {
-    if (timeIndex < 0 || timeIndex >= static_cast<int>(paths_.size())) throw UserError("WRF series time index is out of range.");
-    return fileAt(static_cast<std::size_t>(timeIndex)).read(variable, 0, levelIndex);
+    if (timeIndex < 0 || timeIndex >= static_cast<int>(timeMap_.size())) throw UserError("WRF series time index is out of range.");
+    const auto [fileIndex, localTimeIndex] = timeMap_.at(static_cast<std::size_t>(timeIndex));
+    return fileAt(fileIndex).read(variable, localTimeIndex, levelIndex);
 }
 }  // namespace wrftools

@@ -67,6 +67,78 @@ TEST_CASE("WRF series opens lazily and reads a selected timestamp") {
     CHECK_THROWS_AS(series.read("T2", 3), UserError);
 }
 
+TEST_CASE("grouping edge cases: lone recognized file and input-order independence") {
+    const auto lone = groupWrfPaths({"tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc"});
+    CHECK(lone.groups.empty());
+    REQUIRE(lone.singles.size() == 1);
+
+    const std::vector<std::filesystem::path> ordered{
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"};
+    auto reversed = ordered;
+    std::reverse(reversed.begin(), reversed.end());
+    const auto grouped = groupWrfPaths(reversed);
+    REQUIRE(grouped.groups.size() == 1);
+    CHECK(grouped.groups.front() == ordered);
+}
+
+TEST_CASE("WRF series read matches reading the underlying file directly") {
+    const std::vector<std::filesystem::path> paths{
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"};
+    WrfFileSeries series(paths);
+    WrfFile direct("tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc");
+    CHECK(series.read("T2", 1) == direct.read("T2", 0, 0));
+}
+
+TEST_CASE("WRF series name and path describe the group") {
+    const std::vector<std::filesystem::path> paths{
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"};
+    WrfFileSeries series(paths);
+    CHECK(series.name() == "wrfout_d01 (3 files, 2020-01-01 00:00 - 2020-01-01 01:00)");
+    CHECK(series.path() == paths.front());
+}
+
+TEST_CASE("WRF series rereading the same file does not reopen it") {
+    WrfFileSeries series({"tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    CHECK(series.openedFileCount() == 1);
+    CHECK_NOTHROW(series.read("T2", 0));
+    CHECK(series.openedFileCount() == 1);
+    CHECK(series.isFileOpen(1) == false);
+}
+
+TEST_CASE("WRF series rejects a mismatched grid at construction when it must open eagerly") {
+    // wrfout_with_1d_var.nc's name doesn't match the series pattern, so
+    // pairing it with a real series member forces the eager-open fallback,
+    // which validates every file's grid up front.
+    CHECK_THROWS_AS(WrfFileSeries({"tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_with_1d_var.nc"}), UserError);
+}
+
+TEST_CASE("WRF series grid mismatch several files in is only caught when read") {
+    // wrfout_d01_2020-01-01_02_00_00.nc parses as a real series member (so
+    // construction takes the fast lazy path and does not open it) but
+    // actually shares wrfout_with_1d_var.nc's different grid - the
+    // mismatch only surfaces once that file is actually read.
+    WrfFileSeries series({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_02_00_00.nc"});
+    CHECK(series.openedFileCount() == 1);
+    CHECK_NOTHROW(series.read("T2", 0));
+    CHECK_NOTHROW(series.read("T2", 2));
+    CHECK_THROWS_AS(series.read("T2", 3), UserError);
+}
+
+TEST_CASE("WRF series with a multi-timestep file falls back to eager open") {
+    // wrfout_multitime.nc's own filename doesn't match the series pattern
+    // at all, so pairing it with a real series member exercises the "can't
+    // trust the filename for timestep count" fallback path.
+    WrfFileSeries series({"tests/fixtures/wrfout_multitime.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc"});
+    CHECK(series.openedFileCount() == 2);
+    CHECK(series.isFileOpen(0));
+    CHECK(series.isFileOpen(1));
+}
+
 TEST_CASE("domain projects accept siblings and reject invalid parent ids") {
     DomainProject project({
         Domain{.id = 1, .parentId = 1, .ratio = 1, .columns = 100, .rows = 100},

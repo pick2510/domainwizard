@@ -61,7 +61,17 @@ the feature-complete behavioral reference.
   time/level selection, nodata conversion, U/V-style destaggering, geographic
   bounds (now derived from the corrected projected geotransform, not raw
   corner samples).
-- WRF filename parsing and lazy multi-file series reads.
+- WRF filename parsing and multi-file series reads, now with the real
+  fast/eager path split from `wrfseries.py`: a series whose every file's
+  valid time and single-timestep-per-file assumption can be trusted from
+  its filename alone opens only its first file up front and stays lazy;
+  one where any file can't be trusted that way (an unparseable name, or a
+  first file with more than one internal timestep) opens everything eagerly
+  and builds a real cross-file variable intersection and stepped time
+  labels. Fixes a real crash: the previous version dereferenced
+  `parseWrfFilename`'s `optional` before checking it succeeded, so a
+  series containing an unparseable filename crashed instead of raising
+  `UserError` or falling back.
 - Rendering primitives: explicit unit conversions, continuous colormaps,
   **real WRF LANDUSE categorical palettes** (USGS 31 entries,
   MODIFIED_IGBP_MODIS_NOAH 24 entries, vendored from `LANDUSE.TBL` via
@@ -140,13 +150,13 @@ the feature-complete behavioral reference.
 - macOS `.app` bundling - no macOS machine available to build or verify
   this from within the current working environment.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown to 45 CTest entries). Still unported: `test_wrfseries.py`
-  (20 cases), `test_tilemap_overlays.py` (13 cases), `test_rasterlayer.py`
+  suite has grown to 52 CTest entries). `test_wrfseries.py` (20 cases) is
+  now ported, including the eager-fallback and lazy-grid-mismatch cases.
+  Still unported: `test_tilemap_overlays.py` (13 cases), `test_rasterlayer.py`
   (33 cases), `test_ui_view_layers.py` (43 cases, the largest remaining
-  gap, now that the layer stack exists to test against), `test_export.py`
-  (2 cases); `test_core_domain_tree.py`/`test_ui_domain_tree.py` are likely
-  mostly covered already by the existing domain tests but haven't been
-  diffed case-for-case.
+  gap), `test_export.py` (2 cases); `test_core_domain_tree.py`/
+  `test_ui_domain_tree.py` are likely mostly covered already by the
+  existing domain tests but haven't been diffed case-for-case.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 
