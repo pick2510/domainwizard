@@ -1,5 +1,18 @@
 # WRF Tools
 
+**The native C++/Qt6/GDAL app in `cpp/` (built on this branch, `cplusplus`)
+is becoming the default way to run WRF Tools.** It has reached full
+feature parity with the original Python/PyQt6 implementation described
+below - every Python test file has a ported C++ counterpart, and it goes
+beyond parity in a few places (OS light/dark theme following, resizable
+domains dragged directly on the map, and a WPS_GEOG binary static-data
+raster viewer the Python version never had) - and CI now produces portable
+Linux and macOS downloads on every push. See [Native app](#native-app)
+below for setup, or `PORT.md` for the full status/porting history. The
+Python implementation further down (`src/wrftools/`) remains available and
+fully working, but is now the legacy/reference implementation rather than
+the actively developed one; new features land in the C++ app first.
+
 A standalone (no QGIS required) WRF/WPS tool with two tabs on one shared
 map: **Domains**, for defining nested model domains and importing/exporting
 `namelist.wps` (extracted from the
@@ -39,12 +52,55 @@ including a categorical mode and a `jet` map) are small numpy-only LUTs, no
 matplotlib; unit conversion (`wrftools/units.py`, e.g. K -> degC, m/s ->
 knots) is a small explicit table, not a general unit-parsing library.
 
-## Setup
+## Native app
+
+The native C++20/Qt6/GDAL app (`cpp/`) has the same two-tab (Domains/View)
+layout and feature set described above, plus a third **Convert** tab
+(GeoTIFF <-> WPS geogrid binary conversion) and a few things beyond what
+the Python app has: the OS's light/dark theme is followed automatically
+(with a manual `Options > Theme` override), domains can be resized by
+dragging their corner handles directly on the map, and the View tab can
+open a raw WPS_GEOG binary static-data directory (e.g.
+`topo_gmted2010_30s`) as a raster layer - something the Python app never
+supported at all. See `PORT.md` for the full status and porting history.
+
+On Debian install the native development dependencies:
+
+```
+sudo apt install cmake ninja-build g++ pkg-config qt6-base-dev libgdal-dev libproj-dev catch2
+```
+
+On macOS with Homebrew:
+
+```
+brew install cmake ninja qt gdal proj catch2
+cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+```
+
+Build and test without touching the Python environment:
+
+```
+cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cpp
+ctest --test-dir build-cpp --output-on-failure
+./build-cpp/wrftools
+```
+
+Every push/PR to `cplusplus` builds, tests, and packages the native app on
+both Linux and macOS via GitHub Actions, and uploads the portable
+`wrftools-linux`/`wrftools-macos` bundles as downloadable workflow
+artifacts - no local build needed just to try it. To build a portable
+bundle locally instead: `./build-portable-cpp.sh` (Linux, self-contained
+via a full GDAL/Qt/PROJ dependency-closure walk + `patchelf`) or
+`./build-portable-macos.sh` (macOS, via Qt's own `macdeployqt` plus
+`dylibbundler` for everything else) - both write to `dist/`.
+
+## Python setup
 
 Linux and macOS are both supported (developed on Linux; regularly run and
-packaged on macOS too - see [Packaging](#packaging) below). Install GDAL
-first - `gdal-devel`/`libgdal-dev` on Linux, or `brew install gdal` on
-macOS - then:
+packaged on macOS too - see [Python packaging](#python-packaging) below).
+Install GDAL first - `gdal-devel`/`libgdal-dev` on Linux, or
+`brew install gdal` on macOS - then:
 
 ```
 ./setup.sh
@@ -73,49 +129,13 @@ that resolves first on `PATH` - conda ships its own, often much older,
 `gdal-config`, and `setup.sh` will happily (but wrongly) pin to whichever
 one it finds first. `setup.sh` prints a note if it detects this.
 
-## Run
+## Python run
 
 ```
 uv run wrftools
 ```
 
-## C++ port (experimental)
-
-The `cplusplus` branch also contains the in-progress native port in `cpp/`.
-It is a separate C++20/Qt 6/GDAL build; the Python application remains the
-feature-complete reference until the C++ parity test suite is complete.
-
-On Debian install the native development dependencies:
-
-```
-sudo apt install cmake ninja-build g++ pkg-config qt6-base-dev libgdal-dev libproj-dev catch2
-```
-
-On macOS with Homebrew:
-
-```
-brew install cmake ninja qt gdal proj catch2
-cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
-```
-
-Build and test without touching the Python environment:
-
-```
-cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-cpp
-ctest --test-dir build-cpp --output-on-failure
-./build-cpp/wrftools
-```
-
-The current native milestone includes the Qt application shell; an
-OpenStreetMap-backed map with raster/vector/legend overlays and image export;
-WPS-native domain-tree validation and namelist I/O; GDAL-backed WRF NetCDF
-discovery, reads, destaggering, and lazy multi-file series; and unit,
-colormap, raster-image, and colorbar primitives. The complete Domains and
-View forms, CRS/warp parity, categorical styling, cache management, and
-release packaging remain to be ported for full feature parity.
-
-## Packaging
+## Python packaging
 
 ```
 ./build.sh
@@ -195,7 +215,7 @@ libraries are deliberately *not* bundled, since they're tied to the actual
 GPU driver in use; a bundled generic copy would be wrong on the target
 machine, not just redundant.
 
-## Project layout
+## Python project layout
 
 - `src/wrftools/tilemap.py` - the map widget: tile math, HTTP fetch +
   disk cache via `QtNetwork`, mouse pan/zoom, lon/lat overlay drawing, and
@@ -342,7 +362,7 @@ instead doesn't reproduce where WRF actually places a domain. See
 `tests/test_crs_datum.py` for the regression coverage. Re-apply this override
 after any re-sync.
 
-## Known limitations
+## Known limitations (Python implementation)
 
 - Tile math and lon/lat projection is spherical-Mercator-for-display only;
   it hasn't been checked against antimeridian-crossing or polar domains.

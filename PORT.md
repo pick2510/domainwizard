@@ -1,8 +1,12 @@
 # Native C++ port status
 
 The native implementation lives in `cpp/` on the `cplusplus` branch. It is a
-parallel C++20 / Qt 6 / GDAL application; the Python implementation remains
-the feature-complete behavioral reference.
+C++20 / Qt 6 / GDAL application that has reached full feature parity with
+the original Python implementation (every Python test file has a ported
+C++ counterpart) and now exceeds it in a few places - see "WPS_GEOG binary
+dataset visualization" below. It is becoming the default way to run WRF
+Tools; the Python implementation remains available as the legacy/reference
+implementation.
 
 ## Completed
 
