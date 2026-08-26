@@ -4,8 +4,27 @@
 
 class QApplication;
 class QPalette;
+class QSettings;
 
 namespace wrftools {
+
+// The user's explicit choice from Options > Theme, persisted via QSettings
+// (see themePreference()/setThemePreference() below) - System means "keep
+// following the OS", overriding automatic detection entirely for Light/
+// Dark. Distinct from Qt::ColorScheme, which only ever means Light/Dark/
+// Unknown and has no "explicitly follow the OS" concept of its own.
+enum class ThemePreference { System, Light, Dark };
+
+// Reads the persisted Options > Theme choice, defaulting to System when
+// nothing has been saved yet (a fresh install) or the stored value isn't
+// recognized. Takes `settings` by reference rather than constructing its
+// own QSettings() so tests can point it at an isolated (e.g. QTemporaryDir
+// IniFormat) instance instead of the real per-user config file; real
+// callers pass a default-constructed QSettings() (using the organization/
+// application name QApplication::setOrganizationName/setApplicationName
+// already set in main.cpp).
+[[nodiscard]] ThemePreference themePreference(const QSettings& settings);
+void setThemePreference(QSettings& settings, ThemePreference preference);
 
 // A Fusion-style dark palette (the standard recipe used across many Qt6
 // desktop apps) - not built from arbitrary guesses: WindowText/Text/

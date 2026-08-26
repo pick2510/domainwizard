@@ -3,12 +3,32 @@
 #include <QApplication>
 #include <QPalette>
 #include <QProcess>
+#include <QSettings>
 #include <QStyle>
 #include <QStyleFactory>
 
 #include <optional>
 
 namespace wrftools {
+namespace {
+constexpr const char* kThemePreferenceKey = "theme/mode";
+}  // namespace
+
+ThemePreference themePreference(const QSettings& settings) {
+    const auto value = settings.value(kThemePreferenceKey).toString();
+    if (value == "light") return ThemePreference::Light;
+    if (value == "dark") return ThemePreference::Dark;
+    return ThemePreference::System;  // default for a fresh install or an unrecognized value
+}
+
+void setThemePreference(QSettings& settings, ThemePreference preference) {
+    switch (preference) {
+        case ThemePreference::Light: settings.setValue(kThemePreferenceKey, "light"); break;
+        case ThemePreference::Dark: settings.setValue(kThemePreferenceKey, "dark"); break;
+        case ThemePreference::System: settings.setValue(kThemePreferenceKey, "system"); break;
+    }
+}
+
 namespace {
 // GNOME's own preference, queried directly via `gsettings`, rather than
 // trusting QStyleHints::colorScheme() - that relies on either a QPA

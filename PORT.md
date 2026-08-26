@@ -415,6 +415,28 @@ the feature-complete behavioral reference.
   fires there either, a mid-session GNOME dark-mode toggle isn't picked up
   live - only a fresh launch re-resolves it.
 
+  Even `resolveColorScheme`'s GNOME fallback turned out not to be enough
+  on its own in practice - one real GNOME desktop had an explicit dark
+  theme/mode set (confirmed by the user) while `gsettings get
+  org.gnome.desktop.interface color-scheme` still reported `'default'`
+  and `gtk-theme` reported plain `'Adwaita'`, not a `-dark` variant, so
+  automatic detection had no reliable signal to key off at all on that
+  system. Rather than chase more detection heuristics, `MainWindow` now
+  has an **Options > Theme** menu (System/Light/Dark, exclusive via
+  `QActionGroup`) as a manual override - `System` keeps following the OS
+  via `resolveColorScheme`/`applyColorScheme` (live, through `main_
+  window.cpp`'s own `colorSchemeChanged` connection, only while `System`
+  is the checked action), while `Light`/`Dark` apply
+  `Qt::ColorScheme::Light`/`Dark` directly and stick regardless of
+  whatever the OS reports afterward. The choice is persisted via
+  `ThemePreference`/`themePreference()`/`setThemePreference()`
+  (`theme.hpp`/`.cpp`) through a default-constructed `QSettings()` (using
+  the organization/application name `main.cpp` sets on `QApplication`),
+  so it survives a restart - `main.cpp` itself no longer applies any
+  theme at startup, since that decision now depends on the persisted
+  preference and so belongs entirely to `MainWindow`, which reads it as
+  early as possible in its own constructor.
+
 ## Non-goals retained from Python
 
 - No WPS binary geographical datasets.

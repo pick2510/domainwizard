@@ -13,6 +13,7 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QPalette>
+#include <QSettings>
 #include <QStyle>
 #include <QTemporaryDir>
 #include <catch2/catch_approx.hpp>
@@ -555,4 +556,48 @@ TEST_CASE("applyColorScheme switches to a dark Fusion palette for Dark and rever
     wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Dark);
     wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Unknown);
     CHECK(qApp->palette().color(QPalette::Window) != darkWindowColor);
+}
+
+TEST_CASE("themePreference defaults to System and round-trips through setThemePreference") {
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    // An isolated IniFormat file, not the real per-user config store (see
+    // theme.hpp: production code passes a default-constructed QSettings()
+    // instead, using the app's own organization/application name).
+    const auto path = dir.filePath("theme.ini");
+
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        CHECK(wrftools::themePreference(settings) == wrftools::ThemePreference::System);  // nothing saved yet
+    }
+
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        wrftools::setThemePreference(settings, wrftools::ThemePreference::Dark);
+    }
+    {
+        // A fresh QSettings instance over the same file, not the same
+        // object - proves the choice was actually persisted to disk, not
+        // just cached in memory.
+        QSettings settings(path, QSettings::IniFormat);
+        CHECK(wrftools::themePreference(settings) == wrftools::ThemePreference::Dark);
+    }
+
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        wrftools::setThemePreference(settings, wrftools::ThemePreference::Light);
+    }
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        CHECK(wrftools::themePreference(settings) == wrftools::ThemePreference::Light);
+    }
+
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        wrftools::setThemePreference(settings, wrftools::ThemePreference::System);
+    }
+    {
+        QSettings settings(path, QSettings::IniFormat);
+        CHECK(wrftools::themePreference(settings) == wrftools::ThemePreference::System);
+    }
 }

@@ -7,12 +7,15 @@
 #include "wrftools/domain_overlay.hpp"
 #include "wrftools/error.hpp"
 #include "wrftools/geotiff_convert_form.hpp"
+#include "wrftools/main_window.hpp"
+#include "wrftools/theme.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
 #include "wrftools/wps_namelist.hpp"
 
 #include <gdal_priv.h>
 
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QMouseEvent>
@@ -20,9 +23,11 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -44,6 +49,13 @@ using namespace wrftools;
 
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
+    // MainWindow's theme menu persists Options > Theme via a
+    // default-constructed QSettings(), which needs an organization/
+    // application name to know where to read/write - give it one distinct
+    // from the real app's ("WRF Tools"/"WRF Tools", set in main.cpp) so a
+    // test run never touches a developer's actual persisted preference.
+    application.setOrganizationName("WRF Tools Tests");
+    application.setApplicationName("wrftools_ui_tests");
     return Catch::Session().run(argc, argv);
 }
 
@@ -1271,4 +1283,52 @@ TEST_CASE("that categorical geogrid round-trips back to a GeoTIFF with the same 
             CHECK(roundTrip[i] == original[i]);
         }
     }
+}
+
+// --- Options > Theme menu ---------------------------------------------
+
+TEST_CASE("Options > Theme defaults to System and switches to Light/Dark live") {
+    // MainWindow's theme menu persists via a default-constructed
+    // QSettings() (see main.cpp/test main() above) - clear it first so an
+    // earlier test case (or a previous run) can't leave this one starting
+    // from an unexpected preference.
+    { QSettings settings; settings.clear(); }
+
+    MainWindow window;
+    REQUIRE(window.systemThemeAction());
+    REQUIRE(window.lightThemeAction());
+    REQUIRE(window.darkThemeAction());
+    CHECK(window.systemThemeAction()->isChecked());
+    CHECK_FALSE(window.lightThemeAction()->isChecked());
+    CHECK_FALSE(window.darkThemeAction()->isChecked());
+
+    window.darkThemeAction()->trigger();
+    CHECK(window.darkThemeAction()->isChecked());
+    CHECK_FALSE(window.systemThemeAction()->isChecked());  // QActionGroup exclusivity
+    CHECK(qApp->palette().color(QPalette::Window) == darkPalette().color(QPalette::Window));
+    {
+        QSettings settings;
+        CHECK(themePreference(settings) == ThemePreference::Dark);
+    }
+
+    window.lightThemeAction()->trigger();
+    CHECK(window.lightThemeAction()->isChecked());
+    CHECK_FALSE(window.darkThemeAction()->isChecked());
+    CHECK(qApp->palette().color(QPalette::Window) != darkPalette().color(QPalette::Window));
+    {
+        QSettings settings;
+        CHECK(themePreference(settings) == ThemePreference::Light);
+    }
+}
+
+TEST_CASE("a persisted Dark preference is restored the next time MainWindow is constructed") {
+    {
+        QSettings settings;
+        settings.clear();
+        setThemePreference(settings, ThemePreference::Dark);
+    }
+
+    MainWindow window;
+    CHECK(window.darkThemeAction()->isChecked());
+    CHECK(qApp->palette().color(QPalette::Window) == darkPalette().color(QPalette::Window));
 }
