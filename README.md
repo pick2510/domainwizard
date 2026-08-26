@@ -107,52 +107,52 @@ machine, not just redundant.
 
 ## Project layout
 
-- `cpp/src/main.cpp` - entry point: GDAL data-directory discovery (so a
+- `src/main.cpp` - entry point: GDAL data-directory discovery (so a
   portable bundle finds its own bundled `GDAL_DATA`/`PROJ_DATA` instead of
   a system install) and `MainWindow` construction.
-- `cpp/src/main_window.cpp` - the top-level window: the Domains/View/
+- `src/main_window.cpp` - the top-level window: the Domains/View/
   Convert tab set sharing one `TileMapWidget`, `File > Export Map Image`,
   and the `Options > Theme` (System/Light/Dark) menu.
-- `cpp/src/tile_map_widget.cpp` - the map widget: Web Mercator tile math,
+- `src/tile_map_widget.cpp` - the map widget: Web Mercator tile math,
   async tile fetch with an on-disk cache, mouse pan/zoom, named z-ordered
   raster/vector overlay groups, drag-to-move/resize handling for both
   domain outlines and the colorbar/info overlays, and `exportImage()`.
-- `cpp/src/domain_form.cpp` - the Domains tab: an editable domain tree
+- `src/domain_form.cpp` - the Domains tab: an editable domain tree
   (siblings supported, not just a linear chain), namelist import/export,
   and wiring domain edits (including on-map drag/resize) into
   `domain_overlay.cpp`'s outlines.
-- `cpp/src/domain_overlay.cpp` - turns a domain tree's bboxes into
+- `src/domain_overlay.cpp` - turns a domain tree's bboxes into
   densified, projected-then-reprojected-to-lon/lat outline polygons for
   the map widget, so curved projections like Lambert Conformal render
   accurately rather than as straight-edged boxes.
-- `cpp/src/domain.cpp` - domain bbox/padding/containment math (Lambert,
+- `src/domain.cpp` - domain bbox/padding/containment math (Lambert,
   Polar, Mercator, and lon/lat projections) shared by the Domains tab and
   its tests.
-- `cpp/src/crs.cpp` - builds a WRF/WPS coordinate reference system (on
+- `src/crs.cpp` - builds a WRF/WPS coordinate reference system (on
   WRF's own spherical earth radius, not WGS84) from proj4 strings, with
   cached coordinate transforms since a naive per-call
   `OGRCreateCoordinateTransformation` was measurably slow across a whole
   domain outline's worth of vertices.
-- `cpp/src/wps_namelist.cpp` - `namelist.wps` read/write, preserving
+- `src/wps_namelist.cpp` - `namelist.wps` read/write, preserving
   unknown groups/keys (e.g. `&metgrid`, `&ungrib`, `geog_data_*`) on
   export rather than dropping them.
-- `cpp/src/view_form.cpp` - the View tab: open files/series or a
+- `src/view_form.cpp` - the View tab: open files/series or a
   WPS_GEOG binary dataset directory, add/remove/reorder layers, and
   configure each layer's variable/time/level/colormap/units/opacity/
   range/interpolate/colorbar-ticks. A categorical variable auto-selects
   the categorical colormap; playback steps through every timestep on a
   timer.
-- `cpp/src/wrf_file.cpp` - opens a WRF/WPS NetCDF file via GDAL's own
+- `src/wrf_file.cpp` - opens a WRF/WPS NetCDF file via GDAL's own
   netCDF driver (no separate NetCDF library dependency), exposing its
   variables, geotransform (derived from the staggered U/V coordinate
   grids, not the mass grid), and CRS; destaggers `U`/`V` by simple
   adjacent-cell averaging.
-- `cpp/src/wrf_series.cpp` - groups several same-domain WRF/WPS files
+- `src/wrf_series.cpp` - groups several same-domain WRF/WPS files
   (the common `frames_per_outfile=1` convention) into one time axis
   spanning all of them, purely from a recognized filename pattern; lazy -
   only the first file is opened up front, the rest open on first read of
   one of their own timesteps.
-- `cpp/src/wrf_source.cpp` / `cpp/src/wps_binary_source.cpp` - the
+- `src/wrf_source.cpp` / `src/wps_binary_source.cpp` - the
   `WrfSource` interface `LayerRenderer` renders against (`WrfFile`,
   `WrfFileSeries`, or `WpsBinarySource` behind one uniform surface).
   `wps_binary_source.cpp` reads a raw WPS_GEOG binary dataset directory
@@ -161,34 +161,34 @@ machine, not just redundant.
   0..360 longitude datasets, tile-alignment padding beyond the true
   global extent, and an explicit `row_order` key - something the
   original Python implementation never visualized at all.
-- `cpp/src/layer_renderer.cpp` / `cpp/src/raster_layer.cpp` /
-  `cpp/src/warp.cpp` - the View tab's layer model and its two-tier
+- `src/layer_renderer.cpp` / `src/raster_layer.cpp` /
+  `src/warp.cpp` - the View tab's layer model and its two-tier
   render/cache pipeline: an open-file registry, a byte-bounded cache of
   warped (EPSG:3857) arrays (`warp.cpp`, via an in-memory `GDALWarp`,
   output-size-capped so a very high-resolution global raster warps in a
   bounded amount of time near the poles instead of unboundedly), and a
   count-bounded cache of colormapped images.
-- `cpp/src/colormaps.cpp` - fixed-stop named color LUTs (viridis, plasma,
+- `src/colormaps.cpp` - fixed-stop named color LUTs (viridis, plasma,
   magma, cividis, coolwarm, terrain, greys, jet) plus a categorical LUT
   (real WRF landuse/soil-type class colors where the scheme is known,
   falling back to a deterministic 8-color cycle otherwise).
-- `cpp/src/units.cpp` - a small explicit unit-conversion table (K ->
+- `src/units.cpp` - a small explicit unit-conversion table (K ->
   degC/degF, m/s -> km/h/knots/mph, Pa -> hPa/inHg, m -> ft/km, mm -> in)
   for the View tab's per-layer unit picker.
-- `cpp/src/colorbar.cpp` - builds the View tab's on-map colorbar legend:
+- `src/colorbar.cpp` - builds the View tab's on-map colorbar legend:
   a gradient with a configurable number of evenly spaced ticks (auto/
   fixed/scientific format) for a continuous layer, or a color-swatch-per-
   class list for a categorical one.
-- `cpp/src/theme.cpp` - OS light/dark theme detection (Qt's own
+- `src/theme.cpp` - OS light/dark theme detection (Qt's own
   `QStyleHints::colorScheme()` where available, with a GNOME `gsettings`
   fallback for desktops where that's unreliable) and application, plus
   the persisted manual `System`/`Light`/`Dark` override.
-- `cpp/src/geotiff_convert_form.cpp` - the Convert tab: a Qt GUI over the
+- `src/geotiff_convert_form.cpp` - the Convert tab: a Qt GUI over the
   vendored `convert_geotiff` library (see below).
 
 ## Vendored `convert_geotiff`
 
-`cpp/src/convert_geotiff/`/`cpp/include/convert_geotiff/` is
+`src/convert_geotiff/`/`include/convert_geotiff/` is
 [convert_geotiff](https://github.com/jbeezley/convert_geotiff) (public
 domain, by jbeezley), a small, GDAL-free GeoTIFF <-> WPS geogrid binary
 conversion library, vendored unmodified except for its GUI - the original

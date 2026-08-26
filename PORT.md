@@ -1,15 +1,21 @@
 # Native C++ port status
 
-The native implementation lives in `cpp/` on the `cplusplus` branch. It is a
-C++20 / Qt 6 / GDAL application that reached full feature parity with the
-original Python implementation (every Python test file had a ported C++
-counterpart) and now exceeds it in a few places - see "WPS_GEOG binary
-dataset visualization" below. It is now the only implementation in this
-repository - the Python source (`src/wrftools/`, `src/gis4wrf/`,
-`tests/test_*.py`) was removed once parity was reached and active
-development moved fully to `cpp/`; it remains recoverable from git history
-if ever needed. This document is kept as the porting history and still
-references the removed Python modules by name throughout for that reason.
+The native implementation lives at the repository root (`src/`, `include/`,
+`tests/`) on the `cplusplus` branch - it used to live under its own `cpp/`
+subdirectory alongside the Python implementation, but was flattened up to
+the top level once that implementation was removed and `cpp/` no longer
+served any purpose. It is a C++20 / Qt 6 / GDAL application that reached
+full feature parity with the original Python implementation (every Python
+test file had a ported C++ counterpart) and now exceeds it in a few places
+- see "WPS_GEOG binary dataset visualization" below. It is now the only
+implementation in this repository - the Python source (formerly
+`src/wrftools/`, `src/gis4wrf/`, `tests/test_*.py`) was removed once parity
+was reached and active development moved fully to this codebase; it
+remains recoverable from git history if ever needed. This document is kept
+as the porting history and mostly still references the removed Python
+modules, and the pre-flatten `cpp/src/`/`cpp/include/` paths, by name
+throughout for that reason - it wasn't systematically rewritten after
+either move, beyond this section.
 
 ## Completed
 
@@ -23,8 +29,8 @@ references the removed Python modules by name throughout for that reason.
   [convert_geotiff](https://github.com/jbeezley/convert_geotiff) (public
   domain), a separate small tool for GeoTIFF <-> WPS geogrid conversion that
   is not part of the Python `wrftools`/GIS4WRF codebase this port otherwise
-  tracks. Its conversion library (`cpp/src/convert_geotiff/`,
-  `cpp/include/convert_geotiff/`) is vendored unmodified - GDAL-free, only
+  tracks. Its conversion library (`src/convert_geotiff/`,
+  `include/convert_geotiff/`) is vendored unmodified - GDAL-free, only
   linking `libtiff`/`libgeotiff` - as the new `convert_geotiff_lib` CMake
   target; only its GUI (originally FLTK) was ported, to
   `GeotiffConvertForm` (`geotiff_convert_form.hpp`/`.cpp`), replacing
