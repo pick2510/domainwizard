@@ -23,8 +23,8 @@ references the removed Python modules by name throughout for that reason.
   [convert_geotiff](https://github.com/jbeezley/convert_geotiff) (public
   domain), a separate small tool for GeoTIFF <-> WPS geogrid conversion that
   is not part of the Python `wrftools`/GIS4WRF codebase this port otherwise
-  tracks. Its conversion library (`cpp/src/convert_geotiff/`,
-  `cpp/include/convert_geotiff/`) is vendored unmodified - GDAL-free, only
+  tracks. Its conversion library (`src/convert_geotiff/`,
+  `include/convert_geotiff/`) is vendored unmodified - GDAL-free, only
   linking `libtiff`/`libgeotiff` - as the new `convert_geotiff_lib` CMake
   target; only its GUI (originally FLTK) was ported, to
   `GeotiffConvertForm` (`geotiff_convert_form.hpp`/`.cpp`), replacing
