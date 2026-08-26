@@ -73,7 +73,13 @@ TileMapWidget::TileMapWidget(QWidget* parent) : QWidget(parent) {
     providerCombo_ = new QComboBox(this);
     for (const auto& provider : providers_) providerCombo_->addItem(provider.name);
     providerCombo_->setCurrentIndex(currentProviderIndex_);
-    providerCombo_->setStyleSheet("QComboBox { background-color: rgba(255, 255, 255, 220); }");
+    // Explicit text/selection colors, not just background - without them,
+    // the combo box (and especially its popup list) inherits whatever the
+    // active OS/Qt theme uses for text, which on a dark theme can render as
+    // white-on-white against this widget's deliberately light background.
+    providerCombo_->setStyleSheet(
+        "QComboBox { background-color: rgba(255, 255, 255, 220); color: #1e293b; }"
+        "QComboBox QAbstractItemView { background-color: #ffffff; color: #1e293b; selection-background-color: #3b82f6; selection-color: #ffffff; }");
     connect(providerCombo_, &QComboBox::currentIndexChanged, this, [this](int index) { setTileProvider(index); });
     repositionOverlayControls();
 }
@@ -139,7 +145,17 @@ void TileMapWidget::clearRasterOverlayGroup(const QString& name) { rasterGroups_
 void TileMapWidget::setLegend(QPixmap legend) { legend_ = std::move(legend); update(); }
 void TileMapWidget::setInfoText(const QString& text) { infoText_ = text; update(); }
 
-bool TileMapWidget::exportImage(const QString& path) { return grab().save(path); }
+bool TileMapWidget::exportImage(const QString& path) {
+    // The provider combo is a real child QWidget, not something paintEvent
+    // draws - grab() captures it like any other child, so it has to be
+    // hidden for the export and restored afterward rather than just skipped
+    // by a paint-time flag.
+    const bool wasVisible = providerCombo_->isVisible();
+    providerCombo_->setVisible(false);
+    const auto image = grab();
+    providerCombo_->setVisible(wasVisible);
+    return image.save(path);
+}
 
 QPointF TileMapWidget::worldPixel() const { return worldPixel(longitude_, latitude_, zoom_); }
 

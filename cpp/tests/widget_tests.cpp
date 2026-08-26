@@ -295,6 +295,31 @@ TEST_CASE("an out-of-range provider index is ignored") {
     CHECK(map.currentTileProviderIndex() == 0);
 }
 
+TEST_CASE("exporting hides the provider combo box and restores it afterward") {
+    wrftools::TileMapWidget map;
+    map.resize(320, 240);
+    map.show();
+    REQUIRE(map.tileProviderCombo()->isVisible());
+
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    REQUIRE(map.exportImage(directory.filePath("map.png")));
+
+    CHECK(map.tileProviderCombo()->isVisible());
+}
+
+TEST_CASE("exporting hides the combo box even if it started out hidden") {
+    wrftools::TileMapWidget map;
+    map.resize(320, 240);
+    map.tileProviderCombo()->setVisible(false);
+
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    REQUIRE(map.exportImage(directory.filePath("map.png")));
+
+    CHECK_FALSE(map.tileProviderCombo()->isVisible());
+}
+
 TEST_CASE("switching basemaps repaints without downloading any tiles") {
     wrftools::TileMapWidget map;
     map.resize(320, 240);
