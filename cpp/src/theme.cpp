@@ -2,10 +2,39 @@
 
 #include <QApplication>
 #include <QPalette>
+#include <QProcess>
 #include <QStyle>
 #include <QStyleFactory>
 
+#include <optional>
+
 namespace wrftools {
+namespace {
+// GNOME's own preference, queried directly via `gsettings`, rather than
+// trusting QStyleHints::colorScheme() - that relies on either a QPA
+// platform theme plugin or a reachable xdg-desktop-portal D-Bus service
+// reporting org.freedesktop.appearance's color-scheme, and plenty of real
+// GNOME/Qt combinations have neither wired up (colorScheme() staying
+// Light/Unknown while the desktop is actually in dark mode is exactly
+// that gap, not a hypothetical). `gsettings` reads GNOME's own setting
+// with no such dependency and is present on essentially every GNOME
+// desktop; std::nullopt (not present, timed out, or an unrecognized
+// value) means "no opinion", not "light".
+std::optional<Qt::ColorScheme> gnomeColorScheme() {
+    QProcess process;
+    process.start("gsettings", {"get", "org.gnome.desktop.interface", "color-scheme"});
+    if (!process.waitForFinished(500) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) return std::nullopt;
+    const auto output = QString::fromUtf8(process.readAllStandardOutput());
+    if (output.contains("prefer-dark", Qt::CaseInsensitive)) return Qt::ColorScheme::Dark;
+    if (output.contains("prefer-light", Qt::CaseInsensitive) || output.contains("default", Qt::CaseInsensitive)) return Qt::ColorScheme::Light;
+    return std::nullopt;
+}
+}  // namespace
+
+Qt::ColorScheme resolveColorScheme(Qt::ColorScheme reported) {
+    if (const auto gnome = gnomeColorScheme()) return *gnome;
+    return reported;
+}
 
 QPalette darkPalette() {
     const QColor window(53, 53, 53);
@@ -37,6 +66,10 @@ QPalette darkPalette() {
 }
 
 void applyColorScheme(QApplication& app, Qt::ColorScheme scheme) {
+    // scheme is expected to already be resolveColorScheme()'s output, not
+    // a raw QStyleHints::colorScheme() report - see theme.hpp. This
+    // function only decides style/palette from it.
+    //
     // Function-local statics: evaluated once, on whichever call happens
     // first - the caller's contract (see theme.hpp) is that this is always
     // the very first call, made before any other style/palette change, so

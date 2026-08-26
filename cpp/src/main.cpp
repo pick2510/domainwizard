@@ -51,9 +51,9 @@ int main(int argc, char* argv[]) {
     // captures the untouched native style/palette to revert to later.
     // Live-updates too: styleHints() outlives the application, so this
     // connection needs no explicit disconnect.
-    wrftools::applyColorScheme(application, application.styleHints()->colorScheme());
+    wrftools::applyColorScheme(application, wrftools::resolveColorScheme(application.styleHints()->colorScheme()));
     QObject::connect(application.styleHints(), &QStyleHints::colorSchemeChanged, &application,
-        [&application](Qt::ColorScheme scheme) { wrftools::applyColorScheme(application, scheme); });
+        [&application](Qt::ColorScheme scheme) { wrftools::applyColorScheme(application, wrftools::resolveColorScheme(scheme)); });
 
     configureGdalData();
     GDALAllRegister();

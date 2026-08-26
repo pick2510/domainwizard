@@ -395,6 +395,26 @@ the feature-complete behavioral reference.
   `colorSchemeChanged` handler, so toggling the OS theme while the app is
   running is picked up live, no restart needed.
 
+  Real-world GNOME testing found `QStyleHints::colorScheme()` itself
+  unreliable there: it depends on either a QPA platform theme plugin or a
+  reachable xdg-desktop-portal D-Bus service, and plenty of real GNOME/Qt
+  combinations have neither wired up, so it kept reporting Light/Unknown
+  on an actually-dark GNOME desktop. `resolveColorScheme(reported)` now
+  sits between `colorScheme()` and `applyColorScheme()`: it shells out to
+  `gsettings get org.gnome.desktop.interface color-scheme` (present on
+  essentially every GNOME desktop, no portal/plugin dependency) and
+  prefers that answer whenever it's reachable, falling back to `reported`
+  unchanged everywhere else (macOS, Windows, non-GNOME Linux, or a GNOME
+  desktop with no `gsettings` binary) - kept as a separate function
+  precisely so `applyColorScheme` itself (the style/palette decision)
+  stays a pure, directly-testable function of an already-resolved scheme,
+  with the environment-dependent shelling-out isolated to
+  `resolveColorScheme` and not unit tested itself (no portable way to
+  control a real desktop's `gsettings` output from a test). One caveat
+  from the same root cause: since GNOME's own `colorSchemeChanged` never
+  fires there either, a mid-session GNOME dark-mode toggle isn't picked up
+  live - only a fresh launch re-resolves it.
+
 ## Non-goals retained from Python
 
 - No WPS binary geographical datasets.
