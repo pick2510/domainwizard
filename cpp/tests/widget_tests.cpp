@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <QApplication>
+#include <QComboBox>
 #include <QImage>
 #include <QMouseEvent>
 #include <QTemporaryDir>
@@ -249,6 +250,59 @@ TEST_CASE("raster overlay outside the viewport is skipped without error") {
     QImage image(2, 2, QImage::Format_RGBA8888);
     map.setRasterOverlayGroup("view-rasters", {{image, {10'000'000.0, 10'000'000.0, 10'000'001.0, 10'000'001.0}}});
     CHECK_NOTHROW(map.grab());
+}
+
+TEST_CASE("the map exposes every built-in basemap provider, selectable via its combo box") {
+    wrftools::TileMapWidget map;
+    const auto& providers = map.tileProviders();
+    REQUIRE(providers.size() == 29);
+    CHECK(providers.front().name == "OpenStreetMap Standard");
+    CHECK(providers.back().name == "Bing VirtualEarth");
+    CHECK(map.currentTileProviderIndex() == 0);
+    CHECK(map.currentTileProvider().name == "OpenStreetMap Standard");
+
+    REQUIRE(map.tileProviderCombo() != nullptr);
+    CHECK(map.tileProviderCombo()->count() == static_cast<int>(providers.size()));
+    for (std::size_t i = 0; i < providers.size(); ++i) CHECK(map.tileProviderCombo()->itemText(static_cast<int>(i)) == providers[i].name);
+}
+
+TEST_CASE("selecting a provider in the combo box switches the active basemap") {
+    wrftools::TileMapWidget map;
+    const auto googleSatelliteIndex = map.tileProviderCombo()->findText("Google Satellite");
+    REQUIRE(googleSatelliteIndex >= 0);
+
+    map.tileProviderCombo()->setCurrentIndex(googleSatelliteIndex);
+    CHECK(map.currentTileProviderIndex() == googleSatelliteIndex);
+    CHECK(map.currentTileProvider().name == "Google Satellite");
+    CHECK(map.currentTileProvider().url == "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}");
+}
+
+TEST_CASE("setTileProvider switches the basemap directly and keeps the combo box in sync") {
+    wrftools::TileMapWidget map;
+    const auto osmHotIndex = map.tileProviderCombo()->findText("OpenStreetMap H.O.T.");
+    REQUIRE(osmHotIndex >= 0);
+
+    map.setTileProvider(osmHotIndex);
+    CHECK(map.currentTileProviderIndex() == osmHotIndex);
+    CHECK(map.tileProviderCombo()->currentIndex() == osmHotIndex);
+}
+
+TEST_CASE("an out-of-range provider index is ignored") {
+    wrftools::TileMapWidget map;
+    map.setTileProvider(static_cast<int>(map.tileProviders().size()));
+    CHECK(map.currentTileProviderIndex() == 0);
+    map.setTileProvider(-1);
+    CHECK(map.currentTileProviderIndex() == 0);
+}
+
+TEST_CASE("switching basemaps repaints without downloading any tiles") {
+    wrftools::TileMapWidget map;
+    map.resize(320, 240);
+    map.setCenter(8.54, 47.37, 6);
+    for (int i = 0; i < static_cast<int>(map.tileProviders().size()); ++i) {
+        map.setTileProvider(i);
+        CHECK_NOTHROW(map.grab());
+    }
 }
 
 TEST_CASE("rendered raster converts to a Qt image") {

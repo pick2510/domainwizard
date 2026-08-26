@@ -16,7 +16,27 @@
 #include <QRectF>
 #include <QWidget>
 
+class QComboBox;
+
 namespace wrftools {
+// A selectable basemap tile source - name/url/attribution/maxZoom mirror the
+// fields of a QGIS "connections-xyz" entry ({x}/{y}/{z} placeholders in url,
+// plus {q} for a Bing-style quadkey in place of x/y/z). `tms` is carried
+// through from that entry's format for completeness but not currently
+// applied - every built-in provider here uses the standard top-origin XYZ
+// scheme (Bing instead uses {q}, handled separately), so there has been no
+// provider yet that actually needs the TMS y-flip.
+struct TileProvider {
+    QString name;
+    QString url;
+    QString attribution;
+    int maxZoom{19};
+    bool tms{false};
+};
+// The built-in basemap choices, in display order. First entry
+// ("OpenStreetMap Standard") is the app's long-standing default.
+[[nodiscard]] std::vector<TileProvider> builtinTileProviders();
+
 // LonLat is defined in crs.hpp (lon/lat fields) and reused here.
 struct VectorOverlay { std::vector<LonLat> points; QColor color{Qt::red}; double width{2.0}; bool closed{false}; };
 // image is already reprojected to EPSG:3857 (see warp.hpp) - bounds3857 is
@@ -38,6 +58,14 @@ constexpr int kVectorOverlayZ = 100;
 class TileMapWidget final : public QWidget {
 public:
     explicit TileMapWidget(QWidget* parent = nullptr);
+    [[nodiscard]] const std::vector<TileProvider>& tileProviders() const noexcept { return providers_; }
+    [[nodiscard]] int currentTileProviderIndex() const noexcept { return currentProviderIndex_; }
+    [[nodiscard]] const TileProvider& currentTileProvider() const { return providers_.at(static_cast<std::size_t>(currentProviderIndex_)); }
+    // Switches the basemap - clears no state but re-fetches/re-renders under
+    // the new provider's own tile cache namespace, so switching back is
+    // instant if the old tiles are still cached.
+    void setTileProvider(int index);
+    [[nodiscard]] QComboBox* tileProviderCombo() const noexcept { return providerCombo_; }
     void setCenter(double longitude, double latitude, int zoom);
     void zoomToBounds(LonLat southWest, LonLat northEast);
     // The lon/lat box currently visible in the viewport - used by the
@@ -75,6 +103,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
     [[nodiscard]] QPointF worldPixel() const;
@@ -84,7 +113,12 @@ private:
     [[nodiscard]] QString tileKey(int x, int y, int zoom) const;
     void ensureTile(int x, int y, int zoom);
     [[nodiscard]] QRectF movableRect(QSizeF size, const std::optional<QPointF>& position, bool topRight) const;
+    [[nodiscard]] static QString quadKey(int x, int y, int zoom);
+    void repositionOverlayControls();
 
+    std::vector<TileProvider> providers_;
+    int currentProviderIndex_{0};
+    QComboBox* providerCombo_{};
     QNetworkAccessManager network_;
     QHash<QString, QPixmap> tiles_;
     QSet<QString> pending_;

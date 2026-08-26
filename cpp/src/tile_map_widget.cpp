@@ -1,11 +1,13 @@
 #include "wrftools/tile_map_widget.hpp"
 
+#include <QComboBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QResizeEvent>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QDir>
@@ -23,6 +25,40 @@ namespace {
 constexpr double kMercHalf = 20037508.342789244;
 }
 
+std::vector<TileProvider> builtinTileProviders() {
+    return {
+        {"OpenStreetMap Standard", "http://tile.openstreetmap.org/{z}/{x}/{y}.png", "OpenStreetMap contributors, under ODbL", 19, false},
+        {"Google Maps", "https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", "", 19, false},
+        {"Google Satellite", "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", "", 19, false},
+        {"Google Terrain", "https://mt1.google.com/vt/lyrs=t&x={x}&y={y}&z={z}", "", 19, false},
+        {"Google Terrain Hybrid", "https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}", "", 19, false},
+        {"Google Satellite Hybrid", "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", "", 19, false},
+        {"Esri Boundaries Places", "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 20, false},
+        {"Esri Gray (dark)", "http://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 16, false},
+        {"Esri Gray (light)", "http://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 16, false},
+        {"Esri Hillshade", "http://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 12, false},
+        {"Esri National Geographic", "http://services.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 12, false},
+        {"Esri Navigation Charts", "http://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 12, false},
+        {"Esri Ocean", "https://services.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 10, false},
+        {"Esri Physical Map", "https://services.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 10, false},
+        {"Esri Satellite", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 17, false},
+        {"Esri Shaded Relief", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 17, false},
+        {"Esri Standard", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 17, false},
+        {"Esri Terrain", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 13, false},
+        {"Esri Transportation", "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 20, false},
+        {"Esri Topo World", "http://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}", "Requires ArcGIS Online subscription", 20, false},
+        {"OpenStreetMap H.O.T.", "http://tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", "OpenStreetMap contributors, under ODbL", 19, false},
+        {"OpenTopoMap", "https://tile.opentopomap.org/{z}/{x}/{y}.png", "Kartendaten: © OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: © OpenTopoMap (CC-BY-SA)", 17, true},
+        {"Strava All", "https://heatmap-external-b.strava.com/tiles/all/bluered/{z}/{x}/{y}.png", "OpenStreetMap contributors, under ODbL", 15, false},
+        {"Strava Run", "https://heatmap-external-b.strava.com/tiles/run/bluered/{z}/{x}/{y}.png?v=19", "OpenStreetMap contributors, under ODbL", 15, false},
+        {"CartoDb Dark Matter", "http://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", "Map tiles by CartoDB, under CC BY 3.0. Data by OpenStreetMap, under ODbL.", 20, false},
+        {"CartoDb Dark Matter (No Labels)", "http://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png", "Map tiles by CartoDB, under CC BY 3.0. Data by OpenStreetMap, under ODbL.", 20, false},
+        {"CartoDb Positron", "http://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", "Map tiles by CartoDB, under CC BY 3.0. Data by OpenStreetMap, under ODbL.", 20, false},
+        {"CartoDb Positron (No Labels)", "http://basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png", "Map tiles by CartoDB, under CC BY 3.0. Data by OpenStreetMap, under ODbL.", 20, false},
+        {"Bing VirtualEarth", "http://ecn.t3.tiles.virtualearth.net/tiles/a{q}.jpeg?g=1", "", 19, true},
+    };
+}
+
 TileMapWidget::TileMapWidget(QWidget* parent) : QWidget(parent) {
     setMinimumSize(200, 200);
     setMouseTracking(true);
@@ -32,6 +68,38 @@ TileMapWidget::TileMapWidget(QWidget* parent) : QWidget(parent) {
         cacheDirectory_ = QDir::tempPath() + "/wrftools/tiles";
         QDir().mkpath(cacheDirectory_);
     }
+
+    providers_ = builtinTileProviders();
+    providerCombo_ = new QComboBox(this);
+    for (const auto& provider : providers_) providerCombo_->addItem(provider.name);
+    providerCombo_->setCurrentIndex(currentProviderIndex_);
+    providerCombo_->setStyleSheet("QComboBox { background-color: rgba(255, 255, 255, 220); }");
+    connect(providerCombo_, &QComboBox::currentIndexChanged, this, [this](int index) { setTileProvider(index); });
+    repositionOverlayControls();
+}
+
+void TileMapWidget::setTileProvider(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= providers_.size() || index == currentProviderIndex_) return;
+    currentProviderIndex_ = index;
+    if (providerCombo_->currentIndex() != index) providerCombo_->setCurrentIndex(index);
+    update();
+}
+
+void TileMapWidget::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    repositionOverlayControls();
+}
+
+void TileMapWidget::repositionOverlayControls() {
+    if (!providerCombo_) return;
+    // Below the coordinate/zoom readout drawn in the top-left corner by
+    // paintEvent (a 155x26 box starting at the origin) - avoids overlapping
+    // it or the movable legend/info boxes, which default to the top-right
+    // and top-left corners respectively but start further down.
+    constexpr int margin = 6;
+    constexpr int readoutHeight = 26;
+    providerCombo_->move(margin, readoutHeight + margin);
+    providerCombo_->resize(std::min(220, width() - 2 * margin), providerCombo_->sizeHint().height());
 }
 
 void TileMapWidget::setCenter(double longitude, double latitude, int zoom) {
@@ -97,19 +165,38 @@ QPointF TileMapWidget::lonLat(QPointF world, int zoom) {
     return {longitude, latitude};
 }
 
-QString TileMapWidget::tileKey(int x, int y, int zoom) const { return QString::number(zoom) + '_' + QString::number(x) + '_' + QString::number(y); }
+QString TileMapWidget::tileKey(int x, int y, int zoom) const {
+    const auto& provider = currentTileProvider();
+    return provider.name + '_' + QString::number(zoom) + '_' + QString::number(x) + '_' + QString::number(y);
+}
+
+QString TileMapWidget::quadKey(int x, int y, int zoom) {
+    QString key;
+    for (int i = zoom; i > 0; --i) {
+        int digit = 0;
+        const int mask = 1 << (i - 1);
+        if ((x & mask) != 0) digit += 1;
+        if ((y & mask) != 0) digit += 2;
+        key.append(QChar('0' + digit));
+    }
+    return key;
+}
 
 void TileMapWidget::ensureTile(int x, int y, int zoom) {
     const int count = 1 << zoom;
     x = (x % count + count) % count;
     if (y < 0 || y >= count) return;
+    const auto& provider = currentTileProvider();
+    if (zoom > provider.maxZoom) return;
     const auto key = tileKey(x, y, zoom);
     if (tiles_.contains(key) || pending_.contains(key)) return;
     const auto path = cacheDirectory_ + '/' + key + ".png";
     QPixmap cached;
     if (cached.load(path)) { tiles_.insert(key, cached); return; }
     pending_.insert(key);
-    QNetworkRequest request(QUrl(QString("https://tile.openstreetmap.org/%1/%2/%3.png").arg(zoom).arg(x).arg(y)));
+    QString url = provider.url;
+    url.replace("{z}", QString::number(zoom)).replace("{x}", QString::number(x)).replace("{y}", QString::number(y)).replace("{q}", quadKey(x, y, zoom));
+    QNetworkRequest request{QUrl(url)};
     request.setRawHeader("User-Agent", "WRF-Tools/0.1 (native Qt client)");
     auto* reply = network_.get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, key, path] {
@@ -203,9 +290,11 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
     painter.fillRect(QRect(0, 0, 155, 26), QColor(255, 255, 255, 190));
     painter.setPen(QColor(30, 41, 59));
     painter.drawText(QRect(6, 3, 145, 20), QString("%1°, %2°  z%3").arg(longitude_, 0, 'f', 3).arg(latitude_, 0, 'f', 3).arg(zoom_));
-    painter.setPen(QColor(100, 116, 139));
-    painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignBottom | Qt::AlignLeft,
-        "© OpenStreetMap contributors");
+    const auto& attribution = currentTileProvider().attribution;
+    if (!attribution.isEmpty()) {
+        painter.setPen(QColor(100, 116, 139));
+        painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignBottom | Qt::AlignLeft, attribution);
+    }
 }
 
 void TileMapWidget::wheelEvent(QWheelEvent* event) {
