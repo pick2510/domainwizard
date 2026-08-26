@@ -1,5 +1,6 @@
 #include "wrftools/wrf_source.hpp"
 #include "wrftools/error.hpp"
+#include "wrftools/wps_binary_source.hpp"
 
 namespace wrftools {
 namespace {
@@ -40,9 +41,9 @@ WrfSource& WrfSourceRegistry::open(const std::vector<std::filesystem::path>& pat
     if (paths.empty()) throw UserError("No files given to open.");
     const auto key = paths.front().string();
     if (const auto found = sources_.find(key); found != sources_.end()) return *found->second;
-    std::unique_ptr<WrfSource> source = paths.size() == 1
-        ? std::unique_ptr<WrfSource>(std::make_unique<SingleFileSource>(paths.front()))
-        : std::unique_ptr<WrfSource>(std::make_unique<SeriesSource>(paths));
+    std::unique_ptr<WrfSource> source = paths.size() != 1 ? std::unique_ptr<WrfSource>(std::make_unique<SeriesSource>(paths))
+        : isWpsGeogDataset(paths.front())                 ? std::unique_ptr<WrfSource>(std::make_unique<WpsBinarySource>(paths.front()))
+                                                            : std::unique_ptr<WrfSource>(std::make_unique<SingleFileSource>(paths.front()));
     auto [it, inserted] = sources_.emplace(key, std::move(source));
     return *it->second;
 }

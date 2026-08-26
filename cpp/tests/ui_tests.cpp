@@ -171,6 +171,18 @@ TEST_CASE("adding a layer with no open file is a no-op") {
     CHECK(form.layers().empty());
 }
 
+TEST_CASE("opening a WPS_GEOG dataset directory and adding a layer renders it as a raster") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geotiff_convert/wps_soiltemp_1deg"});
+    CHECK(form.fileTreeWidget()->topLevelItemCount() == 1);
+
+    form.addLayer();
+    REQUIRE(form.layers().size() == 1);
+    CHECK(form.layers().front().settings.variable == "Annual mean deep soil temperature");
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 1);
+}
+
 TEST_CASE("multi-selecting a series opens one file entry") {
     TileMapWidget map;
     ViewForm form(&map);

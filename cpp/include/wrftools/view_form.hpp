@@ -99,6 +99,7 @@ public:
 
 private:
     void openFile();
+    void openGeogDataset();
     void applyFieldsFromSignal();
     void rebuildFileList(const std::optional<std::string>& selectPath = std::nullopt);
     [[nodiscard]] std::optional<std::string> selectedFilePath() const;

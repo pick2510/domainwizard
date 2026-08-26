@@ -464,9 +464,64 @@ the feature-complete behavioral reference.
   preference and so belongs entirely to `MainWindow`, which reads it as
   early as possible in its own constructor.
 
+## WPS_GEOG binary dataset visualization (exceeds Python)
+
+The Python reference only ever reads a WPS_GEOG dataset's `index` metadata
+file, to resolve a display string in the Geogrid.tbl editor
+(`wps_binary_index.py`) - it never renders the actual tile data (see
+`README.md`'s "Known limitations"). This port adds a real View tab layer for
+it:
+
+- `wps_binary_source.hpp`/`.cpp` (`WpsBinarySource : WrfSource`) opens a
+  dataset directory (an `index` file plus its numbered tile files) via
+  `convert_geotiff::read_index_file`/`read_tiles` - the same tested
+  index/tile-file reader the Convert tab's GeoTIFF conversion already uses
+  (`convert_geotiff::GeogridIndex`/`geogrid_reader.cpp`) - and exposes it as
+  a single variable (one z-level per `read()`), so it slots into the
+  existing `LayerRenderer`/`ViewForm` pipeline unchanged, the same way
+  `WrfFile` does for NetCDF. `isWpsGeogDataset()`/`WrfSourceRegistry::open`
+  route a directory path here instead of treating it as WRF/WPS NetCDF.
+  `ViewForm` gets its own "Open WPS_GEOG Dataset…" button
+  (`QFileDialog::getExistingDirectory`) alongside "Open WRF/WPS NetCDF…".
+  Categorical datasets (`type=categorical` in `index`) default to the
+  categorical colormap with the existing 8-color/"Category N" fallback
+  legend, since no named landuse/soil scheme is recorded in the index file.
+- Geometry: projection from `truelat1`/`truelat2`/`stdlon` via the existing
+  `Crs::lambert`/`polar`/`mercator`/`lonLat` (an arbitrary but
+  self-consistent origin latitude for the projected cases, same choice
+  `convert_geotiff`'s own `geotiff_writer.cpp` makes, for the same reason:
+  the index file never records one). The geotransform follows WPS/GEOGRID's
+  documented convention that `known_x`/`known_y` locate a grid cell's
+  *center*, not a pixel corner - real-world datasets (e.g. this port's own
+  `wps_soiltemp_1deg` fixture, `known_lon=-179.5`/`known_lat=-89.5` at
+  `known_x=known_y=1.0`) rely on this: the true raster extent is exactly
+  -180..180/-90..90, not -179.5..180.5/-89.5..90.5. A dataset's own `dy`
+  sign selects whether tile-file row 1 is south (non-negative, the common
+  case) or north (negative, an authoring convention observed in some
+  real-world datasets - see `geotiff_writer.cpp`'s own comment); rows are
+  flipped to top-down (row 0 = north) accordingly, matching `WrfFile`'s
+  convention, before being handed to the shared warp/render pipeline.
+  `AlbersNad83`-projected datasets (rare) are rejected with
+  `UnsupportedError` - `Crs` has no Albers implementation.
+- `convert_geotiff_lib` was split in `CMakeLists.txt`: the index/tile
+  reader (`geogrid_index.cpp`, `geogrid_reader.cpp` - no TIFF/GEOTIFF
+  dependency) now lives in its own `convert_geotiff_reader` target, linked
+  by `wrftools_core`; the actual GeoTIFF read/write code
+  (`geotiff_reader.cpp`/`geotiff_writer.cpp`/`convert.cpp`/`convert_back.cpp`,
+  which do need libtiff/libgeotiff) stays in `convert_geotiff_lib`, linked
+  only by `wrftools_ui` for the Convert tab - `wrftools_core` still never
+  depends on TIFF/GEOTIFF.
+- Not addressed here: `convert_geotiff`'s own GeoTIFF <-> geogrid conversion
+  (`geotiff_reader.cpp`/`geotiff_writer.cpp`) always treats `known_x`/
+  `known_y` as a pixel *corner*, not the cell-center convention above -
+  self-consistent for its own round-trip (write then read back the same
+  tool's own output) but not necessarily geodetically accurate against a
+  real-world dataset's `index` file on the way in or out. Out of scope here
+  since it's a pre-existing property of the vendored Convert tab, not the
+  new View tab visualization path.
+
 ## Non-goals retained from Python
 
-- No WPS binary geographical datasets.
 - No checked support for antimeridian-crossing or polar display domains.
 - No rotated lat/lon WRF/WPS projection support.
 - Single-file internal times remain index-labelled when GDAL cannot expose

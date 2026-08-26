@@ -61,8 +61,9 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     auto* filesLayout = new QVBoxLayout;
     fileTree_ = new QTreeWidget(this); fileTree_->setHeaderHidden(true);
     auto* openFileButton = new QPushButton("Open WRF/WPS NetCDF…", this);
+    auto* openGeogButton = new QPushButton("Open WPS_GEOG Dataset…", this);
     closeFileButton_ = new QPushButton("Close File", this); closeFileButton_->setEnabled(false);
-    filesLayout->addWidget(fileTree_); filesLayout->addWidget(openFileButton); filesLayout->addWidget(closeFileButton_);
+    filesLayout->addWidget(fileTree_); filesLayout->addWidget(openFileButton); filesLayout->addWidget(openGeogButton); filesLayout->addWidget(closeFileButton_);
     filesGroup->setLayout(filesLayout);
     layout->addWidget(filesGroup);
 
@@ -129,12 +130,13 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     zoomGroup_->setLayout(zoomLayout);
     layout->addWidget(zoomGroup_);
 
-    preview_ = new QLabel("Open a WRF/WPS NetCDF file, then Add Layer.", this);
+    preview_ = new QLabel("Open a WRF/WPS NetCDF file or a WPS_GEOG dataset, then Add Layer.", this);
     preview_->setMinimumSize(280, 120); preview_->setScaledContents(false); preview_->setWordWrap(true);
     status_ = new QLabel(this);
     layout->addWidget(preview_); layout->addWidget(status_); layout->addStretch();
 
     connect(openFileButton, &QPushButton::clicked, this, [this] { openFile(); });
+    connect(openGeogButton, &QPushButton::clicked, this, [this] { openGeogDataset(); });
     connect(closeFileButton_, &QPushButton::clicked, this, [this] { closeSelectedFile(); });
     connect(fileTree_, &QTreeWidget::currentItemChanged, this, [this] { closeFileButton_->setEnabled(fileTree_->currentItem() != nullptr); });
     connect(addLayerButton_, &QPushButton::clicked, this, [this] { addLayer(); });
@@ -189,6 +191,12 @@ void ViewForm::openFile() {
     std::vector<std::string> given;
     for (const auto& path : paths) given.push_back(path.toStdString());
     openFiles(given);
+}
+
+void ViewForm::openGeogDataset() {
+    const auto dir = QFileDialog::getExistingDirectory(this, "Open WPS_GEOG Dataset");
+    if (dir.isEmpty()) return;
+    openFiles({dir.toStdString()});
 }
 
 void ViewForm::openFiles(const std::vector<std::string>& paths) {

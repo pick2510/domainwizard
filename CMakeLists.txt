@@ -31,17 +31,27 @@ if(NOT GEOTIFF_LIBRARY OR NOT GEOTIFF_INCLUDE_DIR)
     message(FATAL_ERROR "Cannot find GEOTIFF library/headers (libgeotiff-dev on Debian/Ubuntu, libgeotiff-devel on Fedora).")
 endif()
 
-add_library(convert_geotiff_lib
+# The index-file/tile-data reader (parsing only - directory listing and
+# text/binary file I/O, no TIFF/GEOTIFF dependency) is split out from the
+# rest of convert_geotiff so wrftools_core can reuse it (for
+# WpsBinarySource, a ViewForm-visible layer backed by a raw WPS_GEOG
+# dataset) without pulling libtiff/libgeotiff into wrftools_core - only the
+# GUI's Convert tab needs those, for actual GeoTIFF conversion.
+add_library(convert_geotiff_reader
     cpp/src/convert_geotiff/geogrid_index.cpp
+    cpp/src/convert_geotiff/geogrid_reader.cpp
+)
+target_include_directories(convert_geotiff_reader PUBLIC cpp/include)
+
+add_library(convert_geotiff_lib
     cpp/src/convert_geotiff/geotiff_reader.cpp
     cpp/src/convert_geotiff/geogrid_tile_writer.cpp
     cpp/src/convert_geotiff/convert.cpp
-    cpp/src/convert_geotiff/geogrid_reader.cpp
     cpp/src/convert_geotiff/geotiff_writer.cpp
     cpp/src/convert_geotiff/convert_back.cpp
 )
 target_include_directories(convert_geotiff_lib PUBLIC cpp/include ${TIFF_INCLUDE_DIR} ${GEOTIFF_INCLUDE_DIR})
-target_link_libraries(convert_geotiff_lib PUBLIC ${TIFF_LIBRARY} ${GEOTIFF_LIBRARY})
+target_link_libraries(convert_geotiff_lib PUBLIC convert_geotiff_reader ${TIFF_LIBRARY} ${GEOTIFF_LIBRARY})
 
 add_library(wrftools_core
     cpp/src/crs.cpp
@@ -56,9 +66,10 @@ add_library(wrftools_core
     cpp/src/wrf_file.cpp
     cpp/src/wrf_series.cpp
     cpp/src/wrf_source.cpp
+    cpp/src/wps_binary_source.cpp
 )
 target_include_directories(wrftools_core PUBLIC cpp/include)
-target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui)
+target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui convert_geotiff_reader)
 target_compile_options(wrftools_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(wrftools_ui

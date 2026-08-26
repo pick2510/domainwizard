@@ -9,6 +9,8 @@
 #include "wrftools/warp.hpp"
 #include "wrftools/layer_renderer.hpp"
 #include "wrftools/colorbar.hpp"
+#include "wrftools/wps_binary_source.hpp"
+#include "wrftools/wrf_source.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -925,4 +927,50 @@ TEST_CASE("a continuous layer's render carries no categorical legend data") {
     const auto rendered = renderer.render(path, RasterLayer{.variable = "HGT_M"});
     CHECK(rendered.presentCategories.empty());
     CHECK(rendered.categoricalLabels.empty());
+}
+
+TEST_CASE("isWpsGeogDataset recognizes a directory with an index file, not a plain file or directory") {
+    CHECK(isWpsGeogDataset("tests/fixtures/geotiff_convert/wps_soiltemp_1deg"));
+    CHECK_FALSE(isWpsGeogDataset("tests/fixtures/geotiff_convert/wps_soiltemp_1deg/index"));
+    CHECK_FALSE(isWpsGeogDataset("tests/fixtures/geotiff_convert/utm.tif"));
+    CHECK_FALSE(isWpsGeogDataset("tests/fixtures/does-not-exist"));
+}
+
+TEST_CASE("WpsBinarySource reads a real WPS_GEOG regular_ll dataset with the correct geometry") {
+    // tests/fixtures/geotiff_convert/wps_soiltemp_1deg/index: regular_ll,
+    // dx=dy=1.0 degree, known_x=known_y=1.0 (an integer -> WPS/GEOGRID's
+    // cell-center convention) at known_lon=-179.5/known_lat=-89.5 - the
+    // real center of the southwesternmost 1-degree cell of a global grid,
+    // so the raster's true edges are exactly -180/-90 (west/south), not
+    // -179.5/-89.5.
+    WpsBinarySource source("tests/fixtures/geotiff_convert/wps_soiltemp_1deg");
+    CHECK(source.size() == std::array<int, 2>{180, 180});
+    CHECK(source.displayName() == "wps_soiltemp_1deg");
+    const auto& gt = source.geotransform();
+    CHECK(gt[0] == Catch::Approx(-180.0));
+    CHECK(gt[1] == Catch::Approx(1.0));
+    CHECK(gt[2] == Catch::Approx(0.0));
+    CHECK(gt[3] == Catch::Approx(90.0));
+    CHECK(gt[4] == Catch::Approx(0.0));
+    CHECK(gt[5] == Catch::Approx(-1.0));
+    REQUIRE(source.variables().size() == 1);
+    const auto& variable = source.variables().front();
+    CHECK(variable.name == "Annual mean deep soil temperature");
+    CHECK(variable.units == "Kelvin");
+    CHECK(variable.levelCount == 1);
+    CHECK_FALSE(variable.categoryScheme.has_value());
+    const auto values = source.read(variable.name, 0, 0);
+    REQUIRE(values.size() == 180 * 180);
+    // A row-1 (tile-file numbering, south) sample: dy is non-negative so
+    // read() must have flipped it up to the last (northmost-index) output
+    // row - CHECK it lands there, not at row 0.
+    const bool anyFiniteInLastRow = std::any_of(values.end() - 180, values.end(), [](float v) { return std::isfinite(v); });
+    CHECK(anyFiniteInLastRow);
+}
+
+TEST_CASE("WrfSourceRegistry opens a WPS_GEOG directory as a WpsBinarySource, not a NetCDF file") {
+    WrfSourceRegistry registry;
+    auto& source = registry.open({"tests/fixtures/geotiff_convert/wps_soiltemp_1deg"});
+    CHECK(source.variables().size() == 1);
+    CHECK(source.displayName() == "wps_soiltemp_1deg");
 }
