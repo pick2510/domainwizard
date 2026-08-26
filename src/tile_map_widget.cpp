@@ -410,11 +410,6 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
     painter.fillRect(QRect(0, 0, 155, 26), QColor(255, 255, 255, 190));
     painter.setPen(QColor(30, 41, 59));
     painter.drawText(QRect(6, 3, 145, 20), QString("%1°, %2°  z%3").arg(longitude_, 0, 'f', 3).arg(latitude_, 0, 'f', 3).arg(zoom_));
-    const auto& attribution = currentTileProvider().attribution;
-    if (!attribution.isEmpty()) {
-        painter.setPen(QColor(100, 116, 139));
-        painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignBottom | Qt::AlignLeft, attribution);
-    }
 }
 
 void TileMapWidget::wheelEvent(QWheelEvent* event) {
