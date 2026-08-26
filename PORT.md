@@ -299,6 +299,31 @@ the feature-complete behavioral reference.
   (`formatWrfTimestamp`, exposed from `wrf_series.hpp`) rather than "Step N
   of M" when a layer isn't part of a series, and appends the visible
   level/soil/etc. row (when shown) and the rendered value range.
+- A third native-only addition: domain outlines are directly draggable on
+  the map (Python's `domainform.py` has no map-driven repositioning at all -
+  only the properties panel and the two "Grid Extent Calculator" buttons
+  change a domain's placement). `TileMapWidget::setDraggableVectorOverlayGroup`/
+  `setOverlayDragHandlers` keep the map itself generic (it hit-tests
+  whichever named vector-overlay group is marked draggable and reports back
+  a polygon index plus the lon/lat under the cursor - it has no idea what a
+  "domain" is); `DomainForm` is the only caller, arming it for the
+  `"domains"` group only while its own tab is active
+  (`setActive`/`setDraggableVectorOverlayGroup(active_ ? "domains" : {})`),
+  so a click on the map while the View tab owns it always pans, never
+  repositions a domain sitting underneath, and View's own raster layers
+  (a different overlay group entirely) are never draggable regardless.
+  Dragging a root moves its Center Point (continuous degrees); dragging a
+  nested domain moves its Position within Parent (whole parent-cell counts,
+  clamped at 0, converted through the project's own CRS rather than a flat
+  degree/pixel ratio so it stays exact under every projection) - both
+  select the dragged domain and refresh the properties panel on every
+  mouse-move tick, per the request that drove this ("update all values in
+  the properties when they are moved around"). Moving any domain
+  automatically carries its descendants along for free: `fillDomains()`
+  always derives a child's bounds from its parent's *current* bounds plus
+  the child's own fixed padding, so nothing here has to touch descendants
+  explicitly - dragging a root's whole subtree is a consequence of that,
+  not special-cased code.
 
 ## Non-goals retained from Python
 

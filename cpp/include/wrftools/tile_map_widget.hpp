@@ -2,6 +2,8 @@
 
 #include "wrftools/crs.hpp"
 
+#include <cstddef>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -79,6 +81,21 @@ public:
     void setInfoText(const QString& text);
     [[nodiscard]] bool exportImage(const QString& path);
 
+    // Marks one vector overlay group as drag-enabled (DomainForm uses this
+    // for "domains") - a press landing inside one of that group's closed
+    // polygons starts a drag instead of panning the map. This widget knows
+    // nothing about what a "domain" is: it just reports which polygon (by
+    // index within the group, topmost/last-in-the-group first so a nested
+    // polygon wins over the parent it sits inside) was grabbed and the
+    // lon/lat under the cursor: onStart once at press, onMove on every
+    // subsequent move, onEnd at release. Pass an empty group name to
+    // disable (e.g. while a tab that doesn't own this group is active).
+    using OverlayDragStartHandler = std::function<void(std::size_t overlayIndex, LonLat pressLonLat)>;
+    using OverlayDragMoveHandler = std::function<void(std::size_t overlayIndex, LonLat currentLonLat)>;
+    using OverlayDragEndHandler = std::function<void()>;
+    void setDraggableVectorOverlayGroup(const QString& groupName);
+    void setOverlayDragHandlers(OverlayDragStartHandler onStart, OverlayDragMoveHandler onMove, OverlayDragEndHandler onEnd);
+
     // Test-facing accessors only - mirror the private attributes Python's
     // tests reach into directly on TileMapWidget (there is no real privacy
     // there); production code never needs these.
@@ -97,6 +114,7 @@ public:
     [[nodiscard]] QString dragTarget() const noexcept { return dragTarget_; }
     [[nodiscard]] std::optional<QPointF> legendPosition() const noexcept { return legendPosition_; }
     [[nodiscard]] std::optional<QPointF> infoPosition() const noexcept { return infoPosition_; }
+    [[nodiscard]] const QString& draggableVectorOverlayGroup() const noexcept { return draggableGroup_; }
     [[nodiscard]] double centerLongitude() const noexcept { return longitude_; }
     [[nodiscard]] double centerLatitude() const noexcept { return latitude_; }
 
@@ -113,11 +131,16 @@ private:
     [[nodiscard]] static QPointF worldPixel(double longitude, double latitude, int zoom);
     [[nodiscard]] static QPointF mercatorWorldPixel(double x, double y, int zoom);
     [[nodiscard]] static QPointF lonLat(QPointF world, int zoom);
+    [[nodiscard]] QPointF viewportTopLeft() const;
     [[nodiscard]] QString tileKey(int x, int y, int zoom) const;
     void ensureTile(int x, int y, int zoom);
     [[nodiscard]] QRectF movableRect(QSizeF size, const std::optional<QPointF>& position, bool topRight) const;
     [[nodiscard]] static QString quadKey(int x, int y, int zoom);
     void repositionOverlayControls();
+    // Ray-casting hit test in screen space against groupName's overlays,
+    // last-in-the-group first (see setDraggableVectorOverlayGroup). Sets
+    // outIndex and returns true on the first (topmost) containing polygon.
+    [[nodiscard]] bool hitTestOverlay(const QString& groupName, QPointF screenPoint, std::size_t& outIndex) const;
 
     std::vector<TileProvider> providers_;
     int currentProviderIndex_{0};
@@ -144,8 +167,13 @@ private:
     QString infoText_;
     std::optional<QPointF> infoPosition_;
     QRectF infoRect_;
-    QString dragTarget_;  // "" | "legend" | "legend-resize" | "info"
+    QString dragTarget_;  // "" | "legend" | "legend-resize" | "info" | "overlay"
     QPointF dragOffset_;
+    QString draggableGroup_;
+    OverlayDragStartHandler overlayDragStart_;
+    OverlayDragMoveHandler overlayDragMove_;
+    OverlayDragEndHandler overlayDragEnd_;
+    std::size_t draggedOverlayIndex_{};
     double longitude_{0.0};
     double latitude_{20.0};
     int zoom_{2};

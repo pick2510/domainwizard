@@ -145,6 +145,37 @@ void TileMapWidget::clearRasterOverlayGroup(const QString& name) { rasterGroups_
 void TileMapWidget::setLegend(QPixmap legend) { legend_ = std::move(legend); update(); }
 void TileMapWidget::setInfoText(const QString& text) { infoText_ = text; update(); }
 
+void TileMapWidget::setDraggableVectorOverlayGroup(const QString& groupName) { draggableGroup_ = groupName; }
+void TileMapWidget::setOverlayDragHandlers(OverlayDragStartHandler onStart, OverlayDragMoveHandler onMove, OverlayDragEndHandler onEnd) {
+    overlayDragStart_ = std::move(onStart);
+    overlayDragMove_ = std::move(onMove);
+    overlayDragEnd_ = std::move(onEnd);
+}
+
+bool TileMapWidget::hitTestOverlay(const QString& groupName, QPointF screenPoint, std::size_t& outIndex) const {
+    const auto found = vectorGroups_.find(groupName);
+    if (found == vectorGroups_.end()) return false;
+    const auto topLeft = viewportTopLeft();
+    const auto& overlays = found->overlays;
+    // Last-in-the-group first: DomainForm always appends a child after its
+    // parent, so a nested domain's (smaller, fully-enclosed) polygon is
+    // tested - and wins - before the parent's.
+    for (std::size_t i = overlays.size(); i-- > 0;) {
+        const auto& overlay = overlays[i];
+        if (!overlay.closed || overlay.points.size() < 3) continue;
+        bool inside = false;
+        for (std::size_t a = 0, b = overlay.points.size() - 1; a < overlay.points.size(); b = a++) {
+            const auto pa = worldPixel(overlay.points[a].lon, overlay.points[a].lat, zoom_) - topLeft;
+            const auto pb = worldPixel(overlay.points[b].lon, overlay.points[b].lat, zoom_) - topLeft;
+            const bool crosses = ((pa.y() > screenPoint.y()) != (pb.y() > screenPoint.y())) &&
+                (screenPoint.x() < (pb.x() - pa.x()) * (screenPoint.y() - pa.y()) / (pb.y() - pa.y()) + pa.x());
+            if (crosses) inside = !inside;
+        }
+        if (inside) { outIndex = i; return true; }
+    }
+    return false;
+}
+
 bool TileMapWidget::exportImage(const QString& path) {
     // The provider combo is a real child QWidget, not something paintEvent
     // draws - grab() captures it like any other child, so it has to be
@@ -230,6 +261,11 @@ void TileMapWidget::ensureTile(int x, int y, int zoom) {
     });
 }
 
+QPointF TileMapWidget::viewportTopLeft() const {
+    const auto center = worldPixel();
+    return center - QPointF(width() / 2.0, height() / 2.0);
+}
+
 QRectF TileMapWidget::movableRect(QSizeF size, const std::optional<QPointF>& position, bool topRight) const {
     constexpr double margin = 10.0;
     QPointF origin = position.value_or(topRight ? QPointF(width() - size.width() - margin, margin) : QPointF(margin, margin));
@@ -241,8 +277,7 @@ QRectF TileMapWidget::movableRect(QSizeF size, const std::optional<QPointF>& pos
 void TileMapWidget::paintEvent(QPaintEvent*) {
     QPainter painter(this);
     painter.fillRect(rect(), QColor(232, 238, 242));
-    const auto center = worldPixel();
-    const auto topLeft = center - QPointF(width() / 2.0, height() / 2.0);
+    const auto topLeft = viewportTopLeft();
     const int firstX = static_cast<int>(std::floor(topLeft.x() / 256.0));
     const int firstY = static_cast<int>(std::floor(topLeft.y() / 256.0));
     const int lastX = static_cast<int>(std::floor((topLeft.x() + width()) / 256.0));
@@ -333,6 +368,10 @@ void TileMapWidget::mousePressEvent(QMouseEvent* event) {
     } else if (infoRect_.contains(event->position())) {
         dragTarget_ = "info";
         dragOffset_ = event->position() - infoRect_.topLeft();
+    } else if (!draggableGroup_.isEmpty() && hitTestOverlay(draggableGroup_, event->position(), draggedOverlayIndex_)) {
+        dragTarget_ = "overlay";
+        const auto pressLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
+        if (overlayDragStart_) overlayDragStart_(draggedOverlayIndex_, {pressLonLat.x(), pressLonLat.y()});
     } else { dragging_ = true; dragStart_ = event->position(); }
 }
 void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
@@ -346,10 +385,24 @@ void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
     }
     if (dragTarget_ == "legend") { legendPosition_ = event->position() - dragOffset_; update(); return; }
     if (dragTarget_ == "info") { infoPosition_ = event->position() - dragOffset_; update(); return; }
+    if (dragTarget_ == "overlay") {
+        // No update() here: the handler is expected to call
+        // setVectorOverlayGroup() with the recomputed outlines, which
+        // triggers its own repaint.
+        if (overlayDragMove_) {
+            const auto currentLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
+            overlayDragMove_(draggedOverlayIndex_, {currentLonLat.x(), currentLonLat.y()});
+        }
+        return;
+    }
     if (!dragging_) return;
     const auto delta = event->position() - dragStart_;
     setCenter(lonLat(worldPixel() - delta, zoom_).x(), lonLat(worldPixel() - delta, zoom_).y(), zoom_);
     dragStart_ = event->position();
 }
-void TileMapWidget::mouseReleaseEvent(QMouseEvent*) { dragging_ = false; dragTarget_.clear(); }
+void TileMapWidget::mouseReleaseEvent(QMouseEvent*) {
+    if (dragTarget_ == "overlay" && overlayDragEnd_) overlayDragEnd_();
+    dragging_ = false;
+    dragTarget_.clear();
+}
 }  // namespace wrftools

@@ -15,6 +15,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QMouseEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
@@ -662,6 +663,128 @@ TEST_CASE("computed domain outlines are visually distinguishable") {
     std::set<std::tuple<int, int, int>> colors;
     for (const auto& overlay : overlays) colors.insert({overlay.color.red(), overlay.color.green(), overlay.color.blue()});
     CHECK(colors.size() == 4);  // the 8-entry palette cycle has plenty of room for 4 domains
+}
+
+namespace {
+// QWidget::event() is protected, but QApplication::sendEvent dispatches to
+// it internally regardless of the caller's access - the standard way to
+// drive TileMapWidget's mouse handlers (and, through them, DomainForm's
+// drag hooks) from outside a QWidget subclass. Mirrors widget_tests.cpp's
+// identically-named helpers.
+void press(TileMapWidget& map, QPointF pos) {
+    QMouseEvent event(QEvent::MouseButtonPress, pos, pos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&map, &event);
+}
+void move(TileMapWidget& map, QPointF pos) {
+    QMouseEvent event(QEvent::MouseMove, pos, pos, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&map, &event);
+}
+void release(TileMapWidget& map, QPointF pos) {
+    QMouseEvent event(QEvent::MouseButtonRelease, pos, pos, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&map, &event);
+}
+}  // namespace
+
+TEST_CASE("dragging a root domain's outline moves its center point live") {
+    TileMapWidget map;
+    map.resize(500, 400);
+    DomainForm form(&map);
+    form.show();
+    // addChild() with no domains yet creates the root: lat-lon, centered on
+    // (0,0), 0.1x0.1-degree cells, 10x10 - already a complete, valid
+    // domain, so rebuildTree()'s redraw(true) zooms the map to fit it and
+    // the widget's exact center (500/2, 400/2) lands on lon=0/lat=0.
+    form.addChild();
+    REQUIRE(form.project()->domains.domains().size() == 1);
+    CHECK(form.centerLonField()->text().toDouble() == Catch::Approx(0.0));
+    CHECK(form.centerLatField()->text().toDouble() == Catch::Approx(0.0));
+
+    const QPointF center(map.width() / 2.0, map.height() / 2.0);
+    press(map, center);
+    CHECK(map.dragTarget() == "overlay");
+    move(map, center + QPointF(60, 40));
+    // The panel updates live, mid-drag, before the button is even released.
+    CHECK(form.centerLonField()->text().toDouble() != Catch::Approx(0.0));
+    release(map, center + QPointF(60, 40));
+    CHECK(map.dragTarget().isEmpty());
+
+    const auto& root = form.project()->domains.domains().at(0);
+    CHECK(root.centerLon != Catch::Approx(0.0));
+    CHECK(root.centerLat != Catch::Approx(0.0));
+    CHECK(form.centerLonField()->text().toDouble() == Catch::Approx(root.centerLon));
+    CHECK(form.centerLatField()->text().toDouble() == Catch::Approx(root.centerLat));
+}
+
+TEST_CASE("dragging a nested domain's outline moves it within its parent without moving the parent") {
+    TileMapWidget map;
+    map.resize(500, 400);
+    DomainForm form(&map);
+    form.show();
+    form.addChild();  // root
+    form.domainTree()->setCurrentItem(form.domainTree()->topLevelItem(0));
+    form.addChild();  // child of root
+
+    // Widen the child so the map's zoom-to-fit centroid (which was already
+    // computed from the root's own full extent - a child always sits
+    // inside its parent) also lands inside the child's own ring, not just
+    // the root's: ratio 1 (same cell size as the parent), 9 of the root's
+    // 10 cells in each direction, no padding.
+    auto* childItem = form.domainTree()->topLevelItem(0)->child(0);
+    form.domainTree()->setCurrentItem(childItem);
+    form.ratioField()->setText("1");
+    form.columnsField()->setText("9");
+    form.rowsField()->setText("9");
+    form.paddingLeftField()->setText("0");
+    form.paddingBottomField()->setText("0");
+    REQUIRE(form.applySelectedDomainFields(true));
+
+    const auto originalRootCenterLon = form.project()->domains.domains().at(0).centerLon;
+    const auto originalRootCenterLat = form.project()->domains.domains().at(0).centerLat;
+
+    const QPointF center(map.width() / 2.0, map.height() / 2.0);  // inside both rings; child wins (see hitTestOverlay)
+    press(map, center);
+    CHECK(map.dragTarget() == "overlay");
+    // Padding moves in whole parent cells (0.1 degree each here), clamped
+    // at 0 - dragging right/up (screen +x/-y = east/north = increasing
+    // padding, away from the child's starting padding of 0) so the move
+    // isn't silently absorbed by that floor. A large screen delta
+    // guarantees crossing at least one cell's worth in both axes, unlike
+    // the root test above (which edits a continuous field, so any nonzero
+    // movement already proves it).
+    const QPointF end = center + QPointF(200, -150);
+    move(map, end);
+    release(map, end);
+
+    const auto& domains = form.project()->domains.domains();
+    REQUIRE(domains.size() == 2);
+    // The child moved (its own position fields, not the root's Center
+    // Point, which is what DomainForm shows once the drag selects it)...
+    CHECK(form.paddingLeftField()->text().toInt() != 0);
+    CHECK(form.paddingBottomField()->text().toInt() != 0);
+    CHECK(domains[1].paddingLeft == form.paddingLeftField()->text().toInt());
+    CHECK(domains[1].paddingBottom == form.paddingBottomField()->text().toInt());
+    // ...and the root, sitting right underneath it, did not.
+    CHECK(domains[0].centerLon == Catch::Approx(originalRootCenterLon));
+    CHECK(domains[0].centerLat == Catch::Approx(originalRootCenterLat));
+}
+
+TEST_CASE("domain outlines are not draggable while another tab owns the map") {
+    TileMapWidget map;
+    map.resize(500, 400);
+    DomainForm form(&map);
+    form.show();
+    form.addChild();
+    form.setActive(false);  // e.g. the View tab is now the active one
+
+    const QPointF center(map.width() / 2.0, map.height() / 2.0);
+    press(map, center);
+    CHECK(map.dragTarget().isEmpty());  // falls through to an ordinary map pan, not an overlay drag
+    release(map, center);
+
+    form.setActive(true);
+    press(map, center);
+    CHECK(map.dragTarget() == "overlay");
+    release(map, center);
 }
 
 TEST_CASE("domain form selection follows real tree clicks") {

@@ -74,10 +74,34 @@ private:
     void onSetMapExtentClicked();
     void onSetFileExtentClicked();
     void redraw(bool zoomOut);
+    [[nodiscard]] QTreeWidgetItem* findTreeItem(int domainId) const;
+    // Wired to map_'s draggable-overlay hooks (see TileMapWidget::
+    // setOverlayDragHandlers) so dragging a domain's outline on the map
+    // repositions it exactly as typing new values into the properties
+    // panel would - a root's Center Point, or a nested domain's Position
+    // within Parent - and both the selection and the panel follow the drag
+    // live. Moving any domain (root or nested) automatically carries its
+    // descendants along for free: fillDomains() always derives a child's
+    // bounds from its parent's *current* bounds plus the child's own fixed
+    // padding, so nothing here needs to touch descendants explicitly.
+    void onDomainOverlayDragStart(std::size_t overlayIndex, LonLat pressLonLat);
+    void onDomainOverlayDragMove(std::size_t overlayIndex, LonLat currentLonLat);
+    void onDomainOverlayDragEnd();
 
     TileMapWidget* map_;
     std::optional<WpsProject> project_;
     bool active_{true};
+
+    // Captured once at drag start, not accumulated frame-to-frame, so a
+    // nested domain's whole-cell padding rounding never compounds across
+    // many small mouse-move ticks.
+    struct DomainDragState {
+        int domainId{};
+        LonLat pressLonLat{};
+        double startCenterLon{}, startCenterLat{};      // root only
+        int startPaddingLeft{}, startPaddingBottom{};   // non-root only
+    };
+    std::optional<DomainDragState> domainDrag_;
 
     QTreeWidget* tree_{};
     QLabel* setFromLabel_{};

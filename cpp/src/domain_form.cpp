@@ -16,6 +16,8 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include <cmath>
@@ -139,10 +141,24 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
     connect(setFromMap, &QPushButton::clicked, this, [this] { onSetMapExtentClicked(); });
     connect(setFromFile, &QPushButton::clicked, this, [this] { onSetFileExtentClicked(); });
 
+    map_->setOverlayDragHandlers(
+        [this](std::size_t index, LonLat lonLat) { onDomainOverlayDragStart(index, lonLat); },
+        [this](std::size_t index, LonLat lonLat) { onDomainOverlayDragMove(index, lonLat); },
+        [this] { onDomainOverlayDragEnd(); });
+    map_->setDraggableVectorOverlayGroup(active_ ? "domains" : QString());
+
     updatePanelVisibility();
 }
 
-void DomainForm::setActive(bool active) { active_ = active; }
+void DomainForm::setActive(bool active) {
+    active_ = active;
+    // Only this tab's own "domains" outlines are ever draggable - the map
+    // is shared with View, whose raster layers live in a different overlay
+    // group ("view-rasters") that's never marked draggable, but gating this
+    // on active_ too means a click on the map while View owns it always
+    // pans/zooms, never repositions a domain sitting underneath.
+    map_->setDraggableVectorOverlayGroup(active_ ? "domains" : QString());
+}
 
 void DomainForm::setProject(WpsProject project) { project_ = std::move(project); rebuildTree(); }
 
@@ -393,6 +409,67 @@ void DomainForm::setDomainToExtent(const Crs& extentCrs, Bounds2D bounds) {
     }
     applySelectedDomainFields(true);
 }
+
+QTreeWidgetItem* DomainForm::findTreeItem(int domainId) const {
+    for (QTreeWidgetItemIterator it(tree_); *it; ++it)
+        if ((*it)->data(0, kDomainIdRole).toInt() == domainId) return *it;
+    return nullptr;
+}
+
+void DomainForm::onDomainOverlayDragStart(std::size_t overlayIndex, LonLat pressLonLat) {
+    if (!project_) return;
+    auto& domains = project_->domains.domains();
+    if (overlayIndex >= domains.size()) return;
+    const auto& domain = domains[overlayIndex];
+
+    DomainDragState state;
+    state.domainId = domain.id;
+    state.pressLonLat = pressLonLat;
+    if (domain.id == 1) { state.startCenterLon = domain.centerLon; state.startCenterLat = domain.centerLat; }
+    else { state.startPaddingLeft = domain.paddingLeft; state.startPaddingBottom = domain.paddingBottom; }
+    domainDrag_ = state;
+
+    // Select the dragged domain (even if it wasn't already) so the
+    // properties panel below tracks whichever outline is actually moving.
+    if (auto* item = findTreeItem(domain.id)) tree_->setCurrentItem(item);
+}
+
+void DomainForm::onDomainOverlayDragMove(std::size_t overlayIndex, LonLat currentLonLat) {
+    if (!domainDrag_ || !project_) return;
+    auto& domains = project_->domains.domains();
+    if (overlayIndex >= domains.size()) return;
+    auto& domain = domains[overlayIndex];
+    if (domain.id != domainDrag_->domainId) return;  // overlay indices shifted mid-drag; ignore this tick
+
+    if (domain.id == 1) {
+        domain.centerLon = domainDrag_->startCenterLon + (currentLonLat.lon - domainDrag_->pressLonLat.lon);
+        domain.centerLat = domainDrag_->startCenterLat + (currentLonLat.lat - domainDrag_->pressLonLat.lat);
+    } else {
+        try {
+            auto& parent = domains.at(static_cast<std::size_t>(domain.parentId - 1));
+            const auto projection = project_->domains.projection();
+            const auto pressXy = projection.toXy(domainDrag_->pressLonLat);
+            const auto currentXy = projection.toXy(currentLonLat);
+            const double cellsX = (currentXy.x - pressXy.x) / parent.dx;
+            const double cellsY = (currentXy.y - pressXy.y) / parent.dy;
+            domain.paddingLeft = std::max(0, domainDrag_->startPaddingLeft + static_cast<int>(std::lround(cellsX)));
+            domain.paddingBottom = std::max(0, domainDrag_->startPaddingBottom + static_cast<int>(std::lround(cellsY)));
+        } catch (const UserError&) {
+            return;  // parent/projection not (yet) configured - nothing to reposition against
+        }
+    }
+
+    // Mirrors applySelectedDomainFields: refresh the visible fields and
+    // redraw. redraw() -> computeDomainOverlays() swallows a UserError (a
+    // geometry that doesn't yet fit its parent) by clearing the outlines
+    // rather than throwing, so an in-progress drag that strays outside the
+    // parent just hides outlines until it's dragged back, instead of
+    // crashing or freezing the drag.
+    populatePropertiesPanel();
+    redraw(false);
+}
+
+void DomainForm::onDomainOverlayDragEnd() { domainDrag_.reset(); }
 
 void DomainForm::redraw(bool zoomOut) {
     if (!project_ || project_->domains.domains().empty()) { map_->clearVectorOverlayGroup("domains"); return; }
