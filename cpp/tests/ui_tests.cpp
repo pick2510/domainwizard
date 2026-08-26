@@ -4,6 +4,7 @@
 // fixtures resolve as "tests/fixtures/...".
 #include "wrftools/colormaps.hpp"
 #include "wrftools/domain_form.hpp"
+#include "wrftools/domain_overlay.hpp"
 #include "wrftools/error.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
@@ -14,10 +15,13 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTimer>
 #include <QTreeWidget>
+#include <set>
+#include <tuple>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -608,6 +612,15 @@ TEST_CASE("info overlay hidden by default and shown when checked") {
     CHECK_FALSE(map.hasInfoText());
 }
 
+TEST_CASE("computed domain outlines are visually distinguishable") {
+    auto project = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
+    const auto overlays = computeDomainOverlays(project.domains);
+    REQUIRE(overlays.size() == 4);
+    std::set<std::tuple<int, int, int>> colors;
+    for (const auto& overlay : overlays) colors.insert({overlay.color.red(), overlay.color.green(), overlay.color.blue()});
+    CHECK(colors.size() == 4);  // the 8-entry palette cycle has plenty of room for 4 domains
+}
+
 TEST_CASE("domain form selection follows real tree clicks") {
     TileMapWidget map;
     DomainForm form(&map);
@@ -618,4 +631,78 @@ TEST_CASE("domain form selection follows real tree clicks") {
     // setCurrentItem synchronously fires currentItemChanged, which
     // DomainForm connects to updateSelection() - no event-loop spin needed.
     CHECK(tree->currentItem()->data(0, Qt::UserRole).toInt() == 4);
+}
+
+// --- test_ui_domain_tree.py port --------------------------------------------
+// DomainForm::setProject() is the entry point both the real "Import…" button
+// and these tests use (like ViewForm::openFiles()). One Python case has no
+// C++ equivalent by design, not omission: DomainForm here always needs a
+// project loaded via setProject() first - addChild() only ever adds a child
+// under the current selection, there's no "click Add Domain with nothing
+// loaded yet, get a root" blank-slate flow the way domainform.py's
+// on_add_domain_button_clicked() provides.
+
+TEST_CASE("importing a namelist builds the sibling tree") {
+    TileMapWidget map;
+    DomainForm form(&map);
+    form.setProject(readWpsNamelist("tests/fixtures/namelist_siblings.wps"));
+
+    REQUIRE(form.project().has_value());
+    const auto& domains = form.project()->domains.domains();
+    REQUIRE(domains.size() == 4);
+    CHECK(domains[1].parentId == 1);
+    CHECK(domains[2].parentId == 2);
+    CHECK(domains[3].parentId == 2);
+
+    auto* rootItem = form.domainTree()->topLevelItem(0);
+    REQUIRE(rootItem->childCount() == 1);
+    auto* domain2Item = rootItem->child(0);
+    CHECK(domain2Item->data(0, Qt::UserRole).toInt() == 2);
+    REQUIRE(domain2Item->childCount() == 2);
+    std::vector<int> siblingNumbers{domain2Item->child(0)->data(0, Qt::UserRole).toInt(), domain2Item->child(1)->data(0, Qt::UserRole).toInt()};
+    std::sort(siblingNumbers.begin(), siblingNumbers.end());
+    CHECK(siblingNumbers == std::vector<int>{3, 4});
+}
+
+TEST_CASE("removing one sibling renumbers the survivor") {
+    TileMapWidget map;
+    DomainForm form(&map);
+    form.setProject(readWpsNamelist("tests/fixtures/namelist_siblings.wps"));
+
+    auto* domain2Item = form.domainTree()->topLevelItem(0)->child(0);
+    auto* domain3Item = domain2Item->child(0);
+    REQUIRE(domain3Item->data(0, Qt::UserRole).toInt() == 3);
+    const auto survivorBoundsBefore = form.project()->domains.domains()[3].bounds;  // domain 4, untouched
+    REQUIRE(survivorBoundsBefore.has_value());
+
+    // Domain 3 is a leaf (no children of its own), so removing it doesn't
+    // trigger the cascade-delete confirmation dialog.
+    form.domainTree()->setCurrentItem(domain3Item);
+    form.removeSelected();
+
+    const auto& domains = form.project()->domains.domains();
+    REQUIRE(domains.size() == 3);
+    // Old domain 4 is renumbered to 3, still parented under (unrenumbered) domain 2.
+    CHECK(domains[2].parentId == 2);
+    REQUIRE(domains[2].bounds.has_value());
+    CHECK(domains[2].bounds->minX == Catch::Approx(survivorBoundsBefore->minX));
+    CHECK(domains[2].bounds->maxY == Catch::Approx(survivorBoundsBefore->maxY));
+}
+
+TEST_CASE("an out-of-bounds child surfaces as UserError via a field edit") {
+    TileMapWidget map;
+    DomainForm form(&map);
+    form.setProject(readWpsNamelist("tests/fixtures/namelist_siblings.wps"));
+    // Domain 2's own child (domain 3) already fits its parent by
+    // construction - applying its unmodified fields must succeed first,
+    // matching the Python test's own "fits by default" premise.
+    auto* domain3Item = form.domainTree()->topLevelItem(0)->child(0)->child(0);
+    form.domainTree()->setCurrentItem(domain3Item);
+    CHECK(form.applySelectedDomainFields(/*raiseOnInvalid=*/true));
+
+    // Push the child's position far outside the parent's extent through the
+    // actual "Position within Parent" fields, same as a user typing into them.
+    form.paddingLeftField()->setText("100000");
+    form.paddingBottomField()->setText("100000");
+    CHECK_THROWS_AS(form.applySelectedDomainFields(/*raiseOnInvalid=*/true), UserError);
 }

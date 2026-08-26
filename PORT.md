@@ -182,8 +182,24 @@ the feature-complete behavioral reference.
 
 - macOS `.app` bundling - no macOS machine available to build or verify
   this from within the current working environment.
+- Every Python test file now has a ported counterpart except for one
+  case documented below as a deliberate architecture difference:
+  `test_core_domain_tree.py`/`test_ui_domain_tree.py`'s sibling-tree
+  round-trip, renumbering, outline-distinguishability, and
+  out-of-bounds-child-via-field-edit cases are ported (bbox round-trip
+  tests for both the sibling and linear-chain fixtures added to
+  `core_tests.cpp`, the rest to `ui_tests.cpp` with new `DomainForm`
+  test-only accessors: `addChild()`/`removeSelected()`/
+  `applySelectedDomainFields()` made public, `paddingLeftField()`/
+  `paddingBottomField()` added). One Python case has no C++ equivalent
+  by design: `DomainForm` always needs a project loaded via
+  `setProject()` first - `addChild()` only ever adds a child under the
+  current selection, there's no "click Add Domain with nothing loaded
+  yet, get a root" blank-slate flow the way `domainform.py`'s
+  `on_add_domain_button_clicked()` provides (no "New Project" entry
+  point exists anywhere in the native app yet).
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown to 74 CTest entries). `test_wrfseries.py` (20 cases),
+  suite has grown to 76 CTest entries). `test_wrfseries.py` (20 cases),
   `test_tilemap_overlays.py` (13 cases), `test_export.py` (2 cases, plus an
   existing widget test already covering the readable-PNG case), and
   `test_rasterlayer.py` (33 cases - cache-tier hit/miss behavior pinned via
@@ -205,10 +221,9 @@ the feature-complete behavioral reference.
   (`addLayerButton` staying permanently disabled until a layer-tree
   rebuild happened to run; the layer tree listening for `currentItemChanged`
   instead of `itemSelectionChanged`, so `clearSelection()` didn't hide the
-  colorbar; and a range-validation deadlock, all detailed above). Still
-  unported: `test_core_domain_tree.py`/`test_ui_domain_tree.py`, which are
-  likely mostly covered already by the existing domain tests but haven't
-  been diffed case-for-case.
+  colorbar; and a range-validation deadlock, all detailed above). Every
+  Python test file now has a ported counterpart - see the domain-tree bullet
+  above for the one remaining deliberate architecture difference.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 

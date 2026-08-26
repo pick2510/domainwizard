@@ -382,6 +382,34 @@ TEST_CASE("WPS export preserves nesting and root projection fields") {
     std::filesystem::remove(output);
 }
 
+namespace {
+void checkBboxRoundTrip(const std::string& fixture) {
+    auto original = readWpsNamelist(fixture);
+    original.domains.fillDomains();
+    const auto output = std::filesystem::temp_directory_path() / "wrftools-cpp-bbox-roundtrip.wps";
+    writeWpsNamelist(original, output);
+    auto reimported = readWpsNamelist(output);
+    reimported.domains.fillDomains();
+    std::filesystem::remove(output);
+
+    const auto& originalDomains = original.domains.domains();
+    const auto& reimportedDomains = reimported.domains.domains();
+    REQUIRE(reimportedDomains.size() == originalDomains.size());
+    for (std::size_t i = 0; i < originalDomains.size(); ++i) {
+        CHECK(reimportedDomains[i].parentId == originalDomains[i].parentId);
+        REQUIRE(originalDomains[i].bounds.has_value());
+        REQUIRE(reimportedDomains[i].bounds.has_value());
+        CHECK(reimportedDomains[i].bounds->minX == Catch::Approx(originalDomains[i].bounds->minX).margin(1.0));
+        CHECK(reimportedDomains[i].bounds->minY == Catch::Approx(originalDomains[i].bounds->minY).margin(1.0));
+        CHECK(reimportedDomains[i].bounds->maxX == Catch::Approx(originalDomains[i].bounds->maxX).margin(1.0));
+        CHECK(reimportedDomains[i].bounds->maxY == Catch::Approx(originalDomains[i].bounds->maxY).margin(1.0));
+    }
+}
+}  // namespace
+
+TEST_CASE("sibling fixture export round-trips its domain bboxes") { checkBboxRoundTrip("tests/fixtures/namelist_siblings.wps"); }
+TEST_CASE("linear-chain fixture export round-trips its domain bboxes") { checkBboxRoundTrip("tests/fixtures/namelist_hongkong.wps"); }
+
 TEST_CASE("WPS parser gives user errors for malformed domain cardinality") {
     const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-invalid.wps";
     std::ofstream out(path);
