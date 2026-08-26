@@ -109,14 +109,37 @@ if(EXISTS "${qt_plugins_dir}/imageformats")
     list(APPEND qt_plugin_files ${image_plugins})
 endif()
 
-# --- Shared-library dependency closure, over the executable AND the Qt
-# plugins together (MODULES, not EXECUTABLES - they're dlopen'd shared
-# objects, not programs) - a plugin can need libraries nothing else here
-# does (the TLS backend needs libssl/libcrypto that GDAL/curl may or may
-# not have already pulled in) ---
+# --- FlexiBLAS backends: on Fedora-family distros, GDAL's BLAS/LAPACK
+# dependency resolves to libblas.so.3/liblapack.so.3, which on those distros
+# aren't a real BLAS implementation but FlexiBLAS's dispatch shim - it
+# dlopen()s the actual backend (e.g. libflexiblas_openblas-openmp.so) at
+# runtime based on a sibling "flexiblas/" directory next to wherever its own
+# shared library lives (resolved relative to itself, not a hardcoded
+# absolute path - this is what makes bundling it this way work at all).
+# Without this, the frozen binary aborts with "Failed to load the BLAS
+# fallback library." This mirrors build.sh's identical handling for the
+# Python/PyInstaller build - same root cause, same fix, different bundler.
+# Absent entirely on non-Fedora-family distros (confirmed: a plain Debian/
+# Ubuntu system has no trace of it), so only bundled if actually present.
+set(flexiblas_backend_files "")
+foreach(candidate /usr/lib64/flexiblas /usr/lib/x86_64-linux-gnu/flexiblas /usr/lib/flexiblas)
+    if(EXISTS "${candidate}")
+        file(GLOB flexiblas_backend_files "${candidate}/*.so")
+        message(STATUS "Bundling FlexiBLAS backends from ${candidate}")
+        break()
+    endif()
+endforeach()
+
+# --- Shared-library dependency closure, over the executable, the Qt
+# plugins, and the FlexiBLAS backends together (MODULES, not EXECUTABLES -
+# they're all dlopen'd shared objects, not programs) - a plugin/backend can
+# need libraries nothing else here does (the TLS backend needs libssl/
+# libcrypto that GDAL/curl may or may not have already pulled in; a
+# FlexiBLAS backend needs its own actual BLAS/LAPACK implementation, e.g.
+# libopenblas, that the dispatch shim alone never references) ---
 file(GET_RUNTIME_DEPENDENCIES
     EXECUTABLES "${BUNDLED_EXE}"
-    MODULES ${qt_plugin_files}
+    MODULES ${qt_plugin_files} ${flexiblas_backend_files}
     RESOLVED_DEPENDENCIES_VAR resolved_deps
     UNRESOLVED_DEPENDENCIES_VAR unresolved_deps
 )
@@ -169,6 +192,29 @@ endforeach()
 # xcb/offscreen platform plugin loadable at all from a relocated bundle.
 file(WRITE "${OUTPUT_DIR}/bin/qt.conf" "[Paths]\nPlugins = ../lib/qt6/plugins\n")
 
+# --- FlexiBLAS backends: copy the whole directory (not just the .so files
+# already pulled into bundled_lib_names above) as a sibling of the bundled
+# libblas.so.3/liblapack.so.3 dispatch shim, i.e. OUTPUT_DIR/lib/flexiblas -
+# matching the same self-relative-to-its-own-directory layout FlexiBLAS
+# expects wherever it's actually installed (see the detection comment
+# above). Includes non-.so files (e.g. its own default config) on purpose.
+set(bundled_flexiblas_relpaths "")
+if(flexiblas_backend_files)
+    list(GET flexiblas_backend_files 0 flexiblas_probe_file)
+    get_filename_component(flexiblas_src_dir "${flexiblas_probe_file}" DIRECTORY)
+    file(GLOB flexiblas_all_files "${flexiblas_src_dir}/*")
+    file(MAKE_DIRECTORY "${OUTPUT_DIR}/lib/flexiblas")
+    foreach(flexiblas_file ${flexiblas_all_files})
+        if(NOT IS_DIRECTORY "${flexiblas_file}")
+            get_filename_component(flexiblas_file_name "${flexiblas_file}" NAME)
+            configure_file("${flexiblas_file}" "${OUTPUT_DIR}/lib/flexiblas/${flexiblas_file_name}" COPYONLY)
+            if(flexiblas_file_name MATCHES "\\.so")
+                list(APPEND bundled_flexiblas_relpaths "flexiblas/${flexiblas_file_name}")
+            endif()
+        endif()
+    endforeach()
+endif()
+
 # --- GDAL data / PROJ data (proj.db) ------------------------------------
 # main.cpp's configureGdalData() looks for these at ../share/gdal and
 # ../share/proj relative to the executable, i.e. exactly OUTPUT_DIR/share/*
@@ -205,6 +251,14 @@ foreach(plugin_relpath ${bundled_plugin_relpaths})
     execute_process(COMMAND "${PATCHELF_EXECUTABLE}" --set-rpath "\$ORIGIN/../../.." "${OUTPUT_DIR}/lib/${plugin_relpath}" RESULT_VARIABLE rc)
     if(NOT rc EQUAL 0)
         message(WARNING "patchelf failed on ${plugin_relpath}")
+    endif()
+endforeach()
+# A FlexiBLAS backend lives one directory below lib/ (lib/flexiblas/), so it
+# needs $ORIGIN/.. to reach the bundled libraries (e.g. libopenblas) in lib/.
+foreach(flexiblas_relpath ${bundled_flexiblas_relpaths})
+    execute_process(COMMAND "${PATCHELF_EXECUTABLE}" --set-rpath "\$ORIGIN/.." "${OUTPUT_DIR}/lib/${flexiblas_relpath}" RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(WARNING "patchelf failed on ${flexiblas_relpath}")
     endif()
 endforeach()
 
