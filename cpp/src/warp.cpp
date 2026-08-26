@@ -3,15 +3,52 @@
 
 #include <gdal_priv.h>
 #include <gdal_utils.h>
+#include <gdal_alg.h>
 #include <cpl_string.h>
+#include <ogr_spatialref.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <string>
 
 namespace wrftools {
 namespace {
 constexpr float kNodataSentinel = -9999.0f;
+
+// Above this, cap the warped output's larger dimension rather than let
+// GDALWarp pick its own "preserve native resolution" target size: a
+// several-arc-second global WPS_GEOG dataset (e.g. GMTED2010's
+// 43200x21600) is orders of magnitude more detail than any screen can show,
+// and Web Mercator's latitude stretching inflates the natural target size
+// further still near the poles - unbounded, this made warping a real global
+// dataset take minutes and gigabytes rather than seconds, not just look
+// wrong. Large enough that every existing (much smaller) raster - a WRF
+// domain, a regional WPS_GEOG dataset - warps at its native resolution
+// exactly as before.
+constexpr int kMaxWarpDimension = 4096;
+
+// Cheap (no resampling) query for the pixel size GDALWarp would naturally
+// pick for a plain "-t_srs EPSG:3857" warp with no -ts/-tr override -
+// mirrors what the gdalwarp CLI itself computes internally before running
+// the actual warp. Returns false (leaving outWidth/outHeight untouched) if
+// GDAL can't suggest one, in which case the caller falls back to letting
+// GDALWarp decide on its own.
+bool suggestedWarpSize(GDALDatasetH source, int& outWidth, int& outHeight) {
+    OGRSpatialReference targetSrs;
+    targetSrs.importFromEPSG(3857);
+    targetSrs.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    char* targetWkt = nullptr;
+    if (targetSrs.exportToWkt(&targetWkt) != OGRERR_NONE || !targetWkt) return false;
+    void* transformer = GDALCreateGenImgProjTransformer(source, nullptr, nullptr, targetWkt, FALSE, 0.0, 1);
+    CPLFree(targetWkt);
+    if (!transformer) return false;
+    double geoTransform[6];
+    const bool ok = GDALSuggestedWarpOutput(source, GDALGenImgProjTransform, transformer, geoTransform, &outWidth, &outHeight) == CE_None;
+    GDALDestroyGenImgProjTransformer(transformer);
+    return ok;
+}
 }
 
 WarpedRaster warpToWebMercator(std::span<const float> values, int width, int height,
@@ -33,12 +70,26 @@ WarpedRaster warpToWebMercator(std::span<const float> values, int width, int hei
         throw UserError("Could not write source raster for warping.");
     band->SetNoDataValue(kNodataSentinel);
 
-    char* argv[] = {const_cast<char*>("-of"), const_cast<char*>("MEM"), const_cast<char*>("-t_srs"), const_cast<char*>("EPSG:3857"), const_cast<char*>("-r"), const_cast<char*>("bilinear"), nullptr};
+    GDALDatasetH sourceHandle = GDALDataset::ToHandle(source.get());
+
+    // Cap the target size up front - via -ts, so GDALWarp resamples
+    // straight to the capped resolution in one pass - rather than warping
+    // at whatever native-ish resolution it would otherwise choose and
+    // discarding the excess after the fact.
+    std::string targetWidthText, targetHeightText;
+    int suggestedWidth = 0, suggestedHeight = 0;
+    std::vector<const char*> argv{"-of", "MEM", "-t_srs", "EPSG:3857", "-r", "bilinear"};
+    if (suggestedWarpSize(sourceHandle, suggestedWidth, suggestedHeight) && std::max(suggestedWidth, suggestedHeight) > kMaxWarpDimension) {
+        const double scale = static_cast<double>(kMaxWarpDimension) / std::max(suggestedWidth, suggestedHeight);
+        targetWidthText = std::to_string(std::max(1, static_cast<int>(std::lround(suggestedWidth * scale))));
+        targetHeightText = std::to_string(std::max(1, static_cast<int>(std::lround(suggestedHeight * scale))));
+        argv.insert(argv.end(), {"-ts", targetWidthText.c_str(), targetHeightText.c_str()});
+    }
+    argv.push_back(nullptr);
     std::unique_ptr<GDALWarpAppOptions, void (*)(GDALWarpAppOptions*)> options(
-        GDALWarpAppOptionsNew(argv, nullptr), GDALWarpAppOptionsFree);
+        GDALWarpAppOptionsNew(const_cast<char**>(argv.data()), nullptr), GDALWarpAppOptionsFree);
     if (!options) throw UserError("Could not build GDAL warp options.");
 
-    GDALDatasetH sourceHandle = GDALDataset::ToHandle(source.get());
     int usageError = 0;
     std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> warped(
         GDALDataset::FromHandle(GDALWarp("", nullptr, 1, &sourceHandle, options.get(), &usageError)),

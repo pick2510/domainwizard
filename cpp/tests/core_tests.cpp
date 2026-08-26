@@ -604,6 +604,23 @@ TEST_CASE("warped raster bounds match the Python reference") {
     CHECK(warped.bounds3857.maxY == Catch::Approx(2547041.834148416).epsilon(1e-6));
 }
 
+TEST_CASE("warping a very high-resolution raster caps the output size instead of growing unbounded") {
+    // A real 43200x21600 global 30-arc-second WPS_GEOG dataset
+    // (GMTED2010) warped at GDALWarp's natural ("preserve native
+    // resolution") target size effectively hung - gigabytes and minutes,
+    // not just slow. This raster's width (5000) alone already exceeds the
+    // cap, without needing the full dataset's size or its extra
+    // near-pole Mercator stretching, so the test stays fast.
+    const Crs crs = Crs::lonLat();
+    constexpr int nx = 5000, ny = 50;
+    const std::array<double, 6> geotransform{-180.0, 360.0 / nx, 0.0, 25.0, 0.0, -50.0 / ny};
+    const std::vector<float> values(static_cast<std::size_t>(nx) * ny, 1.0f);
+    const auto warped = warpToWebMercator(values, nx, ny, crs.wkt(), geotransform);
+    CHECK(warped.width <= 4096);
+    CHECK(warped.height <= 4096);
+    CHECK(warped.width == 4096);
+}
+
 TEST_CASE("raster layers render native WRF data with auto and manual ranges") {
     WrfSourceRegistry registry;
     auto& source = registry.open({"tests/fixtures/wrfout_multitime.nc"});

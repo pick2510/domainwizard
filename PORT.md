@@ -516,6 +516,25 @@ it:
   +-180 instead of wherever `known_lon` happened to put it. A dataset that
   itself straddles the seam without being a full 360 degrees wide (rare) is
   left as-is rather than guessing how to split it.
+- Unbounded warp output size (`warp.cpp`): confirmed against a real
+  43200x21600 (30 arc-second) global GMTED2010 dataset -
+  `topo_gmted2010_30s` from a real `WPS_GEOG` directory - opening it still
+  looked broken after the longitude fix above: rendering it effectively
+  hung. `GDALWarp` with no `-ts`/`-tr` override picks a target resolution
+  that tries to preserve the source's native pixel size, and web Mercator's
+  `1/cos(lat)` singularity at the poles inflates that further for any
+  raster reaching close to +-90 latitude - together, several arc-seconds
+  of native resolution plus near-pole stretching drove the natural target
+  size into the gigabytes/many minutes range. `warpToWebMercator` now
+  queries GDAL's own suggested target size cheaply first
+  (`GDALSuggestedWarpOutput`, no resampling), and if its larger dimension
+  exceeds `kMaxWarpDimension` (4096 - far more than any screen shows, and
+  no smaller than what any existing WRF-domain or regional WPS_GEOG raster
+  already warped to), passes an explicit `-ts` scaled down proportionally
+  so `GDALWarp` resamples directly to that capped size in one pass instead
+  of computing a huge one and discarding the excess. Every existing
+  (much smaller) raster is unaffected - the cap only ever kicks in above
+  4096, confirmed by the existing warp/render tests' unchanged output sizes.
 - `convert_geotiff_lib` was split in `CMakeLists.txt`: the index/tile
   reader (`geogrid_index.cpp`, `geogrid_reader.cpp` - no TIFF/GEOTIFF
   dependency) now lives in its own `convert_geotiff_reader` target, linked
