@@ -187,8 +187,17 @@ void DomainForm::populatePropertiesPanel() {
 }
 
 void DomainForm::updateSelection() {
-    updatePanelVisibility();
+    // Populate before revealing: mapTypeGroup_ (and the other per-selection
+    // groups) start out hidden and only become visible here, the first time
+    // a given selection needs them - if a group's fields are shown with
+    // their still-default construction-time text (e.g. Projection's
+    // "Latitude/Longitude") and only get their real values a moment later,
+    // Qt's very first paint of a just-shown QFormLayout row can end up
+    // laid out for the old text and then draw the new, differently-sized
+    // text into that stale geometry, clipping it. Setting the final values
+    // first means the first-ever show already lays out for real content.
     populatePropertiesPanel();
+    updatePanelVisibility();
 }
 
 bool DomainForm::applySelectedDomainFields(bool raiseOnInvalid) {
