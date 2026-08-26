@@ -336,6 +336,72 @@ TEST_CASE("an empty draggable group name disables overlay dragging entirely") {
     CHECK_FALSE(started);
 }
 
+TEST_CASE("pressing near a handle starts an overlay resize, taking priority over a body drag") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setCenter(0.0, 0.0, 6);
+    // A square domain outline with its SW handle at (-1,-1) - the handle
+    // sits exactly on the polygon's own boundary, which a body hit test
+    // would also consider "inside" if it ran first.
+    map.setVectorOverlayGroup("domains", {{{{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}, {-1.0, -1.0}}, Qt::red, 2.0,
+        /*closed=*/true, {{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}}}});
+    map.setDraggableVectorOverlayGroup("domains");
+
+    std::optional<std::size_t> startedOverlay, startedHandle;
+    std::optional<wrftools::LonLat> startedLonLat;
+    bool bodyDragStarted = false;
+    int moveCount = 0;
+    bool ended = false;
+    map.setOverlayResizeHandlers(
+        [&](std::size_t overlay, std::size_t handle, wrftools::LonLat lonLat) { startedOverlay = overlay; startedHandle = handle; startedLonLat = lonLat; },
+        [&](std::size_t, std::size_t, wrftools::LonLat) { ++moveCount; },
+        [&] { ended = true; });
+    map.setOverlayDragHandlers([&](std::size_t, wrftools::LonLat) { bodyDragStarted = true; }, {}, {});
+
+    map.grab();
+    // The SW handle (lon=-1/lat=-1) at zoom 6 centered on (0,0) in a
+    // 400x300 widget - computed directly from worldPixel()'s own formula
+    // (Web Mercator tile math), not guessed, so the hit test's small pixel
+    // radius isn't left to chance.
+    const QPointF handleScreenPos(154.49, 195.51);
+    press(map, handleScreenPos);
+    CHECK(map.dragTarget() == "overlay-resize");
+    CHECK_FALSE(bodyDragStarted);
+    REQUIRE(startedOverlay.has_value());
+    CHECK(*startedOverlay == 0);
+    REQUIRE(startedHandle.has_value());
+    CHECK(*startedHandle == 0);  // SW is index 0
+    REQUIRE(startedLonLat.has_value());
+    CHECK(startedLonLat->lon == Catch::Approx(-1.0).margin(0.05));
+    CHECK(startedLonLat->lat == Catch::Approx(-1.0).margin(0.05));
+
+    move(map, handleScreenPos + QPointF(-15, 15));
+    CHECK(moveCount == 1);
+    CHECK_NOTHROW(map.grab());  // handle squares + any in-progress highlight must not crash
+
+    release(map, handleScreenPos + QPointF(-15, 15));
+    CHECK(map.dragTarget().isEmpty());
+    CHECK(ended);
+}
+
+TEST_CASE("a press away from every handle still starts a body drag when inside the polygon") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setCenter(0.0, 0.0, 6);
+    map.setVectorOverlayGroup("domains", {{{{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}, {-1.0, -1.0}}, Qt::red, 2.0,
+        /*closed=*/true, {{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}}}});
+    map.setDraggableVectorOverlayGroup("domains");
+    bool resizeStarted = false, dragStarted = false;
+    map.setOverlayResizeHandlers([&](std::size_t, std::size_t, wrftools::LonLat) { resizeStarted = true; }, {}, {});
+    map.setOverlayDragHandlers([&](std::size_t, wrftools::LonLat) { dragStarted = true; }, {}, {});
+
+    map.grab();
+    press(map, QPointF(map.width() / 2.0, map.height() / 2.0));  // dead center, far from any corner
+    CHECK(map.dragTarget() == "overlay");
+    CHECK(dragStarted);
+    CHECK_FALSE(resizeStarted);
+}
+
 TEST_CASE("dragging empty map area still pans as before") {
     wrftools::TileMapWidget map;
     map.resize(400, 300);

@@ -7,7 +7,6 @@
 
 class QComboBox;
 class QGroupBox;
-class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTreeWidget;
@@ -72,7 +71,6 @@ private:
     [[nodiscard]] std::optional<int> selectedDomainId() const;
     void setDomainToExtent(const Crs& extentCrs, Bounds2D bounds);
     void onSetMapExtentClicked();
-    void onSetFileExtentClicked();
     void redraw(bool zoomOut);
     [[nodiscard]] QTreeWidgetItem* findTreeItem(int domainId) const;
     // Wired to map_'s draggable-overlay hooks (see TileMapWidget::
@@ -87,6 +85,16 @@ private:
     void onDomainOverlayDragStart(std::size_t overlayIndex, LonLat pressLonLat);
     void onDomainOverlayDragMove(std::size_t overlayIndex, LonLat currentLonLat);
     void onDomainOverlayDragEnd();
+    // Wired to map_'s corner-handle hooks (TileMapWidget::
+    // setOverlayResizeHandlers) so dragging one of a domain outline's four
+    // corner handles resizes it (Grid Extent's columns/rows) while the
+    // diagonally opposite corner stays fixed in place - the anchor is
+    // captured once, in the domain's own CRS, at drag start (see
+    // DomainResizeState) rather than re-derived every move, since the
+    // domain's bounds themselves change every move.
+    void onDomainOverlayResizeStart(std::size_t overlayIndex, std::size_t handleIndex, LonLat pressLonLat);
+    void onDomainOverlayResizeMove(std::size_t overlayIndex, std::size_t handleIndex, LonLat currentLonLat);
+    void onDomainOverlayResizeEnd();
 
     TileMapWidget* map_;
     std::optional<WpsProject> project_;
@@ -103,8 +111,13 @@ private:
     };
     std::optional<DomainDragState> domainDrag_;
 
+    struct DomainResizeState {
+        int domainId{};
+        Coordinate2D anchorXy{};  // the fixed, opposite corner - in the domain's own CRS
+    };
+    std::optional<DomainResizeState> domainResize_;
+
     QTreeWidget* tree_{};
-    QLabel* setFromLabel_{};
     QPushButton* addDomainButton_{};
     QPushButton* removeDomainButton_{};
 

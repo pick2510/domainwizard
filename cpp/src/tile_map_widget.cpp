@@ -151,6 +151,28 @@ void TileMapWidget::setOverlayDragHandlers(OverlayDragStartHandler onStart, Over
     overlayDragMove_ = std::move(onMove);
     overlayDragEnd_ = std::move(onEnd);
 }
+void TileMapWidget::setOverlayResizeHandlers(OverlayResizeStartHandler onStart, OverlayResizeMoveHandler onMove, OverlayResizeEndHandler onEnd) {
+    overlayResizeStart_ = std::move(onStart);
+    overlayResizeMove_ = std::move(onMove);
+    overlayResizeEnd_ = std::move(onEnd);
+}
+
+bool TileMapWidget::hitTestOverlayHandle(const QString& groupName, QPointF screenPoint, std::size_t& outOverlayIndex, std::size_t& outHandleIndex) const {
+    const auto found = vectorGroups_.find(groupName);
+    if (found == vectorGroups_.end()) return false;
+    constexpr double hitRadius = 8.0;
+    const auto topLeft = viewportTopLeft();
+    const auto& overlays = found->overlays;
+    for (std::size_t i = overlays.size(); i-- > 0;) {
+        const auto& overlay = overlays[i];
+        for (std::size_t h = 0; h < overlay.handles.size(); ++h) {
+            const auto handlePoint = worldPixel(overlay.handles[h].lon, overlay.handles[h].lat, zoom_) - topLeft;
+            const auto delta = handlePoint - screenPoint;
+            if (std::hypot(delta.x(), delta.y()) <= hitRadius) { outOverlayIndex = i; outHandleIndex = h; return true; }
+        }
+    }
+    return false;
+}
 
 bool TileMapWidget::hitTestOverlay(const QString& groupName, QPointF screenPoint, std::size_t& outIndex) const {
     const auto found = vectorGroups_.find(groupName);
@@ -348,6 +370,21 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
         }
     }
 
+    // Corner resize handles - drawn for every overlay in the draggable
+    // group whenever one exists (an always-visible affordance, matching
+    // the legend's own resize handle), not just the one currently being
+    // resized.
+    if (!draggableGroup_.isEmpty() && vectorGroups_.contains(draggableGroup_)) {
+        constexpr double half = 4.0;
+        painter.setPen(QPen(Qt::black, 1));
+        painter.setBrush(Qt::white);
+        for (const auto& overlay : vectorGroups_[draggableGroup_].overlays)
+            for (const auto& handle : overlay.handles) {
+                const auto p = worldPixel(handle.lon, handle.lat, zoom_) - topLeft;
+                painter.drawRect(QRectF(p.x() - half, p.y() - half, half * 2, half * 2));
+            }
+    }
+
     if (!legend_.isNull()) {
         const QSizeF scaledSize = QSizeF(legend_.size()) * legendScale_;
         legendRect_ = movableRect(scaledSize, legendPosition_, /*topRight=*/true);
@@ -395,6 +432,13 @@ void TileMapWidget::mousePressEvent(QMouseEvent* event) {
     } else if (infoRect_.contains(event->position())) {
         dragTarget_ = "info";
         dragOffset_ = event->position() - infoRect_.topLeft();
+    } else if (!draggableGroup_.isEmpty() && hitTestOverlayHandle(draggableGroup_, event->position(), resizedOverlayIndex_, resizedHandleIndex_)) {
+        // Checked before the body hit test below: a handle sits right on
+        // the polygon's own edge, which would otherwise also register as
+        // "inside" it.
+        dragTarget_ = "overlay-resize";
+        const auto pressLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
+        if (overlayResizeStart_) overlayResizeStart_(resizedOverlayIndex_, resizedHandleIndex_, {pressLonLat.x(), pressLonLat.y()});
     } else if (!draggableGroup_.isEmpty() && hitTestOverlay(draggableGroup_, event->position(), draggedOverlayIndex_)) {
         dragTarget_ = "overlay";
         const auto pressLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
@@ -422,6 +466,13 @@ void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
         }
         return;
     }
+    if (dragTarget_ == "overlay-resize") {
+        if (overlayResizeMove_) {
+            const auto currentLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
+            overlayResizeMove_(resizedOverlayIndex_, resizedHandleIndex_, {currentLonLat.x(), currentLonLat.y()});
+        }
+        return;
+    }
     if (!dragging_) return;
     const auto delta = event->position() - dragStart_;
     setCenter(lonLat(worldPixel() - delta, zoom_).x(), lonLat(worldPixel() - delta, zoom_).y(), zoom_);
@@ -429,6 +480,7 @@ void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 void TileMapWidget::mouseReleaseEvent(QMouseEvent*) {
     if (dragTarget_ == "overlay" && overlayDragEnd_) overlayDragEnd_();
+    if (dragTarget_ == "overlay-resize" && overlayResizeEnd_) overlayResizeEnd_();
     dragging_ = false;
     dragTarget_.clear();
 }

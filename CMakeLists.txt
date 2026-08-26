@@ -47,7 +47,6 @@ add_library(wrftools_core
     cpp/src/crs.cpp
     cpp/src/warp.cpp
     cpp/src/domain.cpp
-    cpp/src/file_extent.cpp
     cpp/src/units.cpp
     cpp/src/colormaps.cpp
     cpp/src/raster_layer.cpp

@@ -768,6 +768,91 @@ TEST_CASE("dragging a nested domain's outline moves it within its parent without
     CHECK(domains[0].centerLat == Catch::Approx(originalRootCenterLat));
 }
 
+TEST_CASE("dragging a root domain's corner handle resizes its grid extent") {
+    TileMapWidget map;
+    map.resize(400, 300);
+    DomainForm form(&map);
+    form.show();
+    form.addChild();  // root: lat-lon, center (0,0), 0.1x0.1 cells, 10x10 -> bounds [-0.5,0.5]^2
+    REQUIRE(form.project()->domains.domains().size() == 1);
+    REQUIRE(form.columnsField()->text().toInt() == 10);
+    REQUIRE(form.rowsField()->text().toInt() == 10);
+
+    // Pin down a known, exact view rather than relying on zoomToBounds'
+    // auto-fit, so the corner handle's screen position can be computed
+    // directly from worldPixel()'s own formula (see widget_tests.cpp's
+    // resize-handle tests, which use the identical formula/inputs).
+    map.setCenter(0.0, 0.0, 6);
+    map.grab();
+
+    // NE handle (lon=0.5/lat=0.5) at zoom 6, centered on (0,0), 400x300.
+    const QPointF neHandle(222.76, 127.24);
+    press(map, neHandle);
+    CHECK(map.dragTarget() == "overlay-resize");
+    move(map, neHandle + QPointF(80, -60));  // drag outward: grow the domain
+    // The panel updates live, mid-drag.
+    CHECK(form.columnsField()->text().toInt() > 10);
+    CHECK(form.rowsField()->text().toInt() > 10);
+    release(map, neHandle + QPointF(80, -60));
+    CHECK(map.dragTarget().isEmpty());
+
+    const auto& root = form.project()->domains.domains().at(0);
+    CHECK(root.columns == form.columnsField()->text().toInt());
+    CHECK(root.rows == form.rowsField()->text().toInt());
+    // The SW corner (the anchor, diagonally opposite the NE handle that
+    // was dragged) stays fixed - i.e. the domain grew from its NE corner,
+    // not by re-centering it symmetrically.
+    CHECK(root.centerLon > 0.0);
+    CHECK(root.centerLat > 0.0);
+}
+
+TEST_CASE("dragging a nested domain's corner handle resizes it without touching its parent") {
+    TileMapWidget map;
+    map.resize(400, 300);
+    DomainForm form(&map);
+    form.show();
+    form.addChild();  // root: bounds [-0.5,0.5]^2 (see the root-resize test above)
+    form.domainTree()->setCurrentItem(form.domainTree()->topLevelItem(0));
+    form.addChild();  // child of root
+
+    auto* childItem = form.domainTree()->topLevelItem(0)->child(0);
+    form.domainTree()->setCurrentItem(childItem);
+    form.ratioField()->setText("1");
+    form.columnsField()->setText("9");
+    form.rowsField()->setText("9");
+    form.paddingLeftField()->setText("0");
+    form.paddingBottomField()->setText("0");
+    // Child bounds become [-0.5,-0.5] to [0.4,0.4] (root's SW corner, 9 of
+    // the root's own 0.1-degree cells wide/tall).
+    REQUIRE(form.applySelectedDomainFields(true));
+
+    map.setCenter(0.0, 0.0, 6);
+    map.grab();
+
+    const int originalRootCols = form.project()->domains.domains().at(0).columns;
+    const auto originalRootCenterLon = form.project()->domains.domains().at(0).centerLon;
+
+    // The child's NE handle (lon=0.4/lat=0.4). Deliberately close to the
+    // root's own NE handle (~6px away, both within the 8px hit radius) -
+    // hitTestOverlayHandle checks the topmost (last-appended, i.e. the
+    // child) overlay first, so this must resolve to the child regardless.
+    const QPointF childNe(218.20, 131.80);
+    press(map, childNe);
+    CHECK(map.dragTarget() == "overlay-resize");
+    move(map, childNe + QPointF(-30, 30));  // shrink it inward, away from the root's own NE
+    release(map, childNe + QPointF(-30, 30));
+
+    const auto& domains = form.project()->domains.domains();
+    REQUIRE(domains.size() == 2);
+    CHECK(domains[1].columns < 9);
+    CHECK(domains[1].rows < 9);
+    CHECK(form.columnsField()->text().toInt() == domains[1].columns);
+    CHECK(form.rowsField()->text().toInt() == domains[1].rows);
+    // The root (this domain's parent) was untouched.
+    CHECK(domains[0].columns == originalRootCols);
+    CHECK(domains[0].centerLon == Catch::Approx(originalRootCenterLon));
+}
+
 TEST_CASE("domain outlines are not draggable while another tab owns the map") {
     TileMapWidget map;
     map.resize(500, 400);

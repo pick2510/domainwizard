@@ -58,7 +58,16 @@ std::vector<VectorOverlay> computeDomainOverlays(DomainProject& project) {
     overlays.reserve(project.domains().size());
     for (const auto& domain : project.domains()) {
         if (!domain.bounds) continue;
-        overlays.push_back({densifiedRing(*domain.bounds, projection), penColorForDomainNumber(domain.id), 2.0, /*closed=*/true});
+        const auto& b = *domain.bounds;
+        // Exact corners of the domain's own authoritative bounds, not
+        // anything inferred from the segmentized/curved ring below - SW,
+        // SE, NE, NW, matching TileMapWidget::setOverlayResizeHandlers'
+        // documented order.
+        std::vector<LonLat> handles{
+            projection.toLonLat({b.minX, b.minY}), projection.toLonLat({b.maxX, b.minY}),
+            projection.toLonLat({b.maxX, b.maxY}), projection.toLonLat({b.minX, b.maxY}),
+        };
+        overlays.push_back({densifiedRing(b, projection), penColorForDomainNumber(domain.id), 2.0, /*closed=*/true, std::move(handles)});
     }
     return overlays;
 }

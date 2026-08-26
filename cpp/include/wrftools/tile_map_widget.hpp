@@ -41,7 +41,13 @@ struct TileProvider {
 [[nodiscard]] std::vector<TileProvider> builtinTileProviders();
 
 // LonLat is defined in crs.hpp (lon/lat fields) and reused here.
-struct VectorOverlay { std::vector<LonLat> points; QColor color{Qt::red}; double width{2.0}; bool closed{false}; };
+// handles is empty for a plain outline; a caller that wants its polygon
+// resizable via on-map corner handles (DomainForm's domain outlines) fills
+// in exactly 4 corner points (order: SW, SE, NE, NW - see
+// setOverlayResizeHandlers) computed from its own authoritative bounds,
+// rather than this widget trying to infer "corners" from an arbitrary,
+// densified ring.
+struct VectorOverlay { std::vector<LonLat> points; QColor color{Qt::red}; double width{2.0}; bool closed{false}; std::vector<LonLat> handles{}; };
 // image is already reprojected to EPSG:3857 (see warp.hpp) - bounds3857 is
 // therefore a pure scale+translate placement, never a stretch/skew of the
 // source grid, unlike the old lon/lat-corner placement this replaced.
@@ -97,6 +103,17 @@ public:
     void setDraggableVectorOverlayGroup(const QString& groupName);
     void setOverlayDragHandlers(OverlayDragStartHandler onStart, OverlayDragMoveHandler onMove, OverlayDragEndHandler onEnd);
 
+    // Same idea, for the small square handles at an overlay's own
+    // VectorOverlay::handles points (drawn for every overlay in the
+    // draggable group, not just the one currently being dragged/resized -
+    // an always-visible affordance, like the legend's own resize handle).
+    // A press landing on one of them takes priority over a body drag/pan.
+    // handleIndex is that point's index within the overlay's handles list.
+    using OverlayResizeStartHandler = std::function<void(std::size_t overlayIndex, std::size_t handleIndex, LonLat pressLonLat)>;
+    using OverlayResizeMoveHandler = std::function<void(std::size_t overlayIndex, std::size_t handleIndex, LonLat currentLonLat)>;
+    using OverlayResizeEndHandler = std::function<void()>;
+    void setOverlayResizeHandlers(OverlayResizeStartHandler onStart, OverlayResizeMoveHandler onMove, OverlayResizeEndHandler onEnd);
+
     // Test-facing accessors only - mirror the private attributes Python's
     // tests reach into directly on TileMapWidget (there is no real privacy
     // there); production code never needs these.
@@ -142,6 +159,11 @@ private:
     // last-in-the-group first (see setDraggableVectorOverlayGroup). Sets
     // outIndex and returns true on the first (topmost) containing polygon.
     [[nodiscard]] bool hitTestOverlay(const QString& groupName, QPointF screenPoint, std::size_t& outIndex) const;
+    // Same idea for the small square handles at each overlay's
+    // VectorOverlay::handles points - screen-distance test (not
+    // point-in-polygon), topmost overlay first, first-matching-handle
+    // within it.
+    [[nodiscard]] bool hitTestOverlayHandle(const QString& groupName, QPointF screenPoint, std::size_t& outOverlayIndex, std::size_t& outHandleIndex) const;
     // Screen-space QPainterPath for one overlay's lon/lat ring, given the
     // viewport's world-pixel top-left - shared by paintEvent's normal
     // vector-overlay pass and its drag-highlight pass so they always trace
@@ -173,13 +195,18 @@ private:
     QString infoText_;
     std::optional<QPointF> infoPosition_;
     QRectF infoRect_;
-    QString dragTarget_;  // "" | "legend" | "legend-resize" | "info" | "overlay"
+    QString dragTarget_;  // "" | "legend" | "legend-resize" | "info" | "overlay" | "overlay-resize"
     QPointF dragOffset_;
     QString draggableGroup_;
     OverlayDragStartHandler overlayDragStart_;
     OverlayDragMoveHandler overlayDragMove_;
     OverlayDragEndHandler overlayDragEnd_;
     std::size_t draggedOverlayIndex_{};
+    OverlayResizeStartHandler overlayResizeStart_;
+    OverlayResizeMoveHandler overlayResizeMove_;
+    OverlayResizeEndHandler overlayResizeEnd_;
+    std::size_t resizedOverlayIndex_{};
+    std::size_t resizedHandleIndex_{};
     double longitude_{0.0};
     double latitude_{20.0};
     int zoom_{2};

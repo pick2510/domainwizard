@@ -103,12 +103,15 @@ the feature-complete behavioral reference.
   `Qt::UserRole`, not parsed from display text), add child, cascade remove,
   **editable root panel** (projection, truelat1/2, stand_lon, resolution,
   center point) and **nested panel** (ratio, position within parent) with
-  green/yellow/red field validation styling, **set-from-map-extent and
-  set-from-file-extent actions** (`file_extent.hpp`/`.cpp`), and **domain
-  outlines drawn on the shared map** (8-color palette cycled by stable WPS
-  domain number, densified via `perimeter/200` segmentization so curved
-  projections render correctly, zoom-to-domain over the densified outline).
-  A `setActive` gate keeps field edits from yanking the camera while the
+  green/yellow/red field validation styling, a **set-from-map-extent
+  action**, and **domain outlines drawn on the shared map** (8-color
+  palette cycled by stable WPS domain number, densified via `perimeter/200`
+  segmentization so curved projections render correctly, zoom-to-domain
+  over the densified outline). The set-from-*file*-extent action
+  (`fileextent.py`, ported here as `file_extent.hpp`/`.cpp`) was removed by
+  request - along with its now-unused `file_extent` module entirely, rather
+  than leaving dead code behind - so this is a deliberate feature removal,
+  not a gap. A `setActive` gate keeps field edits from yanking the camera while the
   View tab is on screen.
 - WRF reader: GDAL NetCDF variable discovery, non-spatial-field filtering,
   time/level selection, nodata conversion, U/V-style destaggering, geographic
@@ -347,6 +350,27 @@ the feature-complete behavioral reference.
     paint pass and this highlight pass so they always trace the identical
     outline) - a plain colored outline was easy to lose against similarly
     colored basemap tiles or an overlapping domain while dragging.
+
+  A fourth native-only addition: domains are also resizable on the map, not
+  just movable. `VectorOverlay` gained an optional `handles` field (0 or 4
+  lon/lat corner points, SW/SE/NE/NW) - `computeDomainOverlays`
+  (`domain_overlay.cpp`) fills it in from the domain's own authoritative
+  `Bounds2D`, not anything inferred from the densified/curved outline ring.
+  `TileMapWidget::setOverlayResizeHandlers` mirrors the move hooks exactly
+  (`hitTestOverlayHandle`, checked *before* the body hit test so a handle
+  sitting on the polygon's own edge always wins; handle squares are always
+  drawn for the draggable group, like the legend's own resize handle, not
+  just while resizing). `DomainForm::onDomainOverlayResize{Start,Move,End}`
+  capture the corner diagonally opposite the dragged one once, at drag
+  start, as a fixed anchor in the domain's own CRS (its `Bounds2D` changes
+  every move, so re-deriving the anchor from it every tick would let it
+  drift) - a root then recomputes `columns`/`rows` from `width/height /
+  dx`/`dy` and its Center Point as the midpoint of the anchor and the
+  dragged corner (true for any rectangle's diagonal), while a nested domain
+  recomputes `columns`/`rows` the same way plus `paddingLeft`/
+  `paddingBottom` from where its new (possibly-shrunk) box's own corner now
+  sits relative to its parent's bounds - the resolution/cell size itself
+  never changes, matching a manual Grid Extent field edit.
 
 ## Non-goals retained from Python
 

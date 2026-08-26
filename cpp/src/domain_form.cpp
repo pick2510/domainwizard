@@ -1,7 +1,6 @@
 #include "wrftools/domain_form.hpp"
 #include "wrftools/domain_overlay.hpp"
 #include "wrftools/error.hpp"
-#include "wrftools/file_extent.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/wps_namelist.hpp"
 
@@ -11,7 +10,6 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QIntValidator>
-#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
@@ -20,6 +18,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
+#include <array>
 #include <cmath>
 #include <map>
 
@@ -99,8 +98,7 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
     extentCalcGroup_ = new QGroupBox("Grid Extent Calculator", this);
     auto* extentLayout = new QVBoxLayout;
     auto* setFromMap = new QPushButton("Set to Map View Extent", this);
-    auto* setFromFile = new QPushButton("Set from File…", this);
-    extentLayout->addWidget(setFromMap); extentLayout->addWidget(setFromFile);
+    extentLayout->addWidget(setFromMap);
     extentCalcGroup_->setLayout(extentLayout);
     layout->addWidget(extentCalcGroup_);
 
@@ -139,12 +137,15 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
     for (auto* field : {trueLat1_, trueLat2_, standLon_, resolution_, centerLon_, centerLat_, ratio_, paddingLeft_, paddingBottom_, columns_, rows_})
         connect(field, &QLineEdit::editingFinished, this, [this] { applySelectedDomainFields(false); });
     connect(setFromMap, &QPushButton::clicked, this, [this] { onSetMapExtentClicked(); });
-    connect(setFromFile, &QPushButton::clicked, this, [this] { onSetFileExtentClicked(); });
 
     map_->setOverlayDragHandlers(
         [this](std::size_t index, LonLat lonLat) { onDomainOverlayDragStart(index, lonLat); },
         [this](std::size_t index, LonLat lonLat) { onDomainOverlayDragMove(index, lonLat); },
         [this] { onDomainOverlayDragEnd(); });
+    map_->setOverlayResizeHandlers(
+        [this](std::size_t index, std::size_t handle, LonLat lonLat) { onDomainOverlayResizeStart(index, handle, lonLat); },
+        [this](std::size_t index, std::size_t handle, LonLat lonLat) { onDomainOverlayResizeMove(index, handle, lonLat); },
+        [this] { onDomainOverlayResizeEnd(); });
     map_->setDraggableVectorOverlayGroup(active_ ? "domains" : QString());
 
     updatePanelVisibility();
@@ -344,15 +345,6 @@ void DomainForm::onSetMapExtentClicked() {
     try { setDomainToExtent(Crs::wgs84(), {southWest.lon, southWest.lat, northEast.lon, northEast.lat}); }
     catch (const std::exception& error) { QMessageBox::critical(this, "Could not set extent", error.what()); }
 }
-void DomainForm::onSetFileExtentClicked() {
-    const auto path = QFileDialog::getOpenFileName(this, "Set domain from file extent", {}, "All files (*)");
-    if (path.isEmpty()) return;
-    try {
-        const auto extent = readFileExtent(path.toStdString());
-        setDomainToExtent(extent.crs, extent.bounds);
-    } catch (const std::exception& error) { QMessageBox::critical(this, "Could not read file extent", error.what()); }
-}
-
 void DomainForm::setDomainToExtent(const Crs& extentCrs, Bounds2D bounds) {
     const auto id = selectedDomainId();
     if (!project_ || !id) return;
@@ -470,6 +462,69 @@ void DomainForm::onDomainOverlayDragMove(std::size_t overlayIndex, LonLat curren
 }
 
 void DomainForm::onDomainOverlayDragEnd() { domainDrag_.reset(); }
+
+void DomainForm::onDomainOverlayResizeStart(std::size_t overlayIndex, std::size_t handleIndex, LonLat) {
+    if (!project_) return;
+    auto& domains = project_->domains.domains();
+    if (overlayIndex >= domains.size()) return;
+    const auto& domain = domains[overlayIndex];
+    if (!domain.bounds) return;
+
+    // Handle order is SW, SE, NE, NW (see domain_overlay.cpp); the anchor
+    // is the diagonally opposite corner, i.e. two positions further around.
+    static constexpr std::array<int, 4> kOppositeOf{2, 3, 0, 1};
+    if (handleIndex >= kOppositeOf.size()) return;
+    const auto& b = *domain.bounds;
+    const std::array<Coordinate2D, 4> corners{{{b.minX, b.minY}, {b.maxX, b.minY}, {b.maxX, b.maxY}, {b.minX, b.maxY}}};
+
+    DomainResizeState state;
+    state.domainId = domain.id;
+    state.anchorXy = corners[static_cast<std::size_t>(kOppositeOf[handleIndex])];
+    domainResize_ = state;
+
+    if (auto* item = findTreeItem(domain.id)) tree_->setCurrentItem(item);
+}
+
+void DomainForm::onDomainOverlayResizeMove(std::size_t overlayIndex, std::size_t, LonLat currentLonLat) {
+    if (!domainResize_ || !project_) return;
+    auto& domains = project_->domains.domains();
+    if (overlayIndex >= domains.size()) return;
+    auto& domain = domains[overlayIndex];
+    if (domain.id != domainResize_->domainId) return;
+    if (domain.dx <= 0 || domain.dy <= 0) return;
+
+    try {
+        const auto projection = project_->domains.projection();
+        const auto currentXy = projection.toXy(currentLonLat);
+        const auto& anchor = domainResize_->anchorXy;
+        const double width = std::abs(currentXy.x - anchor.x);
+        const double height = std::abs(currentXy.y - anchor.y);
+        domain.columns = std::max(1, static_cast<int>(std::lround(width / domain.dx)));
+        domain.rows = std::max(1, static_cast<int>(std::lround(height / domain.dy)));
+
+        if (domain.id == 1) {
+            // Center is always the midpoint of any two diagonal corners -
+            // the anchor (fixed) and the corner now under the cursor.
+            const auto newCenter = projection.toLonLat({(anchor.x + currentXy.x) / 2.0, (anchor.y + currentXy.y) / 2.0});
+            domain.centerLon = newCenter.lon;
+            domain.centerLat = newCenter.lat;
+        } else {
+            auto& parent = domains.at(static_cast<std::size_t>(domain.parentId - 1));
+            if (!parent.bounds || parent.dx <= 0 || parent.dy <= 0) return;
+            const double newMinX = std::min(anchor.x, currentXy.x);
+            const double newMinY = std::min(anchor.y, currentXy.y);
+            domain.paddingLeft = std::max(0, static_cast<int>(std::lround((newMinX - parent.bounds->minX) / parent.dx)));
+            domain.paddingBottom = std::max(0, static_cast<int>(std::lround((newMinY - parent.bounds->minY) / parent.dy)));
+        }
+    } catch (const UserError&) {
+        return;  // projection not (yet) configured - nothing to resize against
+    }
+
+    populatePropertiesPanel();
+    redraw(false);
+}
+
+void DomainForm::onDomainOverlayResizeEnd() { domainResize_.reset(); }
 
 void DomainForm::redraw(bool zoomOut) {
     if (!project_ || project_->domains.domains().empty()) { map_->clearVectorOverlayGroup("domains"); return; }
