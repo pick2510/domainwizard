@@ -200,16 +200,15 @@ void write_geotiff(const std::string &path, const GeogridIndex &idx, const std::
   TIFFSetField(tif, GTIFF_PIXELSCALE, 3, pixel_scale);
 
   // The tile data's row 1 (as it literally appears in tile filenames, and
-  // as read_tiles() copies it 1:1 into buffer row 0) is not always the
-  // southernmost row: this tool's own writer always emits a positive dy
-  // with row 1 = south (see convert.cpp's row flip to bottom_top before
-  // tiling), but real-world WPS_GEOG index files can use a *negative* dy
-  // to mean row 1 = north instead (latitude decreases as the row index
-  // increases: lat(row) = known_lat + (row - known_y) * dy). Only flip
-  // buffer rows when dy is non-negative (row 1 = south, needs flipping to
-  // reach ORIENTATION_TOPLEFT's row-0-is-north); when dy is negative the
-  // buffer is already north-first.
-  const bool flip_rows = idx.dy >= 0.f;
+  // as read_tiles() copies it 1:1 into buffer row 0) is the southernmost
+  // row when idx.bottom_top is set (geogrid.exe's own default, and what
+  // this tool's own writer always emits - see convert.cpp's row flip to
+  // bottom_top before tiling), or the northernmost row when a real-world
+  // index file explicitly sets `row_order = top_bottom` - see
+  // read_index_file(). Only flip buffer rows in the bottom_top case, to
+  // reach ORIENTATION_TOPLEFT's row-0-is-north; top_bottom data is already
+  // north-first.
+  const bool flip_rows = idx.bottom_top;
 
   // known_x/known_y are 1-based tile-filename row/column indices (not
   // necessarily "from the south" -- see above); convert to the 0-based

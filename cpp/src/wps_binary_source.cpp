@@ -85,12 +85,13 @@ WpsBinarySource::WpsBinarySource(std::filesystem::path directory) : directory_(s
 
     // Same tie-point convention as convert_geotiff's own geotiff_writer.cpp
     // (GeoTIFF RasterPixelIsArea, raster row 0 = north): a tile file's own
-    // row 1 is south when dy is non-negative (this port's own convert.cpp
-    // always emits that), north when dy is negative (an idiosyncratic
-    // real-world index-file authoring choice geotiff_writer.cpp's own
-    // comment documents observing) - flip only in the first case to reach
-    // row-0-is-north.
-    const bool flipRows = idx.dy >= 0.f;
+    // row 1 is south when idx.bottom_top is set (geogrid.exe's own
+    // default when the index file has no explicit row_order key - see
+    // read_index_file), north when a real-world index file explicitly
+    // sets `row_order = top_bottom` - flip only in the first case to
+    // reach row-0-is-north. Not derived from dy's sign - that is a
+    // separate, unrelated field.
+    const bool flipRows = idx.bottom_top;
     const auto known = crs.toXy({idx.known_lon, idx.known_lat});
     const double pixelWidth = std::abs(static_cast<double>(idx.dx));
     const double pixelHeight = std::abs(static_cast<double>(idx.dy));

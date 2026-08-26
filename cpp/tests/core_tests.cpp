@@ -1108,6 +1108,109 @@ TEST_CASE("WpsBinarySource crops tile-alignment padding beyond the true global e
     std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("WpsBinarySource matches geogrid.exe's own defaults for absent tile_bdr/missing_value keys") {
+    // Cross-checked against WPS geogrid's own source
+    // (source_data_module.f90's get_tile_dimensions/get_missing_value):
+    // an absent tile_bdr defaults to 0 (not this tool's own -b 3 CLI
+    // default - a wrong default here would make read_tiles expect a much
+    // larger tile file than this test provides and fail outright), and an
+    // absent missing_value means "no value is missing" (not 0 - which
+    // would wrongly mask the real 0 value this test includes at south/
+    // col0).
+    const auto dir = std::filesystem::temp_directory_path() / "wrftools-cpp-wps-geog-defaults";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream index(dir / "index");
+        index << "type=continuous\n"
+                 "projection=regular_ll\n"
+                 "dx=90.0\n"
+                 "dy=90.0\n"
+                 "known_x=1.0\n"
+                 "known_y=1.0\n"
+                 "known_lat=-45.0\n"
+                 "known_lon=-135.0\n"
+                 "wordsize=1\n"
+                 "signed=no\n"
+                 "endian=big\n"
+                 "tile_x=4\n"
+                 "tile_y=2\n"
+                 "tile_z=1\n"
+                 "scale_factor=1\n"
+                 "units=\"none\"\n"
+                 "description=\"defaults test\"\n";
+        // No tile_bdr, no missing_value, no row_order key.
+    }
+    {
+        // Exactly tile_x*tile_y bytes - only valid if tile_bdr correctly
+        // defaults to 0; the old (wrong) default of 3 would need
+        // (4+6)*(2+6)=80 bytes and fail to read this 8-byte file.
+        std::ofstream tile(dir / "00001-00004.00001-00002", std::ios::binary);
+        const unsigned char values[8] = {0, 1, 2, 3, 10, 11, 12, 13};
+        tile.write(reinterpret_cast<const char*>(values), sizeof(values));
+    }
+
+    WpsBinarySource source(dir);
+    CHECK(source.size() == std::array<int, 2>{4, 2});
+    const auto& gt = source.geotransform();
+    CHECK(gt[0] == Catch::Approx(-180.0));  // known_lon already centers col 0 on -135, no wraparound needed
+    const auto values = source.read(source.variables().front().name, 0, 0);
+    REQUIRE(values.size() == 8);
+    // No row_order key -> geogrid.exe's own bottom_top default -> row 1
+    // (south, values 0-3) flips to the second (southern) output row.
+    CHECK(values == std::vector<float>{10, 11, 12, 13, 0, 1, 2, 3});
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("WpsBinarySource honors an explicit row_order=top_bottom key over dy's sign") {
+    // Same 4x2 dataset as above, but with row_order=top_bottom explicitly
+    // set while dy is still positive - geogrid.exe reads row_order as its
+    // own key (get_row_order), unrelated to dy's sign, so this must NOT
+    // flip (row 1 is already north here), unlike the bottom_top-default
+    // case above which does flip with the exact same positive dy.
+    const auto dir = std::filesystem::temp_directory_path() / "wrftools-cpp-wps-geog-toptobottom";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream index(dir / "index");
+        index << "type=continuous\n"
+                 "projection=regular_ll\n"
+                 "row_order=top_bottom\n"
+                 "missing_value=255\n"
+                 "dx=90.0\n"
+                 "dy=90.0\n"
+                 "known_x=1.0\n"
+                 "known_y=1.0\n"
+                 "known_lat=-45.0\n"
+                 "known_lon=-135.0\n"
+                 "wordsize=1\n"
+                 "signed=no\n"
+                 "endian=big\n"
+                 "tile_x=4\n"
+                 "tile_y=2\n"
+                 "tile_z=1\n"
+                 "tile_bdr=0\n"
+                 "scale_factor=1\n"
+                 "units=\"none\"\n"
+                 "description=\"top_bottom test\"\n";
+    }
+    {
+        std::ofstream tile(dir / "00001-00004.00001-00002", std::ios::binary);
+        const unsigned char values[8] = {0, 1, 2, 3, 10, 11, 12, 13};
+        tile.write(reinterpret_cast<const char*>(values), sizeof(values));
+    }
+
+    WpsBinarySource source(dir);
+    const auto values = source.read(source.variables().front().name, 0, 0);
+    REQUIRE(values.size() == 8);
+    // Unflipped: tile-file row 1 (values 0-3) is already the north (first
+    // output) row.
+    CHECK(values == std::vector<float>{0, 1, 2, 3, 10, 11, 12, 13});
+
+    std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("WrfSourceRegistry opens a WPS_GEOG directory as a WpsBinarySource, not a NetCDF file") {
     WrfSourceRegistry registry;
     auto& source = registry.open({"tests/fixtures/geotiff_convert/wps_soiltemp_1deg"});

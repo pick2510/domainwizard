@@ -129,20 +129,36 @@ GeogridIndex read_index_file(const std::string &dir) {
 
   // tile_bdr/missing_value/scale_factor are sometimes omitted in
   // real-world WPS_GEOG index files (observed e.g. in NCAR's own
-  // topo_gmted2010_5m and soiltype_top_5m datasets); default to the same
-  // values convert_geotiff's own CLI defaults to (-b 3, -m 0, -s 1) rather
-  // than erroring on a field that just wasn't written.
+  // topo_gmted2010_5m and soiltype_top_5m datasets); default to whatever
+  // WPS's own geogrid.exe defaults to when a key is absent
+  // (source_data_module.f90's get_tile_dimensions/get_missing_value/
+  // get_field_scale_factor), not this tool's own CLI defaults (-b 3, -m 0,
+  // -s 1) - those are convert_geotiff's own choices for a dataset it is
+  // itself writing, and don't reflect what a real WPS_GEOG index file
+  // omitting the key actually means to geogrid.exe.
   if (!kv.count("tile_bdr"))
-    std::fprintf(stderr, "WARNING: index file has no 'tile_bdr' key; assuming 3.\n");
-  idx.tile_bdr = parse_int(get_or(kv, "tile_bdr", "3"));
+    std::fprintf(stderr, "WARNING: index file has no 'tile_bdr' key; assuming 0 (WPS's own default).\n");
+  idx.tile_bdr = parse_int(get_or(kv, "tile_bdr", "0"));
   if (!kv.count("missing_value"))
-    std::fprintf(stderr, "WARNING: index file has no 'missing_value' key; assuming 0.\n");
-  idx.missing = parse_float(get_or(kv, "missing_value", "0"));
+    std::fprintf(stderr, "WARNING: index file has no 'missing_value' key; assuming none (WPS's own default - no value is treated as missing).\n");
+  // NaN (not a real elevation/category value that could collide with it)
+  // and, being NaN, `value == idx.missing` downstream is always false -
+  // i.e. nothing gets masked, exactly matching WPS's own "no missing_value
+  // means no value is missing" behavior.
+  idx.missing = parse_float(get_or(kv, "missing_value", "nan"));
   if (!kv.count("scale_factor"))
     std::fprintf(stderr, "WARNING: index file has no 'scale_factor' key; assuming 1.\n");
   idx.scalefactor = parse_float(get_or(kv, "scale_factor", "1"));
 
-  idx.bottom_top = true; // write_index_file() always writes "row_order = bottom_top"
+  // row_order controls whether a tile file's own row 1 is the south or
+  // north edge of the data; geogrid.exe defaults to bottom_top when the
+  // key is absent (get_row_order's istatus/=0 branch) - not inferred from
+  // dy's sign, which is a separate, unrelated field.
+  if (kv.count("row_order")) {
+    idx.bottom_top = kv.at("row_order") == "bottom_top";
+  } else {
+    idx.bottom_top = true;
+  }
   if (kv.count("endian")) {
     idx.endian = kv.at("endian") == "little";
   } else {

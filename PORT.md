@@ -551,6 +551,42 @@ it:
   that - before the wraparound/geotransform math runs, so a
   tile-padded-but-otherwise-normal dataset like this one still gets the
   wraparound fix on its now-correctly-sized 4320x2160.
+- Wrong defaults for absent index-file keys (`geogrid_reader.cpp`), found
+  by cross-checking real WPS's own `geogrid/src/source_data_module.f90`
+  against `read_index_file`'s existing defaults for the same keys:
+  - `tile_bdr` defaulted to 3 (this tool's own CLI default, `-b 3`) when
+    the key was absent; real `geogrid.exe` defaults it to 0
+    (`get_tile_dimensions`'s `if (is_tile_bdr(idx)) ... else npts_bdr = 0`).
+    The wrong default doesn't just misplace pixels - it makes
+    `read_tiles` expect a much larger tile file than a real 0-border
+    dataset actually has, so it would have failed outright with "Tile
+    file is shorter than expected" on any real dataset that omits this key
+    (none of the three tested against today happened to).
+  - `missing_value` defaulted to 0 when absent, silently masking any
+    real value of exactly 0 (e.g. sea-level elevation, common over ocean)
+    as missing/transparent. Real `geogrid.exe` treats an absent
+    `missing_value` as "no value is missing at all"
+    (`process_tile_module.f90`: `if (istatus /= 0) msg_val = NAN`). Now
+    defaults to NaN, which conveniently also means "never equal, never
+    masks anything" for the existing `value == idx.missing` check with no
+    extra branching needed. Affects both real GMTED2010 datasets tested
+    (both omit `missing_value`) - previously any true sea-level (0m) pixel
+    rendered as a transparent gap rather than teal-colored 0m terrain.
+  - `row_order` was never actually read from the index file at all -
+    `read_index_file` hardcoded `bottom_top` unconditionally, and
+    `WpsBinarySource`/`geotiff_writer.cpp` independently (mis)inferred
+    row order from `dy`'s sign instead. Real `geogrid.exe` reads an
+    explicit `row_order` key (defaulting to `bottom_top`, matching this
+    port's now-corrected default) via its own `get_row_order`, entirely
+    unrelated to `dy`'s sign. Fixed to parse the real key and use
+    `idx.bottom_top` (not `dy`'s sign) in both consumers. No real dataset
+    tested against today sets `row_order = top_bottom`, so this was a
+    latent bug rather than an observed one - covered by a hand-built
+    regression test instead.
+  All three read the same tested real datasets identically before and
+  after (each one happens to set `tile_bdr` explicitly, and none sets
+  `row_order`), confirmed by re-running the geometry probe against both
+  GMTED2010 datasets post-fix.
 - `convert_geotiff_lib` was split in `CMakeLists.txt`: the index/tile
   reader (`geogrid_index.cpp`, `geogrid_reader.cpp` - no TIFF/GEOTIFF
   dependency) now lives in its own `convert_geotiff_reader` target, linked
