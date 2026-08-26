@@ -1,0 +1,63 @@
+#pragma once
+
+#include "wrftools/colormaps.hpp"
+#include "wrftools/crs.hpp"
+#include "wrftools/warp.hpp"
+#include "wrftools/wrf_file.hpp"
+#include "wrftools/wrf_source.hpp"
+
+#include <optional>
+#include <string>
+#include <vector>
+#include <QImage>
+
+namespace wrftools {
+struct RasterLayer {
+    std::string variable;
+    int timeIndex{};
+    int levelIndex{};
+    std::string colormap{"viridis"};
+    std::optional<float> minimum;
+    std::optional<float> maximum;
+    std::string unitKey{"native"};
+    double opacity{0.8};
+    bool visible{true};
+    bool interpolate{true};
+    // Colorbar legend appearance only - never affects the rendered raster,
+    // so these are irrelevant to renderLayer/colorizeWarped and deliberately
+    // excluded from LayerRenderer's cache keys (layer_renderer.hpp): a tick
+    // tweak must not invalidate a cached slice/image. Mirrors
+    // rasterlayer.RasterLayer's tick_count/tick_format/tick_decimals.
+    int tickCount{3};
+    std::string tickFormat{"auto"};  // "auto" | "fixed" | "scientific"
+    int tickDecimals{2};
+};
+struct RenderedRaster {
+    std::vector<Rgba> pixels;
+    int width{};
+    int height{};
+    float minimum{};
+    float maximum{};
+    // EPSG:3857 placement bounds of `pixels` - see warp.hpp. Absent for the
+    // fixture-literal RenderedRaster construction the widget tests use
+    // directly (no WrfFile behind it), where placement isn't under test.
+    Bounds2D bounds3857;
+    // Populated only when layer.colormap == kCategoricalColormap - what
+    // colorbar's categorical legend needs. Empty/default for a continuous
+    // layer.
+    ColorLut categoricalPalette{};
+    std::map<int, std::string> categoricalLabels;
+    std::vector<int> presentCategories;
+};
+[[nodiscard]] RenderedRaster renderLayer(WrfSource& source, const RasterLayer& layer);
+[[nodiscard]] QImage rasterImage(const RenderedRaster& raster);
+
+// Unit-converts a copy of `warped`'s native-unit values (never mutating
+// `warped` itself, since a cache - see layer_renderer.hpp - shares one
+// warped slice across every layer that reads that same (file, variable,
+// time, level), possibly in different displayed units) and colormaps the
+// result. The second half of renderLayer(), split out so a caching layer
+// can reuse it against an already-warped, cached slice instead of
+// re-reading and re-warping on every call.
+[[nodiscard]] RenderedRaster colorizeWarped(const WarpedRaster& warped, const RasterLayer& layer, const WrfVariable& variable);
+}  // namespace wrftools

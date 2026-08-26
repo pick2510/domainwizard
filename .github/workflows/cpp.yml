@@ -1,0 +1,55 @@
+name: Native C++ build
+
+on:
+  push:
+    branches: [cplusplus]
+  pull_request:
+    branches: [cplusplus]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev catch2 patchelf
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja qt gdal proj catch2 dylibbundler
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+      - name: Build
+        run: cmake --build build-cpp
+      - name: Test
+        run: ctest --test-dir build-cpp --output-on-failure
+      # Packaged separately from the Debug build/test above (its own fresh
+      # Release, BUILD_TESTING=OFF configure+build) - only reached once
+      # tests have actually passed, matching what build-portable-cpp.sh/
+      # build-portable-macos.sh already do when run by hand.
+      - name: Package portable Linux bundle
+        if: runner.os == 'Linux'
+        run: ./build-portable-cpp.sh
+      - name: Package portable macOS app
+        if: runner.os == 'macOS'
+        run: ./build-portable-macos.sh
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrftools-linux
+          path: dist/wrftools-cpp/
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrftools-macos
+          path: dist/wrftools-macos.zip
