@@ -65,7 +65,9 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
 
     mapTypeGroup_ = new QGroupBox("Map Type", this);
     auto* mapTypeForm = new QFormLayout;
+    mapTypeForm->setVerticalSpacing(10);
     projection_ = new QComboBox(this);
+    projection_->setMinimumHeight(28);
     projection_->addItem("Latitude/Longitude", "lat-lon");
     projection_->addItem("Lambert Conformal", "lambert");
     projection_->addItem("Mercator", "mercator");
@@ -79,12 +81,14 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
 
     resolutionGroup_ = new QGroupBox("Horizontal Grid Spacing", this);
     auto* resolutionForm = new QFormLayout;
+    resolutionForm->setVerticalSpacing(10);
     resolution_ = makeField(resolutionForm, "Resolution", new QDoubleValidator(1e-20, 1e12, 20, this));
     resolutionGroup_->setLayout(resolutionForm);
     layout->addWidget(resolutionGroup_);
 
     nestingGroup_ = new QGroupBox("Nesting", this);
     auto* nestingForm = new QFormLayout;
+    nestingForm->setVerticalSpacing(10);
     auto* ratioValidator = new QIntValidator(1, 100, this);
     ratio_ = makeField(nestingForm, "Child-to-Parent Ratio", ratioValidator);
     nestingGroup_->setLayout(nestingForm);
@@ -100,6 +104,7 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
 
     centerGroup_ = new QGroupBox("Center Point", this);
     auto* centerForm = new QFormLayout;
+    centerForm->setVerticalSpacing(10);
     centerLon_ = makeField(centerForm, "Longitude", new QDoubleValidator(-180, 180, 10, this));
     centerLat_ = makeField(centerForm, "Latitude", new QDoubleValidator(-90, 90, 10, this));
     centerGroup_->setLayout(centerForm);
@@ -107,6 +112,7 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
 
     positionGroup_ = new QGroupBox("Position within Parent", this);
     auto* positionForm = new QFormLayout;
+    positionForm->setVerticalSpacing(10);
     auto* nonNegative = new QIntValidator(0, 1'000'000, this);
     paddingLeft_ = makeField(positionForm, "From left edge (parent cells)", nonNegative);
     paddingBottom_ = makeField(positionForm, "From bottom edge (parent cells)", new QIntValidator(0, 1'000'000, this));
@@ -115,6 +121,7 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
 
     gridExtentGroup_ = new QGroupBox("Grid Extent", this);
     auto* gridForm = new QFormLayout;
+    gridForm->setVerticalSpacing(10);
     columns_ = makeField(gridForm, "Horizontal (cells)", new QIntValidator(1, 1'000'000, this));
     rows_ = makeField(gridForm, "Vertical (cells)", new QIntValidator(1, 1'000'000, this));
     gridExtentGroup_->setLayout(gridForm);
