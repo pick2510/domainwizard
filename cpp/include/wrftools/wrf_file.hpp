@@ -23,6 +23,13 @@ struct WrfVariable {
 };
 struct GeographicBounds { double west{}; double south{}; double east{}; double north{}; };
 
+// Pinned separately from WrfFile's constructor - see wrf_file.cpp's own
+// comment - because it's the one piece of subdataset-target parsing that
+// differs between GDAL's netCDF and HDF5 drivers and is otherwise only
+// exercised incidentally through whichever driver GDAL happens to pick for
+// a given real file.
+[[nodiscard]] std::string subdatasetVariableName(const std::string& target);
+
 // Read-only GDAL-backed WRF/WPS source. Raster read/warp is deliberately a
 // separate renderer concern; this class owns file discovery and metadata.
 class WrfFile {
@@ -38,6 +45,7 @@ public:
 
 private:
     std::filesystem::path path_;
+    std::string driverName_;
     std::vector<WrfVariable> variables_;
     std::array<double, 6> geotransform_{};
     std::array<int, 2> size_{};

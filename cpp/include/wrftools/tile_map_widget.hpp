@@ -51,6 +51,23 @@ public:
     void setInfoText(const QString& text);
     [[nodiscard]] bool exportImage(const QString& path);
 
+    // Test-facing accessors only - mirror the private attributes Python's
+    // tests reach into directly on TileMapWidget (there is no real privacy
+    // there); production code never needs these.
+    [[nodiscard]] std::size_t vectorOverlayGroupSize(const QString& name) const { return static_cast<std::size_t>(vectorGroups_.value(name).overlays.size()); }
+    [[nodiscard]] std::size_t rasterOverlayGroupSize(const QString& name) const { return static_cast<std::size_t>(rasterGroups_.value(name).overlays.size()); }
+    [[nodiscard]] bool hasVectorOverlayGroup(const QString& name) const { return vectorGroups_.contains(name); }
+    [[nodiscard]] bool hasRasterOverlayGroup(const QString& name) const { return rasterGroups_.contains(name); }
+    [[nodiscard]] bool hasLegend() const noexcept { return !legend_.isNull(); }
+    [[nodiscard]] bool hasInfoText() const noexcept { return !infoText_.isEmpty(); }
+    [[nodiscard]] QRectF legendRect() const noexcept { return legendRect_; }
+    [[nodiscard]] QRectF infoRect() const noexcept { return infoRect_; }
+    [[nodiscard]] QString dragTarget() const noexcept { return dragTarget_; }
+    [[nodiscard]] std::optional<QPointF> legendPosition() const noexcept { return legendPosition_; }
+    [[nodiscard]] std::optional<QPointF> infoPosition() const noexcept { return infoPosition_; }
+    [[nodiscard]] double centerLongitude() const noexcept { return longitude_; }
+    [[nodiscard]] double centerLatitude() const noexcept { return latitude_; }
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;

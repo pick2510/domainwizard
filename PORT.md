@@ -60,7 +60,21 @@ the feature-complete behavioral reference.
 - WRF reader: GDAL NetCDF variable discovery, non-spatial-field filtering,
   time/level selection, nodata conversion, U/V-style destaggering, geographic
   bounds (now derived from the corrected projected geotransform, not raw
-  corner samples).
+  corner samples). Fixes a real bug found against production WRF output (a
+  120x120x64 Hong Kong domain run): some real wrfout files are NetCDF4/
+  HDF5-backed, and on a machine whose GDAL netCDF driver isn't built with
+  HDF5 support, GDAL opens them with its generic HDF5 driver instead - which
+  puts per-variable attributes (MemoryOrder, description, units) on the
+  first band's metadata rather than the subdataset's own metadata, and
+  names subdatasets `HDF5:"path"://VAR` rather than `NETCDF:"path":VAR`
+  (the trailing `//` broke the "substring after the last colon" name
+  parse). Either difference alone was enough to make every variable filter
+  out, throwing "No displayable WRF/WPS variables were found" for an
+  otherwise perfectly normal file. Both are now driver-aware
+  (`variableAttribute` checks band metadata too; `subdatasetVariableName`/
+  `subdatasetTarget` handle both target formats), verified end-to-end
+  against the real failing file (141 variables now discovered, `T2` reads
+  real data).
 - WRF filename parsing and multi-file series reads, now with the real
   fast/eager path split from `wrfseries.py`: a series whose every file's
   valid time and single-timestep-per-file assumption can be trusted from
@@ -150,15 +164,34 @@ the feature-complete behavioral reference.
 - macOS `.app` bundling - no macOS machine available to build or verify
   this from within the current working environment.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown to 52 CTest entries). `test_wrfseries.py` (20 cases) is
-  now ported, including the eager-fallback and lazy-grid-mismatch cases.
-  Still unported: `test_tilemap_overlays.py` (13 cases), `test_rasterlayer.py`
-  (33 cases), `test_ui_view_layers.py` (43 cases, the largest remaining
-  gap), `test_export.py` (2 cases); `test_core_domain_tree.py`/
+  suite has grown to 52 CTest entries, `wrftools_widget_tests` alone now 17
+  Catch2 cases). `test_wrfseries.py` (20 cases) and `test_tilemap_overlays.py`
+  (13 cases - overlay-group independence, legend/info default placement and
+  independent dragging without panning the map, and no-crash paint passes
+  with both a raster and a vector group populated) are now ported; added
+  test-only accessors to `TileMapWidget` (group sizes, legend/info rect and
+  drag state) mirroring the private attributes Python's tests reach into
+  directly. Still unported: `test_rasterlayer.py` (33 cases),
+  `test_ui_view_layers.py` (43 cases, the largest remaining gap),
+  `test_export.py` (2 cases); `test_core_domain_tree.py`/
   `test_ui_domain_tree.py` are likely mostly covered already by the
   existing domain tests but haven't been diffed case-for-case.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
+
+## Known gaps found against real production output
+
+- When GDAL falls back to its generic HDF5 driver for a NetCDF4/HDF5-backed
+  WRF file (see above), that driver's classic-raster subdataset listing
+  only exposes 2D (`XY`) fields - 3D fields (`T`, `U`, `V`, `P`, `QVAPOR`,
+  soil fields, ...) never appear as subdatasets at all, even though they
+  can still be opened directly by name if the exact target string is
+  already known. Every 2D field (T2, PSFC, HGT, wind/radiation/precip
+  diagnostics, ...) is unaffected and works today; exposing 3D fields
+  through this driver would need GDAL's multidimensional API rather than
+  the classic raster one this reader uses throughout - not attempted here.
+  Confirmed via the same real 141-variable Hong Kong domain file used to
+  find and fix the bug above.
 
 ## Non-goals retained from Python
 

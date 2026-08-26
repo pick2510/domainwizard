@@ -259,6 +259,16 @@ TEST_CASE("WrfFile rejects a GDAL-openable file with no MAP_PROJ attribute") {
     CHECK_THROWS_AS(WrfFile("tests/fixtures/not_a_wrf_file.tif"), UserError);
 }
 
+TEST_CASE("subdataset variable name parsing handles both netCDF and HDF5 driver target formats") {
+    // netCDF driver: NETCDF:"path":VARNAME - no leading slash.
+    CHECK(subdatasetVariableName("NETCDF:\"/tmp/wrfout.nc\":T2") == "T2");
+    // HDF5 driver (some real NetCDF4/HDF5-backed WRF output, when the
+    // netCDF driver on the machine lacks HDF5 support): HDF5:"path"://VARNAME -
+    // the naive "substring after the last colon" leaves a mangled "//VARNAME".
+    CHECK(subdatasetVariableName("HDF5:\"/tmp/wrfout.nc\"://T2") == "T2");
+    CHECK(subdatasetVariableName("no colon here") == "no colon here");
+}
+
 TEST_CASE("level index selects distinct data") {
     WrfFile file("tests/fixtures/wrfout_multitime.nc");
     std::set<long> roundedMeans;
