@@ -52,16 +52,16 @@ QLineEdit* makeField(QFormLayout* form, const QString& label, QValidator* valida
 }
 }  // namespace
 
-DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(map) {
+DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(map), project_(std::in_place) {
     auto* layout = new QVBoxLayout(this);
     auto* import = new QPushButton("Import namelist.wps…", this);
     auto* exportFile = new QPushButton("Export namelist.wps…", this);
     layout->addWidget(import); layout->addWidget(exportFile);
 
     tree_ = new QTreeWidget(this); tree_->setHeaderHidden(true);
-    auto* add = new QPushButton("Add Child Domain", this);
-    auto* remove = new QPushButton("Remove Domain", this);
-    layout->addWidget(tree_); layout->addWidget(add); layout->addWidget(remove);
+    addDomainButton_ = new QPushButton("Add Root Domain", this);
+    removeDomainButton_ = new QPushButton("Remove Domain", this);
+    layout->addWidget(tree_); layout->addWidget(addDomainButton_); layout->addWidget(removeDomainButton_);
 
     mapTypeGroup_ = new QGroupBox("Map Type", this);
     auto* mapTypeForm = new QFormLayout;
@@ -130,8 +130,8 @@ DomainForm::DomainForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), m
 
     connect(import, &QPushButton::clicked, this, [this] { importNamelist(); });
     connect(exportFile, &QPushButton::clicked, this, [this] { exportNamelist(); });
-    connect(add, &QPushButton::clicked, this, [this] { addChild(); });
-    connect(remove, &QPushButton::clicked, this, [this] { removeSelected(); });
+    connect(addDomainButton_, &QPushButton::clicked, this, [this] { addChild(); });
+    connect(removeDomainButton_, &QPushButton::clicked, this, [this] { removeSelected(); });
     connect(tree_, &QTreeWidget::currentItemChanged, this, [this] { updateSelection(); });
     connect(projection_, &QComboBox::currentIndexChanged, this, [this] { updateProjectionParamVisibility(projection_->currentData().toString()); applySelectedDomainFields(false); });
     for (auto* field : {trueLat1_, trueLat2_, standLon_, resolution_, centerLon_, centerLat_, ratio_, paddingLeft_, paddingBottom_, columns_, rows_})
@@ -168,6 +168,14 @@ void DomainForm::updatePanelVisibility() {
     positionGroup_->setVisible(hasSelection && !isRoot);
     extentCalcGroup_->setVisible(hasSelection);
     gridExtentGroup_->setVisible(hasSelection);
+
+    const bool hasDomains = project_ && !project_->domains.domains().empty();
+    removeDomainButton_->setEnabled(hasSelection);
+    addDomainButton_->setText(hasDomains ? "Add Child Domain" : "Add Root Domain");
+    // No domains yet: nothing to select, so the button (which creates the
+    // root) is always enabled. Once domains exist, adding one needs a
+    // selected parent. Mirrors domainform.py's add_domain_button wiring.
+    addDomainButton_->setEnabled(hasSelection || !hasDomains);
 }
 
 void DomainForm::populatePropertiesPanel() {
@@ -257,9 +265,21 @@ bool DomainForm::applySelectedDomainFields(bool raiseOnInvalid) {
 }
 
 void DomainForm::addChild() {
-    if (!project_ || !tree_->currentItem()) return;
-    const int parentId = *selectedDomainId();
+    if (!project_) return;
     auto& domains = project_->domains.domains();
+    if (domains.empty()) {
+        // No project loaded yet (or an imported one had none) - this click
+        // creates the root domain itself, with the same defaults as
+        // domainform.py's on_add_domain_button_clicked: lat-lon projection,
+        // a 0.1x0.1 (degree) cell, a 10x10 grid, centered on 0N/0E. The
+        // user edits these via the Map Type/Resolution/Center Point panels
+        // afterward, same as any other field edit.
+        domains.push_back({.id = 1, .parentId = 1, .columns = 10, .rows = 10, .dx = 0.1, .dy = 0.1, .bounds = std::nullopt, .mapProj = "lat-lon", .centerLon = 0.0, .centerLat = 0.0});
+        rebuildTree();
+        return;
+    }
+    if (!tree_->currentItem()) return;
+    const int parentId = *selectedDomainId();
     const auto& parent = domains.at(static_cast<std::size_t>(parentId - 1));
     domains.push_back({.id = static_cast<int>(domains.size()) + 1, .parentId = parentId, .ratio = 3, .paddingLeft = 0, .paddingBottom = 0, .columns = std::max(1, parent.columns / 3), .rows = std::max(1, parent.rows / 3), .bounds = std::nullopt});
     rebuildTree();

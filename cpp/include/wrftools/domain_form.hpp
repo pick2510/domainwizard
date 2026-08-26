@@ -9,6 +9,7 @@ class QComboBox;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -43,6 +44,8 @@ public:
     bool applySelectedDomainFields(bool raiseOnInvalid);
     [[nodiscard]] QLineEdit* paddingLeftField() const noexcept { return paddingLeft_; }
     [[nodiscard]] QLineEdit* paddingBottomField() const noexcept { return paddingBottom_; }
+    [[nodiscard]] QPushButton* addDomainButton() const noexcept { return addDomainButton_; }
+    [[nodiscard]] QPushButton* removeDomainButton() const noexcept { return removeDomainButton_; }
 
 private:
     void importNamelist();
@@ -64,6 +67,8 @@ private:
 
     QTreeWidget* tree_{};
     QLabel* setFromLabel_{};
+    QPushButton* addDomainButton_{};
+    QPushButton* removeDomainButton_{};
 
     QGroupBox* mapTypeGroup_{};
     QComboBox* projection_{};

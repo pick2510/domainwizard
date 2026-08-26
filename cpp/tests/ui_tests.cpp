@@ -654,12 +654,37 @@ TEST_CASE("domain form selection follows real tree clicks") {
 
 // --- test_ui_domain_tree.py port --------------------------------------------
 // DomainForm::setProject() is the entry point both the real "Import…" button
-// and these tests use (like ViewForm::openFiles()). One Python case has no
-// C++ equivalent by design, not omission: DomainForm here always needs a
-// project loaded via setProject() first - addChild() only ever adds a child
-// under the current selection, there's no "click Add Domain with nothing
-// loaded yet, get a root" blank-slate flow the way domainform.py's
-// on_add_domain_button_clicked() provides.
+// and these tests use (like ViewForm::openFiles()).
+
+TEST_CASE("building a sibling tree from scratch through addChild()") {
+    TileMapWidget map;
+    DomainForm form(&map);
+    // A fresh DomainForm always has a (possibly empty) project - no
+    // setProject() call here, matching the real app's startup state.
+    CHECK(form.addDomainButton()->text() == "Add Root Domain");
+
+    form.addChild();  // first click with no domains: adds the root
+    CHECK(form.domainTree()->topLevelItemCount() == 1);
+    CHECK(form.addDomainButton()->text() == "Add Child Domain");
+
+    // Re-fetch the root item after every addChild() call: rebuildTree()
+    // clears and rebuilds the whole QTreeWidget, so any QTreeWidgetItem*
+    // from before a call is dangling afterward.
+    form.domainTree()->setCurrentItem(form.domainTree()->topLevelItem(0));
+    form.addChild();  // first child
+
+    form.domainTree()->setCurrentItem(form.domainTree()->topLevelItem(0));
+    form.addChild();  // second child of the same parent: a sibling
+
+    const auto& domains = form.project()->domains.domains();
+    REQUIRE(domains.size() == 3);
+    CHECK(domains[1].parentId == 1);
+    CHECK(domains[2].parentId == 1);
+
+    // The tree widget itself (not just the domain list) reflects the
+    // sibling shape: two children under the same parent item.
+    CHECK(form.domainTree()->topLevelItem(0)->childCount() == 2);
+}
 
 TEST_CASE("importing a namelist builds the sibling tree") {
     TileMapWidget map;

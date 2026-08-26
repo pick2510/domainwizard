@@ -210,21 +210,30 @@ the feature-complete behavioral reference.
 - macOS `.app` bundling - no macOS machine available to build or verify
   this from within the current working environment.
 - Every Python test file now has a ported counterpart except for one
-  case documented below as a deliberate architecture difference:
-  `test_core_domain_tree.py`/`test_ui_domain_tree.py`'s sibling-tree
-  round-trip, renumbering, outline-distinguishability, and
-  out-of-bounds-child-via-field-edit cases are ported (bbox round-trip
-  tests for both the sibling and linear-chain fixtures added to
-  `core_tests.cpp`, the rest to `ui_tests.cpp` with new `DomainForm`
-  test-only accessors: `addChild()`/`removeSelected()`/
-  `applySelectedDomainFields()` made public, `paddingLeftField()`/
-  `paddingBottomField()` added). One Python case has no C++ equivalent
-  by design: `DomainForm` always needs a project loaded via
-  `setProject()` first - `addChild()` only ever adds a child under the
-  current selection, there's no "click Add Domain with nothing loaded
-  yet, get a root" blank-slate flow the way `domainform.py`'s
-  `on_add_domain_button_clicked()` provides (no "New Project" entry
-  point exists anywhere in the native app yet).
+  case, since fixed (see below): `test_core_domain_tree.py`/
+  `test_ui_domain_tree.py`'s sibling-tree round-trip, renumbering,
+  outline-distinguishability, and out-of-bounds-child-via-field-edit
+  cases are ported (bbox round-trip tests for both the sibling and
+  linear-chain fixtures added to `core_tests.cpp`, the rest to
+  `ui_tests.cpp` with new `DomainForm` test-only accessors:
+  `addChild()`/`removeSelected()`/`applySelectedDomainFields()` made
+  public, `paddingLeftField()`/`paddingBottomField()` added).
+- **"Add Root Domain" blank-slate flow**: `DomainForm` now matches
+  `domainform.py` exactly instead of always requiring `setProject()`
+  first. The constructor initializes `project_` to an empty (not
+  `nullopt`) `WpsProject` - mirrors `Project.create()` - and
+  `addChild()` (wired to the same button as ever) now creates the root
+  domain itself (lat-lon, a 0.1x0.1 degree cell, a 10x10 grid, centered
+  on 0N/0E - `domainform.py`'s exact defaults) when the domain list is
+  empty, instead of doing nothing. The button's own text/enabled state
+  now tracks this too (`addDomainButton()`/`removeDomainButton()`
+  accessors added): "Add Root Domain" (always enabled) with no domains,
+  "Add Child Domain" (needs a selection) once one exists - mirrors
+  `_update_panel_visibility`'s `add_domain_button` wiring exactly. This
+  closes `test_ui_domain_tree.py::test_build_siblings_through_ui`, the
+  one Python domain-tree case noted above as unported by design; it now
+  has a direct C++ port (`"building a sibling tree from scratch through
+  addChild()"`).
 - Port the remaining Python tests (197 total in the Python suite; the native
   suite has grown to 76 CTest entries). `test_wrfseries.py` (20 cases),
   `test_tilemap_overlays.py` (13 cases), `test_export.py` (2 cases, plus an
@@ -249,8 +258,9 @@ the feature-complete behavioral reference.
   rebuild happened to run; the layer tree listening for `currentItemChanged`
   instead of `itemSelectionChanged`, so `clearSelection()` didn't hide the
   colorbar; and a range-validation deadlock, all detailed above). Every
-  Python test file now has a ported counterpart - see the domain-tree bullet
-  above for the one remaining deliberate architecture difference.
+  Python test file now has a fully ported counterpart, with no remaining
+  deliberate architecture differences - see the "Add Root Domain" bullet
+  above for the last one, since closed.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 
