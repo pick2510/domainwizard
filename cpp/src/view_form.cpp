@@ -7,6 +7,7 @@
 #include "wrftools/units.hpp"
 #include "wrftools/wrf_series.hpp"
 
+#include <QAbstractSpinBox>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -25,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <unordered_map>
 
 namespace wrftools {
 namespace {
@@ -33,6 +35,20 @@ constexpr double kMercatorEarthRadius = 6378137.0;
 
 LonLat mercatorToLonLat(double x, double y) {
     return {x / kMercatorEarthRadius * 180.0 / M_PI, std::atan(std::sinh(y / kMercatorEarthRadius)) * 180.0 / M_PI};
+}
+
+// Mirrors viewform.py's _EXTRA_DIM_LABELS - a variable's own dimension name
+// (e.g. "bottom_top") isn't fit for display, so the level-row label
+// reflects what kind of extra dimension is actually selectable, not just a
+// generic "Vertical level" for every case (a soil-layer or landuse-category
+// dimension would otherwise be mislabeled).
+std::string extraDimensionLabel(const std::string& dimensionName) {
+    static const std::unordered_map<std::string, std::string> labels{
+        {"bottom_top", "Vertical Level"}, {"bottom_top_stag", "Vertical Level"}, {"num_metgrid_levels", "Vertical Level"},
+        {"soil_layers_stag", "Soil Depth Layer"}, {"land_cat", "Land Use Category"}, {"soil_cat", "Soil Type Category"}, {"month", "Month"},
+    };
+    const auto found = labels.find(dimensionName);
+    return found != labels.end() ? found->second : dimensionName;
 }
 }  // namespace
 
@@ -51,13 +67,13 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     auto* layersGroup = new QGroupBox("Layers", this);
     auto* layersLayout = new QVBoxLayout;
     layerTree_ = new QTreeWidget(this); layerTree_->setHeaderHidden(true);
-    auto* addLayerButton = new QPushButton("Add Layer", this);
+    addLayerButton_ = new QPushButton("Add Layer", this); addLayerButton_->setEnabled(false);
     removeLayerButton_ = new QPushButton("Remove Layer", this); removeLayerButton_->setEnabled(false);
     auto* moveLayout = new QHBoxLayout;
     moveUpButton_ = new QPushButton("Move Up", this); moveDownButton_ = new QPushButton("Move Down", this);
     moveUpButton_->setEnabled(false); moveDownButton_->setEnabled(false);
     moveLayout->addWidget(moveUpButton_); moveLayout->addWidget(moveDownButton_);
-    layersLayout->addWidget(layerTree_); layersLayout->addWidget(addLayerButton); layersLayout->addWidget(removeLayerButton_); layersLayout->addLayout(moveLayout);
+    layersLayout->addWidget(layerTree_); layersLayout->addWidget(addLayerButton_); layersLayout->addWidget(removeLayerButton_); layersLayout->addLayout(moveLayout);
     layersGroup->setLayout(layersLayout);
     layout->addWidget(layersGroup);
 
@@ -93,6 +109,8 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     colorbarForm->addRow("Tick count", tickCount_);
     colorbarForm->addRow("Tick format", tickFormat_);
     colorbarForm->addRow("Tick decimals", tickDecimals_);
+    showInfo_ = new QCheckBox("Show Info Overlay", this);
+    colorbarForm->addRow("", showInfo_);
     colorbarGroup_->setLayout(colorbarForm);
     layout->addWidget(colorbarGroup_);
 
@@ -111,29 +129,48 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(openFileButton, &QPushButton::clicked, this, [this] { openFile(); });
     connect(closeFileButton_, &QPushButton::clicked, this, [this] { closeSelectedFile(); });
     connect(fileTree_, &QTreeWidget::currentItemChanged, this, [this] { closeFileButton_->setEnabled(fileTree_->currentItem() != nullptr); });
-    connect(addLayerButton, &QPushButton::clicked, this, [this] { addLayer(); });
+    connect(addLayerButton_, &QPushButton::clicked, this, [this] { addLayer(); });
     connect(removeLayerButton_, &QPushButton::clicked, this, [this] { removeSelectedLayer(); });
     connect(moveUpButton_, &QPushButton::clicked, this, [this] { moveSelectedLayer(1); });
     connect(moveDownButton_, &QPushButton::clicked, this, [this] { moveSelectedLayer(-1); });
-    connect(layerTree_, &QTreeWidget::currentItemChanged, this, [this] { onLayerSelectionChanged(); });
+    connect(layerTree_, &QTreeWidget::itemSelectionChanged, this, [this] { onLayerSelectionChanged(); });
     connect(layerTree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item) { onLayerCheckStateChanged(item); });
     connect(variable_, &QComboBox::currentIndexChanged, this, [this] { onVariableChanged(); });
-    connect(time_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(level_, &QSpinBox::valueChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(colormap_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(units_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(opacity_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(autoRange_, &QCheckBox::toggled, this, [this](bool checked) { minimum_->setEnabled(!checked); maximum_->setEnabled(!checked); applyFieldsToSelectedLayer(); });
-    connect(minimum_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(maximum_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsToSelectedLayer(); });
-    connect(interpolate_, &QCheckBox::toggled, this, [this] { applyFieldsToSelectedLayer(); });
+    connect(time_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsFromSignal(); });
+    connect(level_, &QSpinBox::valueChanged, this, [this] { applyFieldsFromSignal(); });
+    connect(colormap_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsFromSignal(); });
+    connect(units_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsFromSignal(); });
+    connect(opacity_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsFromSignal(); });
+    connect(autoRange_, &QCheckBox::toggled, this, [this](bool checked) {
+        minimum_->setEnabled(!checked); maximum_->setEnabled(!checked);
+        // Reverting to auto is an unambiguous, immediately-applicable
+        // change. Turning auto off is not - the min/max fields still hold
+        // whatever they last displayed (possibly an equal, not-yet-edited
+        // default), so applying now could spuriously trip the max>min
+        // check below; wait for the user's own edit (editingFinished on
+        // those fields) instead, matching viewform.py's vmin/vmax LineEdits
+        // being blank (and so not yet "valid") right after unchecking.
+        if (checked) applyFieldsFromSignal();
+    });
+    // editingFinished (not valueChanged) - matches viewform.py's vmin/vmax
+    // LineEdits, which validate on editingFinished, not per keystroke: with
+    // valueChanged, setting a new minimum while the old maximum is still in
+    // place (or vice versa) would trip the max>min check below on every
+    // partial edit, not just once both fields reflect the user's intent.
+    // Not emitted by a programmatic setValue() either, so a caller (a test,
+    // or code) that sets both fields then applies them explicitly behaves
+    // the same way as Python's set_value() + on_range_changed().
+    connect(minimum_, &QAbstractSpinBox::editingFinished, this, [this] { applyFieldsFromSignal(); });
+    connect(maximum_, &QAbstractSpinBox::editingFinished, this, [this] { applyFieldsFromSignal(); });
+    connect(interpolate_, &QCheckBox::toggled, this, [this] { applyFieldsFromSignal(); });
     connect(tickCount_, &QSpinBox::valueChanged, this, [this] { onTickSettingsChanged(); });
     connect(tickFormat_, &QComboBox::currentIndexChanged, this, [this](int) { tickDecimals_->setEnabled(tickFormat_->currentData().toString() != "auto"); onTickSettingsChanged(); });
     connect(tickDecimals_, &QSpinBox::valueChanged, this, [this] { onTickSettingsChanged(); });
+    connect(showInfo_, &QCheckBox::toggled, this, [this] { updateColorbar(); });
     connect(zoomButton, &QPushButton::clicked, this, [this] { zoomToSelectedLayer(); });
     playbackTimer_->setInterval(600);
     connect(play_, &QCheckBox::toggled, this, [this](bool enabled) { if (enabled) playbackTimer_->start(); else playbackTimer_->stop(); });
-    connect(playbackTimer_, &QTimer::timeout, this, [this] { if (time_->count() > 0) time_->setCurrentIndex((time_->currentIndex() + 1) % time_->count()); });
+    connect(playbackTimer_, &QTimer::timeout, this, [this] { advancePlayback(); });
 
     updatePanelVisibility();
 }
@@ -192,6 +229,10 @@ void ViewForm::rebuildFileList(const std::optional<std::string>& selectPath) {
     fileTree_->blockSignals(false);
     if (toSelect) fileTree_->setCurrentItem(toSelect);
     closeFileButton_->setEnabled(fileTree_->currentItem() != nullptr);
+    // Only updatePanelVisibility() flips this on otherwise, and that's only
+    // ever called from a layer-tree rebuild - opening a file with no layers
+    // yet to trigger one left this permanently disabled.
+    addLayerButton_->setEnabled(!openFilePaths().empty());
 }
 
 void ViewForm::addLayer() {
@@ -275,7 +316,11 @@ void ViewForm::rebuildLayerTree(std::optional<int> selectId) {
 }
 
 void ViewForm::onLayerSelectionChanged() {
-    selectedLayerId_ = layerTree_->currentItem() ? std::optional<int>(layerTree_->currentItem()->data(0, kLayerIdRole).toInt()) : std::nullopt;
+    // selectedItems(), not currentItem() - clearSelection() leaves
+    // currentItem() unchanged (a separate Qt concept from "selected"), so
+    // reading currentItem() here would miss a real deselection.
+    const auto selected = layerTree_->selectedItems();
+    selectedLayerId_ = selected.isEmpty() ? std::nullopt : std::optional<int>(selected.first()->data(0, kLayerIdRole).toInt());
     play_->setChecked(false);
     updatePanelVisibility();
     populatePropertiesPanel();
@@ -326,6 +371,7 @@ void ViewForm::populatePropertiesPanel() {
 
         levelLabel_->setVisible(found->extraDimension.has_value());
         level_->setVisible(found->extraDimension.has_value());
+        if (found->extraDimension) levelLabel_->setText(QString::fromStdString(extraDimensionLabel(*found->extraDimension) + ":"));
         const auto levelOld = level_->blockSignals(true);
         level_->setMaximum(std::max(1, found->levelCount));
         level_->setValue(layer->settings.levelIndex + 1);
@@ -390,8 +436,16 @@ void ViewForm::applyFieldsToSelectedLayer() {
     layer->settings.opacity = opacity_->value();
     layer->settings.interpolate = interpolate_->isChecked();
     if (autoRange_->isChecked()) { layer->settings.minimum.reset(); layer->settings.maximum.reset(); }
-    else { layer->settings.minimum = static_cast<float>(minimum_->value()); layer->settings.maximum = static_cast<float>(maximum_->value()); }
+    else {
+        if (maximum_->value() <= minimum_->value()) throw UserError("The layer's maximum value must be greater than its minimum.");
+        layer->settings.minimum = static_cast<float>(minimum_->value());
+        layer->settings.maximum = static_cast<float>(maximum_->value());
+    }
     refreshMap();
+}
+
+void ViewForm::applyFieldsFromSignal() {
+    try { applyFieldsToSelectedLayer(); } catch (const std::exception& error) { QMessageBox::critical(this, "Invalid range", error.what()); }
 }
 
 void ViewForm::onTickSettingsChanged() {
@@ -438,9 +492,15 @@ void ViewForm::updateColorbar() {
         else
             map_->setLegend(buildColorbar(title, rendered.minimum, rendered.maximum, colormap(layer->settings.colormap),
                 layer->settings.tickCount, layer->settings.tickFormat, layer->settings.tickDecimals));
-        const auto timeLabel = time_->currentIndex() >= 0 ? time_->currentText().toStdString() : std::string{};
-        map_->setInfoText(QString::fromStdString(title + "  —  " + timeLabel));
+        if (showInfo_->isChecked()) {
+            const auto timeLabel = time_->currentIndex() >= 0 ? time_->currentText().toStdString() : std::string{};
+            map_->setInfoText(QString::fromStdString(title + "  —  " + timeLabel));
+        } else map_->setInfoText({});
     } catch (const std::exception&) { map_->setLegend({}); map_->setInfoText({}); }
+}
+
+void ViewForm::advancePlayback() {
+    if (time_->count() > 0) time_->setCurrentIndex((time_->currentIndex() + 1) % time_->count());
 }
 
 void ViewForm::zoomToSelectedLayer() {

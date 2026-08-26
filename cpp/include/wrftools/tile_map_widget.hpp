@@ -59,6 +59,7 @@ public:
     [[nodiscard]] bool hasVectorOverlayGroup(const QString& name) const { return vectorGroups_.contains(name); }
     [[nodiscard]] bool hasRasterOverlayGroup(const QString& name) const { return rasterGroups_.contains(name); }
     [[nodiscard]] bool hasLegend() const noexcept { return !legend_.isNull(); }
+    [[nodiscard]] const QPixmap& legendPixmap() const noexcept { return legend_; }
     [[nodiscard]] bool hasInfoText() const noexcept { return !infoText_.isEmpty(); }
     [[nodiscard]] QRectF legendRect() const noexcept { return legendRect_; }
     [[nodiscard]] QRectF infoRect() const noexcept { return infoRect_; }

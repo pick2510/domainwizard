@@ -2,13 +2,23 @@
 // Runs headless via QT_QPA_PLATFORM=offscreen, set by CMakeLists.txt for this target.
 // WORKING_DIRECTORY is the repo root (also set by CMakeLists.txt), so
 // fixtures resolve as "tests/fixtures/...".
+#include "wrftools/colormaps.hpp"
 #include "wrftools/domain_form.hpp"
+#include "wrftools/error.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
 #include "wrftools/wps_namelist.hpp"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QLabel>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QTimer>
 #include <QTreeWidget>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -86,6 +96,516 @@ TEST_CASE("view form layers default to auto tick formatting") {
     CHECK(settings.tickCount == 3);
     CHECK(settings.tickFormat == "auto");
     CHECK(settings.tickDecimals == 2);
+}
+
+// --- test_ui_view_layers.py port --------------------------------------------
+// ViewForm::openFiles() is the entry point both the real "Open…" button and
+// these tests use (see its own doc comment) - no QFileDialog monkeypatching
+// needed, unlike the Python reference.
+
+TEST_CASE("opening a file and adding a layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    CHECK(form.fileTreeWidget()->topLevelItemCount() == 1);
+
+    form.addLayer();
+    CHECK(form.layers().size() == 1);
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 1);
+}
+
+TEST_CASE("add-layer button is enabled right after opening the first file") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    CHECK_FALSE(form.addLayerButton()->isEnabled());
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    CHECK(form.addLayerButton()->isEnabled());
+}
+
+TEST_CASE("adding a layer with no open file is a no-op") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.addLayer();
+    CHECK(form.layers().empty());
+}
+
+TEST_CASE("multi-selecting a series opens one file entry") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    REQUIRE(form.fileTreeWidget()->topLevelItemCount() == 1);
+    auto* item = form.fileTreeWidget()->topLevelItem(0);
+    CHECK(item->text(0).startsWith("wrfout_d01 (3 files"));
+}
+
+TEST_CASE("series time combo shows real timestamps") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    std::vector<std::string> labels;
+    for (int i = 0; i < form.timeCombo()->count(); ++i) labels.push_back(form.timeCombo()->itemText(i).toStdString());
+    CHECK(labels == std::vector<std::string>{"2020-01-01 00:00", "2020-01-01 00:30", "2020-01-01 01:00"});
+}
+
+TEST_CASE("multi-selecting a single file behaves like the normal open") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    CHECK(form.fileTreeWidget()->topLevelItemCount() == 1);
+}
+
+TEST_CASE("selecting a layer shows its properties") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.show();
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    auto* item = form.layerTreeWidget()->topLevelItem(0);
+    form.layerTreeWidget()->setCurrentItem(item);
+    REQUIRE(form.selectedLayerId().has_value());
+    CHECK(form.selectedLayerId() == form.layers().front().layerId);
+    CHECK(form.propertiesGroup()->isVisible());
+}
+
+TEST_CASE("level row hidden for a 2D variable and shown for a 3D one") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.show();
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    const auto twoDIndex = form.variableCombo()->findText("T2");
+    REQUIRE(twoDIndex >= 0);
+    form.variableCombo()->setCurrentIndex(twoDIndex);
+    CHECK_FALSE(form.levelSpin()->isVisible());
+
+    const auto threeDIndex = form.variableCombo()->findText("U");
+    REQUIRE(threeDIndex >= 0);
+    form.variableCombo()->setCurrentIndex(threeDIndex);
+    CHECK(form.levelSpin()->isVisible());
+    CHECK(form.levelLabel()->text() == "Vertical Level:");
+    CHECK(form.levelSpin()->maximum() == 3);
+}
+
+TEST_CASE("time combo selection updates the layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.timeCombo()->setCurrentIndex(2);
+    CHECK(form.layers().front().settings.timeIndex == 2);
+}
+
+TEST_CASE("unchecking layer visibility removes the overlay without removing the layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 1);
+
+    auto* item = form.layerTreeWidget()->topLevelItem(0);
+    item->setCheckState(0, Qt::Unchecked);
+    CHECK(form.layers().size() == 1);
+    CHECK_FALSE(form.layers().front().settings.visible);
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 0);
+
+    item = form.layerTreeWidget()->topLevelItem(0);  // re-fetch: unaffected here, but good hygiene
+    item->setCheckState(0, Qt::Checked);
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 1);
+}
+
+TEST_CASE("colormap and opacity changes apply to the layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    const auto plasmaIndex = form.colormapCombo()->findText("plasma");
+    REQUIRE(plasmaIndex >= 0);
+    form.colormapCombo()->setCurrentIndex(plasmaIndex);
+    CHECK(form.layers().front().settings.colormap == "plasma");
+
+    form.opacitySpin()->setValue(0.25);
+    CHECK(form.layers().front().settings.opacity == Catch::Approx(0.25));
+}
+
+TEST_CASE("categorical colormap is auto-selected for LU_INDEX") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();  // default variable is HGT_M (continuous)
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    CHECK(form.layers().front().settings.colormap != kCategoricalColormap);
+
+    const auto luIndex = form.variableCombo()->findText("LU_INDEX");
+    REQUIRE(luIndex >= 0);
+    form.variableCombo()->setCurrentIndex(luIndex);
+    CHECK(form.layers().front().settings.colormap == kCategoricalColormap);
+}
+
+TEST_CASE("switching away from a categorical variable reverts the colormap") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    form.variableCombo()->setCurrentIndex(form.variableCombo()->findText("LU_INDEX"));
+    CHECK(form.layers().front().settings.colormap == kCategoricalColormap);
+
+    form.variableCombo()->setCurrentIndex(form.variableCombo()->findText("HGT_M"));
+    CHECK(form.layers().front().settings.colormap != kCategoricalColormap);
+}
+
+TEST_CASE("categorical colormap can still be manually overridden") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.variableCombo()->setCurrentIndex(form.variableCombo()->findText("LU_INDEX"));
+    CHECK(form.layers().front().settings.colormap == kCategoricalColormap);
+
+    const auto plasmaIndex = form.colormapCombo()->findText("plasma");
+    REQUIRE(plasmaIndex >= 0);
+    form.colormapCombo()->setCurrentIndex(plasmaIndex);
+    CHECK(form.layers().front().settings.colormap == "plasma");
+}
+
+TEST_CASE("units combo hidden for a variable with no known conversions") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.show();
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();  // HGT_M: units is blank in this fixture
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    CHECK_FALSE(form.unitsCombo()->isVisible());
+}
+
+TEST_CASE("units combo shown and changes the layer and colorbar title") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.show();
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.variableCombo()->setCurrentIndex(form.variableCombo()->findText("T2"));
+    CHECK(form.unitsCombo()->isVisible());  // T2 is Kelvin, convertible
+
+    const auto kelvinLegend = map.legendPixmap();
+    const auto degCIndex = form.unitsCombo()->findData("degC");
+    REQUIRE(degCIndex >= 0);
+    form.unitsCombo()->setCurrentIndex(degCIndex);
+    CHECK(form.layers().front().settings.unitKey == "degC");
+    CHECK(map.legendPixmap().toImage() != kelvinLegend.toImage());
+}
+
+TEST_CASE("tick count spinbox updates the layer and the legend") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    CHECK(form.tickCountSpin()->value() == 3);  // default
+    const auto before = map.legendPixmap();
+    form.tickCountSpin()->setValue(7);
+    CHECK(form.layers().front().settings.tickCount == 7);
+    CHECK(map.legendPixmap().toImage() != before.toImage());
+}
+
+TEST_CASE("tick format combo enables the decimals spinbox only when not auto") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    CHECK_FALSE(form.tickDecimalsSpin()->isEnabled());  // "auto" by default
+    const auto fixedIndex = form.tickFormatCombo()->findData("fixed");
+    REQUIRE(fixedIndex >= 0);
+    form.tickFormatCombo()->setCurrentIndex(fixedIndex);
+    CHECK(form.layers().front().settings.tickFormat == "fixed");
+    CHECK(form.tickDecimalsSpin()->isEnabled());
+}
+
+TEST_CASE("colorbar shown for the selected visible layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    CHECK_FALSE(map.hasLegend());  // nothing selected yet
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    CHECK(map.hasLegend());
+}
+
+TEST_CASE("colorbar hidden when the selected layer is not visible") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    CHECK(map.hasLegend());
+    form.layerTreeWidget()->topLevelItem(0)->setCheckState(0, Qt::Unchecked);
+    CHECK_FALSE(map.hasLegend());
+}
+
+TEST_CASE("colorbar hidden when nothing is selected") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    CHECK(map.hasLegend());
+    form.layerTreeWidget()->clearSelection();
+    CHECK_FALSE(map.hasLegend());
+}
+
+TEST_CASE("colorbar follows layer selection") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();  // layer 1: HGT_M
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();  // layer 2, now selected
+    const auto legendForLayerTwo = map.legendPixmap();
+    REQUIRE(map.hasLegend());
+
+    // Re-select layer 1 (bottom row, since the tree shows topmost first).
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(1));
+    REQUIRE(map.hasLegend());
+    CHECK(map.legendPixmap().toImage() != legendForLayerTwo.toImage());
+}
+
+TEST_CASE("manual range overrides auto") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    CHECK_FALSE(form.layers().front().settings.minimum.has_value());  // auto by default
+    form.autoRangeCheck()->setChecked(false);
+    form.minimumSpin()->setValue(10);
+    form.maximumSpin()->setValue(200);
+    form.applyFieldsToSelectedLayer();
+    CHECK(form.layers().front().settings.minimum == Catch::Approx(10.0));
+    CHECK(form.layers().front().settings.maximum == Catch::Approx(200.0));
+
+    form.autoRangeCheck()->setChecked(true);
+    CHECK_FALSE(form.layers().front().settings.minimum.has_value());
+    CHECK_FALSE(form.layers().front().settings.maximum.has_value());
+}
+
+TEST_CASE("an invalid range throws UserError") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    form.autoRangeCheck()->setChecked(false);
+    form.minimumSpin()->setValue(100);
+    form.maximumSpin()->setValue(0);  // max < min
+    CHECK_THROWS_AS(form.applyFieldsToSelectedLayer(), UserError);
+}
+
+TEST_CASE("removing the selected layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.removeSelectedLayer();
+    CHECK(form.layers().empty());
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 0);
+}
+
+TEST_CASE("moving a layer up and down reorders the stack") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();  // layer 1
+    form.addLayer();  // layer 2 (drawn on top)
+    REQUIRE(form.layers().size() == 2);
+    CHECK(form.layers()[0].layerId == 1);
+    CHECK(form.layers()[1].layerId == 2);
+
+    // Displayed tree is reversed (topmost row = topmost/last-drawn layer).
+    const auto topRowId = form.layerTreeWidget()->topLevelItem(0)->data(0, Qt::UserRole).toInt();
+    CHECK(topRowId == 2);
+
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));  // select layer 2
+    form.moveSelectedLayer(-1);  // move down
+    CHECK(form.layers()[0].layerId == 2);
+    CHECK(form.layers()[1].layerId == 1);
+
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(1));  // re-fetch: layer 2, now bottom row
+    form.moveSelectedLayer(1);  // move up
+    CHECK(form.layers()[0].layerId == 1);
+    CHECK(form.layers()[1].layerId == 2);
+}
+
+TEST_CASE("closing a file with no layers needs no confirmation") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.fileTreeWidget()->setCurrentItem(form.fileTreeWidget()->topLevelItem(0));
+    form.closeSelectedFile();  // no layers reference it, so no confirmation dialog appears
+    CHECK(form.fileTreeWidget()->topLevelItemCount() == 0);
+}
+
+TEST_CASE("two layers from different files both render") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    CHECK(form.layers().size() == 2);
+    CHECK(map.rasterOverlayGroupSize("view-rasters") == 2);
+}
+
+TEST_CASE("zoom-to-layer moves the map") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    map.resize(400, 400);
+    map.setCenter(0.0, 0.0, 2);
+    form.zoomToSelectedLayer();
+    // geo_em_small.nc is centered around lon ~114.17, lat ~22.3 (Hong Kong).
+    CHECK(map.centerLongitude() == Catch::Approx(114.17).margin(0.1));
+    CHECK(map.centerLatitude() == Catch::Approx(22.3).margin(0.1));
+}
+
+TEST_CASE("adding the first layer auto-zooms to it") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    map.resize(400, 400);
+    map.setCenter(0.0, 0.0, 2);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    CHECK(map.centerLongitude() == Catch::Approx(114.17).margin(0.1));
+    CHECK(map.centerLatitude() == Catch::Approx(22.3).margin(0.1));
+}
+
+TEST_CASE("adding a second layer does not recenter the map") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    map.resize(400, 400);
+    map.setCenter(0.0, 0.0, 2);  // simulate the user having panned away
+    form.addLayer();  // second layer, same file
+    CHECK(map.centerLongitude() == Catch::Approx(0.0).margin(0.01));
+    CHECK(map.centerLatitude() == Catch::Approx(0.0).margin(0.01));
+}
+
+TEST_CASE("play button disabled for a single-timestep file") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    CHECK_FALSE(form.playCheck()->isEnabled());
+}
+
+TEST_CASE("play button enabled for a multi-file series") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    CHECK(form.playCheck()->isEnabled());
+}
+
+TEST_CASE("checking play starts the timer and advances time on tick") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    form.playCheck()->setChecked(true);
+    CHECK(form.playbackTimer()->isActive());
+    CHECK(form.timeCombo()->currentIndex() == 0);
+
+    form.advancePlayback();
+    CHECK(form.timeCombo()->currentIndex() == 1);
+}
+
+TEST_CASE("play wraps back to the first frame after the last") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.timeCombo()->setCurrentIndex(form.timeCombo()->count() - 1);
+
+    form.advancePlayback();
+    CHECK(form.timeCombo()->currentIndex() == 0);
+}
+
+TEST_CASE("unchecking play stops the timer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.playCheck()->setChecked(true);
+    form.playCheck()->setChecked(false);
+    CHECK_FALSE(form.playbackTimer()->isActive());
+}
+
+TEST_CASE("switching layer selection stops playback") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.playCheck()->setChecked(true);
+    CHECK(form.playbackTimer()->isActive());
+
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(1));
+    CHECK_FALSE(form.playCheck()->isChecked());
+    CHECK_FALSE(form.playbackTimer()->isActive());
+}
+
+TEST_CASE("info overlay hidden by default and shown when checked") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+
+    CHECK_FALSE(map.hasInfoText());
+    form.showInfoCheck()->setChecked(true);
+    CHECK(map.hasInfoText());
+
+    form.showInfoCheck()->setChecked(false);
+    CHECK_FALSE(map.hasInfoText());
 }
 
 TEST_CASE("domain form selection follows real tree clicks") {

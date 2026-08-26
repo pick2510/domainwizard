@@ -114,7 +114,18 @@ the feature-complete behavioral reference.
   mismatch drops just that layer's overlay (caught around each render call
   in `refreshMap`) instead of failing the whole redraw. Zoom-to-layer,
   categorical/continuous colorbar and movable info-text overlay, and
-  looping playback are wired per the selected layer.
+  looping playback are wired per the selected layer. Level/soil/etc. row
+  label now reflects the variable's actual extra dimension (`Vertical
+  Level:`, `Soil Depth Layer:`, ...) instead of a hardcoded `Vertical
+  level` for every case, mirroring `viewform.py`'s `_EXTRA_DIM_LABELS`. A
+  manual range's max-must-exceed-min validation (`UserError`) is enforced
+  and wired through `editingFinished` rather than every keystroke - firing
+  on every intermediate value while typing minimum/maximum separately (or
+  the instant "Auto range" is unchecked, before either field has been
+  touched) would trip a spurious validation error and pop a blocking
+  modal, found while porting `test_ui_view_layers.py`'s range test.
+  `Show Info Overlay` checkbox added (`viewform.py`'s `show_info_check`
+  had no native equivalent at all before).
 - **`LayerRenderer` (`layer_renderer.hpp`/`.cpp`)**: the two-tier cache the
   View UI above actually renders through - a byte-bounded cache of warped
   (EPSG:3857, native-unit) slices keyed by (file, variable, time, level),
@@ -183,10 +194,21 @@ the feature-complete behavioral reference.
   file on demand rather than distinguishing "not yet opened" from "open it
   now" (`WrfSourceRegistry::open` is idempotent), and `interpolate` is
   applied by `ViewForm` when building the map overlay, not part of
-  `RenderedRaster`. Still unported: `test_ui_view_layers.py` (43 cases, the
-  largest remaining gap); `test_core_domain_tree.py`/`test_ui_domain_tree.py`
-  are likely mostly covered already by the existing domain tests but
-  haven't been diffed case-for-case.
+  `RenderedRaster`. `test_ui_view_layers.py` (43 cases) is now ported too,
+  covering file/layer opening and series grouping, the properties panel
+  (variable/time/level/colormap/units/opacity/range/interpolate,
+  categorical auto-detect and manual override), the colorbar
+  (shown/hidden by selection and visibility, follows selection, tick
+  controls), layer add/remove/reorder, closing a file, zoom-to-layer and
+  auto-zoom-on-first-layer, playback (start/stop/wrap/stops-on-reselect),
+  and the info overlay - found and fixed three real bugs along the way
+  (`addLayerButton` staying permanently disabled until a layer-tree
+  rebuild happened to run; the layer tree listening for `currentItemChanged`
+  instead of `itemSelectionChanged`, so `clearSelection()` didn't hide the
+  colorbar; and a range-validation deadlock, all detailed above). Still
+  unported: `test_core_domain_tree.py`/`test_ui_domain_tree.py`, which are
+  likely mostly covered already by the existing domain tests but haven't
+  been diffed case-for-case.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 
