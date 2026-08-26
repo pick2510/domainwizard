@@ -503,6 +503,19 @@ it:
   convention, before being handed to the shared warp/render pipeline.
   `AlbersNad83`-projected datasets (rare) are rejected with
   `UnsupportedError` - `Crs` has no Albers implementation.
+- Longitude wraparound: a real-world global `regular_ll` dataset (e.g.
+  GMTED2010) can record `known_lon` in a 0..360 convention rather than
+  -180..180. Left alone, the portion past +180 projects to web-Mercator x
+  values far outside the map's valid range instead of wrapping back to the
+  western hemisphere - visually, the raster just stops partway around the
+  globe (reported against a real GMTED2010 5-arc-minute dataset: Europe/
+  Asia/Africa rendered, the Americas didn't). Fixed for `RegularLL` only
+  (a projected CRS's meters don't wrap the same way): the west edge is
+  normalized into -180..180, and a raster whose width is a full 360 degrees
+  additionally gets its columns cyclic-shifted so the seam lands at
+  +-180 instead of wherever `known_lon` happened to put it. A dataset that
+  itself straddles the seam without being a full 360 degrees wide (rare) is
+  left as-is rather than guessing how to split it.
 - `convert_geotiff_lib` was split in `CMakeLists.txt`: the index/tile
   reader (`geogrid_index.cpp`, `geogrid_reader.cpp` - no TIFF/GEOTIFF
   dependency) now lives in its own `convert_geotiff_reader` target, linked

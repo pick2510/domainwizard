@@ -6,6 +6,7 @@
 #include "convert_geotiff/geogrid_reader.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace wrftools {
@@ -81,6 +82,41 @@ WpsBinarySource::WpsBinarySource(std::filesystem::path directory) : directory_(s
     const double tiePixelY = flipRows ? (ny - idx.known_y) : (idx.known_y - 1);
     geotransform_ = {known.x - (tiePixelX + 0.5) * pixelWidth, pixelWidth, 0.0, known.y + (tiePixelY + 0.5) * pixelHeight, 0.0, -pixelHeight};
 
+    // Only a lon/lat (RegularLL) dataset has this ambiguity - a projected
+    // CRS's coordinates are in meters and don't wrap. Some real-world
+    // global WPS_GEOG datasets (e.g. GMTED2010) record known_lon in a
+    // 0..360 convention rather than -180..180; left as-is, the part past
+    // +180 projects to web-Mercator x values far outside the map's valid
+    // range instead of wrapping back to the western hemisphere, which
+    // looks like the raster simply stopping partway around the globe.
+    int columnShift = 0;
+    if (idx.proj == convert_geotiff::Projection::RegularLL) {
+        const double rawXMin = geotransform_[0];
+        double normalizedXMin = rawXMin;
+        while (normalizedXMin > 180.0 + 1e-6) normalizedXMin -= 360.0;
+        while (normalizedXMin < -180.0 - 1e-6) normalizedXMin += 360.0;
+        const double lonSpan = nx * pixelWidth;
+        if (normalizedXMin + lonSpan <= 180.0 + 1e-6) {
+            // Fits in -180..180 once shifted by a whole number of 360s - no
+            // reordering needed, the raster just wasn't centered on the
+            // standard range (e.g. a regional dataset given as 200..210
+            // instead of -160..-150).
+            geotransform_[0] = normalizedXMin;
+        } else if (std::abs(lonSpan - 360.0) < pixelWidth) {
+            // A full-globe raster: cyclic-shift columns so the seam moves
+            // from wherever known_lon happened to put it to exactly
+            // +-180, and re-express the west edge as -180. Column j's
+            // source column i satisfies known_lon + i*dx = -180 + j*dx
+            // (mod 360), i.e. i = (j - shift) mod nx with
+            // shift = round((180 + rawXMin) / dx).
+            columnShift = static_cast<int>(std::lround((180.0 + rawXMin) / pixelWidth)) % nx;
+            if (columnShift < 0) columnShift += nx;
+            geotransform_[0] = -180.0;
+        }
+        // Else: a partial dataset that itself straddles the seam even after
+        // normalizing (rare) is left as-is rather than guessing how to split it.
+    }
+
     {
         const auto xMin = geotransform_[0], yMax = geotransform_[3];
         const auto xMax = xMin + geotransform_[1] * nx, yMin = yMax + geotransform_[5] * ny;
@@ -100,7 +136,8 @@ WpsBinarySource::WpsBinarySource(std::filesystem::path directory) : directory_(s
         for (int y = 0; y < ny; ++y) {
             const int srcRow = flipRows ? (ny - 1 - y) : y;
             for (int x = 0; x < nx; ++x) {
-                const float value = raw[(static_cast<std::size_t>(z) * ny + srcRow) * nx + x];
+                const int srcCol = columnShift == 0 ? x : ((x - columnShift) % nx + nx) % nx;
+                const float value = raw[(static_cast<std::size_t>(z) * ny + srcRow) * nx + srcCol];
                 buffer_[(static_cast<std::size_t>(z) * ny + y) * nx + x] = value == idx.missing ? std::numeric_limits<float>::quiet_NaN() : value;
             }
         }

@@ -968,6 +968,64 @@ TEST_CASE("WpsBinarySource reads a real WPS_GEOG regular_ll dataset with the cor
     CHECK(anyFiniteInLastRow);
 }
 
+TEST_CASE("WpsBinarySource re-wraps a global 0-360 longitude dataset into -180..180") {
+    // A hand-built minimal global regular_ll dataset: 4 columns x 90
+    // degrees = the full 360-degree circle, one row (row-flip is already
+    // covered by the fixture-backed test above; this one is only about the
+    // column wraparound). known_lon=0 at known_x=1 (cell-center
+    // convention) puts raw column centers at 0, 90, 180, 270 degrees - a
+    // real-world pattern real global WPS_GEOG datasets like GMTED2010 use
+    // (0..360 rather than -180..180), which without unwrapping leaves the
+    // >180 portion projected far outside web-Mercator's valid range
+    // instead of wrapping back to the western hemisphere.
+    const auto dir = std::filesystem::temp_directory_path() / "wrftools-cpp-wps-geog-wrap";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream index(dir / "index");
+        index << "type=continuous\n"
+                 "projection=regular_ll\n"
+                 "missing_value=255\n"
+                 "dx=90.0\n"
+                 "dy=90.0\n"
+                 "known_x=1.0\n"
+                 "known_y=1.0\n"
+                 "known_lat=0.0\n"
+                 "known_lon=0.0\n"
+                 "wordsize=1\n"
+                 "signed=no\n"
+                 "endian=big\n"
+                 "tile_x=4\n"
+                 "tile_y=1\n"
+                 "tile_z=1\n"
+                 "tile_bdr=0\n"
+                 "scale_factor=1\n"
+                 "units=\"none\"\n"
+                 "description=\"wrap test\"\n";
+    }
+    {
+        // Single tile, no border: raw column i (0-based, longitude
+        // i*90 degrees) holds value i, so the column reordering can be
+        // checked directly against the output.
+        std::ofstream tile(dir / "00001-00004.00001-00001", std::ios::binary);
+        const unsigned char values[4] = {0, 1, 2, 3};
+        tile.write(reinterpret_cast<const char*>(values), sizeof(values));
+    }
+
+    WpsBinarySource source(dir);
+    CHECK(source.size() == std::array<int, 2>{4, 1});
+    const auto& gt = source.geotransform();
+    CHECK(gt[0] == Catch::Approx(-180.0));
+    CHECK(gt[1] == Catch::Approx(90.0));
+    const auto values = source.read(source.variables().front().name, 0, 0);
+    REQUIRE(values.size() == 4);
+    // Output columns represent -180, -90, 0, 90 degrees, i.e. raw columns
+    // 2 (180=-180), 3 (270=-90), 0 (0), 1 (90).
+    CHECK(values == std::vector<float>{2, 3, 0, 1});
+
+    std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("WrfSourceRegistry opens a WPS_GEOG directory as a WpsBinarySource, not a NetCDF file") {
     WrfSourceRegistry registry;
     auto& source = registry.open({"tests/fixtures/geotiff_convert/wps_soiltemp_1deg"});
