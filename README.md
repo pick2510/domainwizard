@@ -220,17 +220,7 @@ core library; the GeoTIFF read/write code, which does need those, stays in
   is what matters for checking nest placement.
 - Basemap uses OpenStreetMap's standard tile server.
 
-## Legacy Python implementation
-
-`src/wrftools/` and `src/gis4wrf/` (a trimmed, vendored subset of
-[GIS4WRF](https://github.com/GIS4WRF/gis4wrf)'s QGIS-independent domain/CRS/
-namelist code) hold the original PyQt6 implementation this native app was
-ported from. It remains available for reference:
-
-```
-./setup.sh   # installs GDAL first - gdal-devel/libgdal-dev on Linux, brew install gdal on macOS
-uv run wrftools
-```
-
-It is no longer where active development happens - see `PORT.md` for the
-full porting history and current status of both implementations.
+This app was ported from an earlier Python/PyQt6 implementation, since
+removed from the repository; see `PORT.md` for the full porting history
+(the Python source itself is still recoverable from git history before
+this removal, if ever needed).

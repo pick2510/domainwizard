@@ -1,18 +1,9 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
+# CMake build directories
 build/
-dist/
-wheels/
-*.egg-info
+build-cpp/
 
-# Native C++ build directories (build-portable-cpp.sh's own build tree;
-# build/ above already covers the plain CMake dev build)
+# Native C++ portable-bundle build/output directories (build-portable-cpp.sh/
+# build-portable-macos.sh's own build trees and dist/ output)
 build-portable-cpp/
-
-# Virtual environments
-.venv
-
-# PyInstaller (built via build.sh, which passes flags on the CLI - the
-# auto-generated .spec file is just a byproduct, not used to rebuild)
-*.spec
+build-portable-macos/
+dist/

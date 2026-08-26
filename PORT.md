@@ -1,12 +1,15 @@
 # Native C++ port status
 
 The native implementation lives in `cpp/` on the `cplusplus` branch. It is a
-C++20 / Qt 6 / GDAL application that has reached full feature parity with
-the original Python implementation (every Python test file has a ported
-C++ counterpart) and now exceeds it in a few places - see "WPS_GEOG binary
-dataset visualization" below. It is becoming the default way to run WRF
-Tools; the Python implementation remains available as the legacy/reference
-implementation.
+C++20 / Qt 6 / GDAL application that reached full feature parity with the
+original Python implementation (every Python test file had a ported C++
+counterpart) and now exceeds it in a few places - see "WPS_GEOG binary
+dataset visualization" below. It is now the only implementation in this
+repository - the Python source (`src/wrftools/`, `src/gis4wrf/`,
+`tests/test_*.py`) was removed once parity was reached and active
+development moved fully to `cpp/`; it remains recoverable from git history
+if ever needed. This document is kept as the porting history and still
+references the removed Python modules by name throughout for that reason.
 
 ## Completed
 
