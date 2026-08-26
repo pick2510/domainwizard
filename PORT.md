@@ -373,27 +373,31 @@ the feature-complete behavioral reference.
   never changes, matching a manual Grid Extent field edit.
 
 - **System light/dark theme following** (`theme.hpp`/`.cpp`, wired from
-  `main.cpp`): another native-only addition - the Python app never had any
-  theme handling at all. On macOS/Windows, Qt's native style already
-  tracks OS dark mode on its own with zero extra code, so this only
-  actually *changes* anything on Linux (which needs an explicit palette
-  swap; without one, Qt renders a fixed light `Fusion`-ish look regardless
-  of the desktop's dark-mode setting whenever there's no GTK/qt6ct/
-  xdg-desktop-portal integration reporting it) - but it's written as one
-  platform-agnostic path rather than an `#ifdef`, since the same
-  `QStyleHints::colorScheme()`/`colorSchemeChanged` API (Qt 6.5+, hence
-  this port's CMake minimum moving from 6.4 to 6.5) is what every platform
-  reports through, macOS/Windows included, and doing nothing extra there
-  only holds because `applyColorScheme` is a no-op for `Light`/`Unknown`.
-  `darkPalette()` is the well-known Fusion dark-palette recipe (light gray
-  text on a dark gray window/base, not pure white, with a distinct dimmer
-  shade for disabled widgets); `applyColorScheme(app, scheme)` swaps to
-  Fusion + that palette for `Dark` and back to whatever the platform's own
-  native style/palette were (captured once, on its very first call, before
-  anything is ever touched) for `Light` or `Unknown` - called once at
-  startup with the platform's initial `colorScheme()` and again from a
-  `colorSchemeChanged` handler, so toggling the OS theme while the app is
-  running is picked up live, no restart needed.
+  `main_window.cpp`): another native-only addition - the Python app never
+  had any theme handling at all. On macOS/Windows, Qt's native style
+  already tracks OS dark mode on its own with zero extra code, so this
+  only actually *changes* anything on Linux (which needs an explicit
+  palette swap; without one, Qt renders a fixed light `Fusion`-ish look
+  regardless of the desktop's dark-mode setting whenever there's no
+  GTK/qt6ct/xdg-desktop-portal integration reporting it). `theme.hpp`
+  defines its own `ColorScheme` enum (Light/Dark/Unknown) rather than
+  using `Qt::ColorScheme` directly, deliberately: that type and
+  `QStyleHints::colorScheme()`/`colorSchemeChanged` only exist from Qt
+  6.5, and Ubuntu 24.04 - what the Linux CI job's `apt`-installed
+  `qt6-base-dev` actually is - ships 6.4.2, so requiring 6.5 outright
+  would have broken that job. The real `Qt::ColorScheme` is touched in
+  exactly one place, `main_window.cpp`, mapped to `wrftools::ColorScheme`
+  behind `#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)`; built against 6.4,
+  that code is simply absent (verified by compiling `main_window.cpp`
+  with that branch stripped, not just reading it) rather than a compile
+  error, and System-preference theming still works, just without live
+  OS-toggle tracking. `darkPalette()` is the well-known Fusion
+  dark-palette recipe (light gray text on a dark gray window/base, not
+  pure white, with a distinct dimmer shade for disabled widgets);
+  `applyColorScheme(app, scheme)` swaps to Fusion + that palette for
+  `Dark` and back to whatever the platform's own native style/palette
+  were (captured once, on its very first call, before anything is ever
+  touched) for `Light` or `Unknown`.
 
   Real-world GNOME testing found `QStyleHints::colorScheme()` itself
   unreliable there: it depends on either a QPA platform theme plugin or a
@@ -426,9 +430,11 @@ the feature-complete behavioral reference.
   `QActionGroup`) as a manual override - `System` keeps following the OS
   via `resolveColorScheme`/`applyColorScheme` (live, through `main_
   window.cpp`'s own `colorSchemeChanged` connection, only while `System`
-  is the checked action), while `Light`/`Dark` apply
-  `Qt::ColorScheme::Light`/`Dark` directly and stick regardless of
-  whatever the OS reports afterward. The choice is persisted via
+  is the checked action, and only compiled in when built against Qt 6.5+ -
+  see the CMake-minimum note above), while `Light`/`Dark` apply
+  `wrftools::ColorScheme::Light`/`Dark` directly (no Qt-6.5 dependency)
+  and stick regardless of whatever the OS reports afterward. The choice
+  is persisted via
   `ThemePreference`/`themePreference()`/`setThemePreference()`
   (`theme.hpp`/`.cpp`) through a default-constructed `QSettings()` (using
   the organization/application name `main.cpp` sets on `QApplication`),

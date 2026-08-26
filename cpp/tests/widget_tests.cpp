@@ -544,17 +544,17 @@ TEST_CASE("applyColorScheme switches to a dark Fusion palette for Dark and rever
     REQUIRE(qApp);
     const auto darkWindowColor = wrftools::darkPalette().color(QPalette::Window);
 
-    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Dark);
+    wrftools::applyColorScheme(*qApp, wrftools::ColorScheme::Dark);
     CHECK(qApp->style()->objectName().compare("fusion", Qt::CaseInsensitive) == 0);
     CHECK(qApp->palette().color(QPalette::Window) == darkWindowColor);
 
-    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Light);
+    wrftools::applyColorScheme(*qApp, wrftools::ColorScheme::Light);
     CHECK(qApp->palette().color(QPalette::Window) != darkWindowColor);
 
     // Back to dark, then Unknown (what an unthemed/offscreen platform
     // reports) - Unknown must not be treated as dark either.
-    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Dark);
-    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Unknown);
+    wrftools::applyColorScheme(*qApp, wrftools::ColorScheme::Dark);
+    wrftools::applyColorScheme(*qApp, wrftools::ColorScheme::Unknown);
     CHECK(qApp->palette().color(QPalette::Window) != darkWindowColor);
 }
 

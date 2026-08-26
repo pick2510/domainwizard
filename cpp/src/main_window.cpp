@@ -13,8 +13,13 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSplitter>
-#include <QStyleHints>
 #include <QTabWidget>
+// QStyleHints::colorScheme()/colorSchemeChanged only exist from Qt 6.5;
+// this project's CMake minimum stays at 6.4 (see theme.hpp's ColorScheme),
+// so live OS-theme tracking is only compiled in when actually available.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+#include <QStyleHints>
+#endif
 
 namespace wrftools {
 namespace {
@@ -70,12 +75,27 @@ MainWindow::MainWindow() {
     // or a user who simply prefers a fixed choice. Persisted via
     // QSettings so it survives a restart.
     auto* application = qobject_cast<QApplication*>(QApplication::instance());
-    auto applyPreference = [application](ThemePreference preference) {
+    // The only place Qt::ColorScheme itself is touched - everything else
+    // in this file and in theme.hpp/.cpp works with wrftools::ColorScheme
+    // instead, so only this one call site needs the Qt 6.5 guard.
+    auto systemColorScheme = [application]() -> ColorScheme {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+        if (application) {
+            switch (application->styleHints()->colorScheme()) {
+                case Qt::ColorScheme::Dark: return ColorScheme::Dark;
+                case Qt::ColorScheme::Light: return ColorScheme::Light;
+                default: return ColorScheme::Unknown;
+            }
+        }
+#endif
+        return ColorScheme::Unknown;
+    };
+    auto applyPreference = [application, systemColorScheme](ThemePreference preference) {
         if (!application) return;
         switch (preference) {
-            case ThemePreference::Light: applyColorScheme(*application, Qt::ColorScheme::Light); break;
-            case ThemePreference::Dark: applyColorScheme(*application, Qt::ColorScheme::Dark); break;
-            case ThemePreference::System: applyColorScheme(*application, resolveColorScheme(application->styleHints()->colorScheme())); break;
+            case ThemePreference::Light: applyColorScheme(*application, ColorScheme::Light); break;
+            case ThemePreference::Dark: applyColorScheme(*application, ColorScheme::Dark); break;
+            case ThemePreference::System: applyColorScheme(*application, resolveColorScheme(systemColorScheme())); break;
         }
     };
 
@@ -116,11 +136,16 @@ MainWindow::MainWindow() {
 
     // Live OS-theme tracking only matters while System is the active
     // preference - an explicit Light/Dark choice should stick regardless
-    // of what the OS does afterward.
+    // of what the OS does afterward. Only available when built against
+    // Qt 6.5+ (see the #include guard above); on 6.4, System still works
+    // via applyPreference() above, just without live tracking - the next
+    // toggle of systemThemeAction_ (or app restart) re-resolves it.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     if (application) {
-        connect(application->styleHints(), &QStyleHints::colorSchemeChanged, this, [this, application](Qt::ColorScheme scheme) {
-            if (systemThemeAction_->isChecked()) applyColorScheme(*application, resolveColorScheme(scheme));
+        connect(application->styleHints(), &QStyleHints::colorSchemeChanged, this, [this, applyPreference](Qt::ColorScheme) {
+            if (systemThemeAction_->isChecked()) applyPreference(ThemePreference::System);
         });
     }
+#endif
 }
 }  // namespace wrftools

@@ -11,9 +11,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(GDAL 3.6 REQUIRED)
-# 6.5, not just "some Qt6": QStyleHints::colorScheme()/colorSchemeChanged
-# (theme.cpp's system-theme-following) were added in 6.5.
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 # GeoTIFF <-> WPS geogrid conversion, ported from
 # https://github.com/jbeezley/convert_geotiff (public domain) - its own

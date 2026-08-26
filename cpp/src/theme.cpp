@@ -40,18 +40,18 @@ namespace {
 // with no such dependency and is present on essentially every GNOME
 // desktop; std::nullopt (not present, timed out, or an unrecognized
 // value) means "no opinion", not "light".
-std::optional<Qt::ColorScheme> gnomeColorScheme() {
+std::optional<ColorScheme> gnomeColorScheme() {
     QProcess process;
     process.start("gsettings", {"get", "org.gnome.desktop.interface", "color-scheme"});
     if (!process.waitForFinished(500) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) return std::nullopt;
     const auto output = QString::fromUtf8(process.readAllStandardOutput());
-    if (output.contains("prefer-dark", Qt::CaseInsensitive)) return Qt::ColorScheme::Dark;
-    if (output.contains("prefer-light", Qt::CaseInsensitive) || output.contains("default", Qt::CaseInsensitive)) return Qt::ColorScheme::Light;
+    if (output.contains("prefer-dark", Qt::CaseInsensitive)) return ColorScheme::Dark;
+    if (output.contains("prefer-light", Qt::CaseInsensitive) || output.contains("default", Qt::CaseInsensitive)) return ColorScheme::Light;
     return std::nullopt;
 }
 }  // namespace
 
-Qt::ColorScheme resolveColorScheme(Qt::ColorScheme reported) {
+ColorScheme resolveColorScheme(ColorScheme reported) {
     if (const auto gnome = gnomeColorScheme()) return *gnome;
     return reported;
 }
@@ -85,11 +85,7 @@ QPalette darkPalette() {
     return palette;
 }
 
-void applyColorScheme(QApplication& app, Qt::ColorScheme scheme) {
-    // scheme is expected to already be resolveColorScheme()'s output, not
-    // a raw QStyleHints::colorScheme() report - see theme.hpp. This
-    // function only decides style/palette from it.
-    //
+void applyColorScheme(QApplication& app, ColorScheme scheme) {
     // Function-local statics: evaluated once, on whichever call happens
     // first - the caller's contract (see theme.hpp) is that this is always
     // the very first call, made before any other style/palette change, so
@@ -97,7 +93,7 @@ void applyColorScheme(QApplication& app, Qt::ColorScheme scheme) {
     static const QString nativeStyleName = app.style() ? app.style()->objectName() : QString();
     static const QPalette nativePalette = app.palette();
 
-    if (scheme == Qt::ColorScheme::Dark) {
+    if (scheme == ColorScheme::Dark) {
         if (auto* fusion = QStyleFactory::create("Fusion")) app.setStyle(fusion);
         app.setPalette(darkPalette());
     } else {
