@@ -25,6 +25,7 @@ void LayerRenderer::clear() {
     sliceCache_.clear();
     imageCache_.clear();
     sliceBytesUsed_ = 0;
+    stats_ = {};
 }
 
 void LayerRenderer::evictSlicesIfNeeded() {
@@ -40,8 +41,10 @@ const WarpedRaster& LayerRenderer::getSlice(const std::string& filePath, const R
         auto entry = std::move(*found);
         sliceCache_.erase(found);
         sliceCache_.push_back(std::move(entry));  // move-to-back: most-recently-used
+        ++stats_.sliceHits;
         return sliceCache_.back().raster;
     }
+    ++stats_.sliceMisses;
 
     auto& source = registry_.open({filePath});
     const auto& variables = source.variables();
@@ -63,8 +66,10 @@ RenderedRaster LayerRenderer::render(const std::string& filePath, const RasterLa
         auto entry = std::move(*found);
         imageCache_.erase(found);
         imageCache_.push_back(std::move(entry));
+        ++stats_.imageHits;
         return imageCache_.back().raster;
     }
+    ++stats_.imageMisses;
 
     const auto& warped = getSlice(filePath, layer);
     auto& source = registry_.open({filePath});

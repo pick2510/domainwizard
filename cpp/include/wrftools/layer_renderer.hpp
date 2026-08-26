@@ -28,6 +28,17 @@ constexpr std::size_t kDefaultImageCacheSize = 48;
 // toggles never invalidate anything. Mirrors wrftools.rasterlayer.LayerRenderer.
 class LayerRenderer {
 public:
+    // Cache-tier hit/miss counters, mirroring wrftools.rasterlayer.
+    // LayerRenderer.stats - lets a test (or a future diagnostics view) pin
+    // the caching contract directly instead of only its externally visible
+    // effect (same pixels back, no crash).
+    struct Stats {
+        int sliceHits{};
+        int sliceMisses{};
+        int imageHits{};
+        int imageMisses{};
+    };
+
     explicit LayerRenderer(std::size_t sliceCacheBytes = kDefaultSliceCacheBytes, std::size_t imageCacheSize = kDefaultImageCacheSize);
 
     [[nodiscard]] WrfSource& openFile(const std::vector<std::filesystem::path>& paths) { return registry_.open(paths); }
@@ -37,12 +48,19 @@ public:
     void invalidateFile(const std::string& path);
     void clear();
 
+    [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
+
     // Renders `layer` against the already-open file at `filePath`. Throws
     // UserError (via WrfSource::read) for a bad time/level index on an
     // otherwise-valid variable - that's a caller bug, not something to
     // degrade gracefully. The caller is expected to have opened filePath
     // via openFile() first.
     [[nodiscard]] RenderedRaster render(const std::string& filePath, const RasterLayer& layer);
+
+    // Warms the slice cache for `layer` without building a colormapped
+    // image - mirrors rasterlayer.LayerRenderer.prefetch, used to warm the
+    // next/previous timestep of a series ahead of the user stepping to it.
+    void prefetch(const std::string& filePath, const RasterLayer& layer) { static_cast<void>(getSlice(filePath, layer)); }
 
 private:
     struct SliceKey {
@@ -73,6 +91,7 @@ private:
     void evictSlicesIfNeeded();
 
     WrfSourceRegistry registry_;
+    Stats stats_;
     std::size_t sliceCacheBytes_;
     std::size_t imageCacheSize_;
     std::size_t sliceBytesUsed_{0};

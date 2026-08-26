@@ -625,3 +625,276 @@ TEST_CASE("LayerRenderer caches slices/images and matches uncached rendering") {
     const auto afterInvalidate = renderer.render(path, layer);
     CHECK(afterInvalidate.pixels == uncached.pixels);
 }
+
+// --- LayerRenderer cache-tier hit/miss stats --------------------------------
+// Ports test_rasterlayer.py's cache-behavior cases against LayerRenderer's
+// stats() counters. Two Python cases have no C++ equivalent by design, not
+// omission: overlay_for/effective_range/categorical_legend "of an unopened
+// file returns None" - LayerRenderer::render() opens filePath on demand
+// (WrfSourceRegistry::open is idempotent), it never distinguishes "not yet
+// opened" from "open it now". RasterLayer.interpolate is likewise not part
+// of RenderedRaster - it's applied by ViewForm when building the
+// TileMapWidget overlay, one layer below LayerRenderer itself.
+
+TEST_CASE("re-rendering the same layer hits the image cache") {
+    LayerRenderer renderer;
+    static_cast<void>(renderer.openFile({"tests/fixtures/geo_em_small.nc"}));
+    const RasterLayer layer{.variable = "HGT_M"};
+    static_cast<void>(renderer.render("tests/fixtures/geo_em_small.nc", layer));
+    static_cast<void>(renderer.render("tests/fixtures/geo_em_small.nc", layer));
+    CHECK(renderer.stats().sliceMisses == 1);
+    CHECK(renderer.stats().sliceHits == 0);
+    CHECK(renderer.stats().imageMisses == 1);
+    CHECK(renderer.stats().imageHits == 1);
+}
+
+TEST_CASE("opacity change causes no new reads or images") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    RasterLayer layer{.variable = "HGT_M", .opacity = 0.5};
+    static_cast<void>(renderer.render(path, layer));
+    const auto before = renderer.stats();
+    layer.opacity = 0.1;
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses);
+    CHECK(renderer.stats().sliceHits == before.sliceHits);
+    CHECK(renderer.stats().imageMisses == before.imageMisses);
+    CHECK(renderer.stats().imageHits == before.imageHits + 1);
+}
+
+TEST_CASE("colormap change misses the image cache only") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    RasterLayer layer{.variable = "HGT_M", .colormap = "viridis"};
+    static_cast<void>(renderer.render(path, layer));
+    const auto before = renderer.stats();
+    layer.colormap = "plasma";
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses);
+    CHECK(renderer.stats().sliceHits == before.sliceHits + 1);
+    CHECK(renderer.stats().imageMisses == before.imageMisses + 1);
+}
+
+TEST_CASE("time change misses both cache tiers") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    RasterLayer layer{.variable = "T2", .timeIndex = 0};
+    static_cast<void>(renderer.render(path, layer));
+    const auto before = renderer.stats();
+    layer.timeIndex = 1;
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses + 1);
+    CHECK(renderer.stats().imageMisses == before.imageMisses + 1);
+}
+
+TEST_CASE("stepping back in time is an image-cache hit") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    RasterLayer layer{.variable = "T2", .timeIndex = 0};
+    static_cast<void>(renderer.render(path, layer));
+    layer.timeIndex = 1;
+    static_cast<void>(renderer.render(path, layer));
+    layer.timeIndex = 0;  // both its slice and image are still cached
+    const auto before = renderer.stats();
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses);
+    CHECK(renderer.stats().sliceHits == before.sliceHits);
+    CHECK(renderer.stats().imageHits == before.imageHits + 1);
+}
+
+TEST_CASE("prefetch populates the slice cache without building an image") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    const RasterLayer layer{.variable = "T2", .timeIndex = 1};
+    renderer.prefetch(path, layer);
+    CHECK(renderer.stats().sliceMisses == 1);
+    CHECK(renderer.stats().imageMisses == 0);
+    const auto before = renderer.stats();
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses);
+    CHECK(renderer.stats().sliceHits == before.sliceHits + 1);
+}
+
+TEST_CASE("two layers on the same slice share the warp") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M", .colormap = "viridis"}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M", .colormap = "viridis"}));
+    CHECK(renderer.stats().sliceMisses == 1);
+}
+
+TEST_CASE("invalidating a file does not affect another open file's cache") {
+    LayerRenderer renderer;
+    static_cast<void>(renderer.openFile({"tests/fixtures/geo_em_small.nc"}));
+    static_cast<void>(renderer.openFile({"tests/fixtures/wrfout_multitime.nc"}));
+    static_cast<void>(renderer.render("tests/fixtures/geo_em_small.nc", RasterLayer{.variable = "HGT_M"}));
+    const RasterLayer wrfoutLayer{.variable = "T2"};
+    static_cast<void>(renderer.render("tests/fixtures/wrfout_multitime.nc", wrfoutLayer));
+    renderer.invalidateFile("tests/fixtures/geo_em_small.nc");
+    const auto before = renderer.stats();
+    static_cast<void>(renderer.render("tests/fixtures/wrfout_multitime.nc", wrfoutLayer));
+    CHECK(renderer.stats().imageHits == before.imageHits + 1);  // untouched by the other file's invalidation
+}
+
+TEST_CASE("clear resets the cache stats") {
+    LayerRenderer renderer;
+    static_cast<void>(renderer.openFile({"tests/fixtures/geo_em_small.nc"}));
+    static_cast<void>(renderer.render("tests/fixtures/geo_em_small.nc", RasterLayer{.variable = "HGT_M"}));
+    renderer.clear();
+    CHECK(renderer.stats().sliceMisses == 0);
+    CHECK(renderer.stats().imageMisses == 0);
+}
+
+TEST_CASE("effective range honors a manual override and is auto otherwise") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    const auto autoRange = renderer.render(path, RasterLayer{.variable = "HGT_M"});
+    CHECK(autoRange.minimum < autoRange.maximum);
+
+    const auto manual = renderer.render(path, RasterLayer{.variable = "HGT_M", .minimum = 10.0f, .maximum = 200.0f});
+    CHECK(manual.minimum == Catch::Approx(10.0));
+    CHECK(manual.maximum == Catch::Approx(200.0));
+}
+
+TEST_CASE("effective range in a converted unit is shifted from native") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    const auto native = renderer.render(path, RasterLayer{.variable = "T2"});
+    const auto celsius = renderer.render(path, RasterLayer{.variable = "T2", .unitKey = "degC"});
+    CHECK(celsius.minimum == Catch::Approx(native.minimum - 273.15).epsilon(1e-3));
+    CHECK(celsius.maximum == Catch::Approx(native.maximum - 273.15).epsilon(1e-3));
+}
+
+TEST_CASE("manual range in a converted unit is used as-is") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    const auto rendered = renderer.render(path, RasterLayer{.variable = "T2", .minimum = 0.0f, .maximum = 30.0f, .unitKey = "degC"});
+    CHECK(rendered.minimum == Catch::Approx(0.0));
+    CHECK(rendered.maximum == Catch::Approx(30.0));
+}
+
+TEST_CASE("units change misses the image cache but not the slice cache") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    RasterLayer layer{.variable = "T2"};
+    static_cast<void>(renderer.render(path, layer));
+    const auto before = renderer.stats();
+    layer.unitKey = "degC";
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses);
+    CHECK(renderer.stats().sliceHits == before.sliceHits + 1);
+    CHECK(renderer.stats().imageMisses == before.imageMisses + 1);
+}
+
+TEST_CASE("two layers with the same slice but different units do not share the image cache") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/wrfout_multitime.nc";
+    static_cast<void>(renderer.openFile({path}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "T2"}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "T2", .unitKey = "degC"}));
+    CHECK(renderer.stats().sliceMisses == 1);
+    CHECK(renderer.stats().imageMisses == 2);
+}
+
+TEST_CASE("tick settings do not invalidate either cache tier") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    RasterLayer layer{.variable = "HGT_M"};
+    static_cast<void>(renderer.render(path, layer));
+    const auto before = renderer.stats();
+    layer.tickCount = 9; layer.tickFormat = "scientific"; layer.tickDecimals = 4;
+    static_cast<void>(renderer.render(path, layer));
+    CHECK(renderer.stats().sliceMisses == before.sliceMisses);
+    CHECK(renderer.stats().sliceHits == before.sliceHits);
+    CHECK(renderer.stats().imageMisses == before.imageMisses);
+    CHECK(renderer.stats().imageHits == before.imageHits + 1);
+}
+
+TEST_CASE("LayerRenderer.openFile with a series registers one entry and dedupes on reopen") {
+    LayerRenderer renderer;
+    const std::vector<std::filesystem::path> seriesPaths{
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"};
+    auto& first = renderer.openFile(seriesPaths);
+    CHECK(renderer.openPaths() == std::vector<std::string>{seriesPaths.front().string()});
+    auto& second = renderer.openFile(seriesPaths);
+    CHECK(&first == &second);  // reopening the same series is a registry hit, not a rebuild
+}
+
+TEST_CASE("render works at every time index of a series") {
+    LayerRenderer renderer;
+    const std::vector<std::filesystem::path> seriesPaths{
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"};
+    auto& source = renderer.openFile(seriesPaths);
+    const auto times = source.seriesTimes();
+    REQUIRE(times);
+    for (int timeIndex = 0; timeIndex < static_cast<int>(times->size()); ++timeIndex) {
+        const auto rendered = renderer.render(seriesPaths.front().string(), RasterLayer{.variable = "T2", .timeIndex = timeIndex});
+        CHECK(rendered.width > 0);
+        CHECK(rendered.height > 0);
+    }
+}
+
+TEST_CASE("slice cache evicts by total bytes, not entry count") {
+    LayerRenderer renderer(/*sliceCacheBytes=*/1, kDefaultImageCacheSize);
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M"}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "LU_INDEX", .colormap = kCategoricalColormap}));
+    CHECK(renderer.stats().sliceMisses == 2);
+    // A different colormap forces an image-cache miss too, so this render
+    // actually consults the slice tier instead of short-circuiting on an
+    // image hit from the first render above - HGT_M's slice was evicted to
+    // make room for LU_INDEX's, so this is a slice miss again.
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M", .colormap = "plasma"}));
+    CHECK(renderer.stats().sliceMisses == 3);
+}
+
+TEST_CASE("image cache evicts by entry count") {
+    LayerRenderer renderer(kDefaultSliceCacheBytes, /*imageCacheSize=*/1);
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M", .colormap = "viridis"}));
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M", .colormap = "plasma"}));
+    CHECK(renderer.stats().imageMisses == 2);
+    // viridis's image was evicted to make room - re-rendering it is a miss again.
+    static_cast<void>(renderer.render(path, RasterLayer{.variable = "HGT_M", .colormap = "viridis"}));
+    CHECK(renderer.stats().imageMisses == 3);
+}
+
+TEST_CASE("LayerRenderer.render exposes the file's own landuse scheme for a categorical layer") {
+    // geo_em_small.nc's MMINLU is MODIFIED_IGBP_MODIS_NOAH; its LU_INDEX
+    // slice contains exactly classes 2, 13, 17 (verified against the fixture).
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    const auto rendered = renderer.render(path, RasterLayer{.variable = "LU_INDEX", .colormap = kCategoricalColormap});
+    CHECK(rendered.presentCategories == std::vector<int>{2, 13, 17});
+    CHECK(rendered.categoricalLabels.at(2) == "Evergreen Broadleaf Forest");
+    CHECK(rendered.categoricalPalette[2] == Rgb{0x00, 0xFF, 0x00});
+    CHECK(rendered.categoricalLabels.at(13) == "Urban and Built-Up");
+    CHECK(rendered.categoricalPalette[13] == Rgb{0xFF, 0x00, 0x00});
+    CHECK(rendered.categoricalLabels.at(17) == "Water");
+    CHECK(rendered.categoricalPalette[17] == Rgb{0x00, 0x00, 0x80});
+}
+
+TEST_CASE("a continuous layer's render carries no categorical legend data") {
+    LayerRenderer renderer;
+    const std::string path = "tests/fixtures/geo_em_small.nc";
+    static_cast<void>(renderer.openFile({path}));
+    const auto rendered = renderer.render(path, RasterLayer{.variable = "HGT_M"});
+    CHECK(rendered.presentCategories.empty());
+    CHECK(rendered.categoricalLabels.empty());
+}

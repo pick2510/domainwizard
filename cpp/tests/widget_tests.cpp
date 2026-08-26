@@ -58,6 +58,12 @@ TEST_CASE("native map exports a readable image without downloaded tiles") {
     CHECK(image.size() == QSize(480, 320));
 }
 
+TEST_CASE("exporting to an unwritable path returns false") {
+    wrftools::TileMapWidget map;
+    map.resize(300, 200);
+    CHECK_FALSE(map.exportImage("/no/such/directory/map.png"));
+}
+
 TEST_CASE("native colorbar is a nonempty movable-overlay-ready pixmap") {
     const auto legend = wrftools::buildColorbar("T2 (K)", 280, 300, wrftools::colormap("viridis"), 5);
     CHECK_FALSE(legend.isNull());

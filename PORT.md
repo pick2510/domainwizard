@@ -123,7 +123,10 @@ the feature-complete behavioral reference.
   opacity/visibility/colormap/range doesn't re-read and re-warp the GDAL
   subdataset. `renderLayer`/`colorizeWarped` (`raster_layer.hpp`) stay as
   the uncached path the cache itself and direct tests build on. Mirrors
-  `wrftools.rasterlayer.LayerRenderer`'s cache tiers and byte/count budgets.
+  `wrftools.rasterlayer.LayerRenderer`'s cache tiers and byte/count budgets,
+  now including its `stats` hit/miss counters (`Stats`/`stats()`) and
+  `prefetch()`, added specifically to pin the caching contract in tests
+  rather than only its externally visible effect.
 - Native regression suite, now including cross-language pins: CRS/geotransform,
   warped-raster bounds, domain bboxes, and LANDUSE palette values are each
   checked against a value produced by running the Python reference on the
@@ -169,18 +172,21 @@ the feature-complete behavioral reference.
 - macOS `.app` bundling - no macOS machine available to build or verify
   this from within the current working environment.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown to 52 CTest entries, `wrftools_widget_tests` alone now 17
-  Catch2 cases). `test_wrfseries.py` (20 cases) and `test_tilemap_overlays.py`
-  (13 cases - overlay-group independence, legend/info default placement and
-  independent dragging without panning the map, and no-crash paint passes
-  with both a raster and a vector group populated) are now ported; added
-  test-only accessors to `TileMapWidget` (group sizes, legend/info rect and
-  drag state) mirroring the private attributes Python's tests reach into
-  directly. Still unported: `test_rasterlayer.py` (33 cases),
-  `test_ui_view_layers.py` (43 cases, the largest remaining gap),
-  `test_export.py` (2 cases); `test_core_domain_tree.py`/
-  `test_ui_domain_tree.py` are likely mostly covered already by the
-  existing domain tests but haven't been diffed case-for-case.
+  suite has grown to 74 CTest entries). `test_wrfseries.py` (20 cases),
+  `test_tilemap_overlays.py` (13 cases), `test_export.py` (2 cases, plus an
+  existing widget test already covering the readable-PNG case), and
+  `test_rasterlayer.py` (33 cases - cache-tier hit/miss behavior pinned via
+  `LayerRenderer::Stats`, effective-range/manual-override/unit-conversion,
+  categorical legend data through the real `render()` path, series
+  rendering, and both eviction policies) are now ported. Two Python cases
+  in that last file have no C++ equivalent by design: `render()` opens its
+  file on demand rather than distinguishing "not yet opened" from "open it
+  now" (`WrfSourceRegistry::open` is idempotent), and `interpolate` is
+  applied by `ViewForm` when building the map overlay, not part of
+  `RenderedRaster`. Still unported: `test_ui_view_layers.py` (43 cases, the
+  largest remaining gap); `test_core_domain_tree.py`/`test_ui_domain_tree.py`
+  are likely mostly covered already by the existing domain tests but
+  haven't been diffed case-for-case.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 
