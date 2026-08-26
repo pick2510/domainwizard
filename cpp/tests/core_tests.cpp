@@ -259,14 +259,21 @@ TEST_CASE("WrfFile rejects a GDAL-openable file with no MAP_PROJ attribute") {
     CHECK_THROWS_AS(WrfFile("tests/fixtures/not_a_wrf_file.tif"), UserError);
 }
 
-TEST_CASE("subdataset variable name parsing handles both netCDF and HDF5 driver target formats") {
-    // netCDF driver: NETCDF:"path":VARNAME - no leading slash.
-    CHECK(subdatasetVariableName("NETCDF:\"/tmp/wrfout.nc\":T2") == "T2");
-    // HDF5 driver (some real NetCDF4/HDF5-backed WRF output, when the
-    // netCDF driver on the machine lacks HDF5 support): HDF5:"path"://VARNAME -
-    // the naive "substring after the last colon" leaves a mangled "//VARNAME".
-    CHECK(subdatasetVariableName("HDF5:\"/tmp/wrfout.nc\"://T2") == "T2");
-    CHECK(subdatasetVariableName("no colon here") == "no colon here");
+TEST_CASE("WrfFile reads a NetCDF4/HDF5-backed file identically to its classic-format original") {
+    // wrfout_multitime_nc4.nc is `nccopy -k nc4` of wrfout_multitime.nc -
+    // same data, HDF5-backed storage. Some real production WRF output is
+    // NetCDF4/HDF5-backed, and on a machine whose GDAL netCDF driver isn't
+    // built with HDF5 support, a bare (non-driver-forced) open would hand
+    // such a file to GDAL's generic HDF5 driver instead, which exposes
+    // variables so differently (attributes on band metadata instead of
+    // dataset metadata, HDF5:"path"://VAR subdataset names) that every
+    // variable used to get filtered out entirely. WrfFile always forces
+    // the netCDF driver via the NETCDF: prefix specifically to avoid this -
+    // see wrf_file.cpp's constructor comment.
+    WrfFile classic("tests/fixtures/wrfout_multitime.nc");
+    WrfFile nc4("tests/fixtures/wrfout_multitime_nc4.nc");
+    CHECK(nc4.variables().size() == classic.variables().size());
+    CHECK(nc4.read("T2", 1, 0) == classic.read("T2", 1, 0));
 }
 
 TEST_CASE("level index selects distinct data") {

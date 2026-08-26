@@ -12,22 +12,6 @@
 #include <sstream>
 
 namespace wrftools {
-// Extracts the bare variable name from a fully-qualified subdataset target
-// string. The netCDF driver uses NETCDF:"path":VARNAME (no leading slash
-// after the final colon); the HDF5 driver - which GDAL falls back to for
-// some real NetCDF4/HDF5-backed WRF output when its netCDF driver lacks
-// HDF5 support - uses HDF5:"path"://VARNAME instead: the last colon sits
-// right before the "//", so a bare rfind(':')+1 would leave a mangled
-// "//VARNAME". Exposed (not just used internally by the WrfFile
-// constructor) so this parsing is pinned directly against both driver
-// formats, not just exercised incidentally through a real file.
-std::string subdatasetVariableName(const std::string& target) {
-    const auto finalColon = target.rfind(':');
-    std::string name = finalColon == std::string::npos ? target : target.substr(finalColon + 1);
-    while (!name.empty() && name.front() == '/') name.erase(name.begin());
-    return name;
-}
-
 namespace {
 constexpr const char* kCoordinateVariables[] = {"XLAT", "XLONG", "XLAT_M", "XLONG_M", "XLAT_U", "XLONG_U", "XLAT_V", "XLONG_V", "XLAT_C", "XLONG_C", "CLAT", "CLONG", "Times"};
 
@@ -90,31 +74,19 @@ std::string subdatasetName(const char* entry) {
     return namePosition == std::string::npos ? "" : value.substr(namePosition + suffix.size());
 }
 
-// GDAL's netCDF driver puts WRF's per-variable attributes (MemoryOrder,
-// description, units, ...) on the subdataset's own metadata (bare or
-// "VARNAME#key"-prefixed); its HDF5 driver - which some real production
-// WRF output (NetCDF4/HDF5-backed, e.g. built with compression) opens
-// with instead of the netCDF driver - puts the same attributes on the
-// first band's metadata instead. Checking both is required for either
-// driver's files to expose any variables at all.
-std::string variableAttribute(GDALDataset& field, const std::string& variable, const char* key) {
-    const auto value = variableMetadata(field.GetMetadata(), variable, key);
-    if (!value.empty()) return value;
-    if (field.GetRasterCount() == 0) return "";
-    return metadataValue(field.GetRasterBand(1)->GetMetadata(), key);
-}
-
-// Builds the fully-qualified subdataset name for `variable` in `path`,
-// matching whichever driver actually opened this file - the netCDF driver
-// uses NETCDF:"path":VARNAME; the HDF5 driver (see variableAttribute's
-// comment above) uses HDF5:"path"://VARNAME.
-std::string subdatasetTarget(const std::string& driverName, const std::filesystem::path& path, const std::string& variable) {
-    if (driverName == "HDF5") return "HDF5:\"" + path.string() + "\"://" + variable;
+// The fully-qualified subdataset name for `variable` in `path`. Always
+// forces GDAL's netCDF driver via the NETCDF: prefix rather than a bare
+// path (see WrfFile's constructor comment) - some real production WRF
+// output is NetCDF4/HDF5-backed, and a bare open lets GDAL's driver
+// probing hand the file to its generic HDF5 driver instead, which names
+// subdatasets HDF5:"path"://VAR and moves per-variable attributes like
+// MemoryOrder off the subdataset's own metadata entirely.
+std::string subdatasetTarget(const std::filesystem::path& path, const std::string& variable) {
     return "NETCDF:\"" + path.string() + "\":" + variable;
 }
 
-float coordinateValue(const std::string& driverName, const std::filesystem::path& path, const char* variable, int x, int y) {
-    const std::string target = subdatasetTarget(driverName, path, variable);
+float coordinateValue(const std::filesystem::path& path, const char* variable, int x, int y) {
+    const std::string target = subdatasetTarget(path, variable);
     std::unique_ptr<GDALDataset, decltype(&GDALClose)> dataset(static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
     if (!dataset) throw UserError("WRF coordinate variable is unavailable: " + std::string(variable));
     float value{};
@@ -126,11 +98,11 @@ float coordinateValue(const std::string& driverName, const std::filesystem::path
 // staggered U/V coordinate grids (edge-based) rather than the mass grid
 // (cell-centered - using it would offset the raster by half a cell). GDAL's
 // classic API returns netCDF arrays top-down: row 0 is the northernmost row.
-std::array<double, 6> buildGeoTransform(const std::string& driverName, const std::filesystem::path& path, const Crs& crs, int nx, int ny) {
-    const auto swU = crs.toXy({coordinateValue(driverName, path, "XLONG_U", 0, ny - 1), coordinateValue(driverName, path, "XLAT_U", 0, ny - 1)});
-    const auto seU = crs.toXy({coordinateValue(driverName, path, "XLONG_U", nx, ny - 1), coordinateValue(driverName, path, "XLAT_U", nx, ny - 1)});
-    const auto swV = crs.toXy({coordinateValue(driverName, path, "XLONG_V", 0, ny), coordinateValue(driverName, path, "XLAT_V", 0, ny)});
-    const auto nwV = crs.toXy({coordinateValue(driverName, path, "XLONG_V", 0, 0), coordinateValue(driverName, path, "XLAT_V", 0, 0)});
+std::array<double, 6> buildGeoTransform(const std::filesystem::path& path, const Crs& crs, int nx, int ny) {
+    const auto swU = crs.toXy({coordinateValue(path, "XLONG_U", 0, ny - 1), coordinateValue(path, "XLAT_U", 0, ny - 1)});
+    const auto seU = crs.toXy({coordinateValue(path, "XLONG_U", nx, ny - 1), coordinateValue(path, "XLAT_U", nx, ny - 1)});
+    const auto swV = crs.toXy({coordinateValue(path, "XLONG_V", 0, ny), coordinateValue(path, "XLAT_V", 0, ny)});
+    const auto nwV = crs.toXy({coordinateValue(path, "XLONG_V", 0, 0), coordinateValue(path, "XLAT_V", 0, 0)});
     const double dx = (seU.x - swU.x) / nx;
     const double dy = (nwV.y - swV.y) / ny;
     return {swU.x, dx, 0.0, nwV.y, 0.0, -dy};
@@ -140,10 +112,15 @@ std::array<double, 6> buildGeoTransform(const std::string& driverName, const std
 WrfFile::WrfFile(std::filesystem::path path)
     : path_(std::move(path)), dataset_(nullptr, [](GDALDataset* value) { if (value) GDALClose(value); }) {
     GDALAllRegister();
-    auto* raw = static_cast<GDALDataset*>(GDALOpenEx(path_.string().c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr));
+    // NETCDF: forces GDAL's netCDF driver rather than letting it probe and
+    // possibly pick its generic HDF5 driver for NetCDF4/HDF5-backed files -
+    // see subdatasetTarget's comment. A file the netCDF driver genuinely
+    // can't read (e.g. a GeoTIFF) fails to open here, which is still
+    // reported as the same UserError below.
+    const std::string containerTarget = "NETCDF:\"" + path_.string() + "\"";
+    auto* raw = static_cast<GDALDataset*>(GDALOpenEx(containerTarget.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr));
     if (!raw) throw UserError("Could not open WRF/WPS NetCDF file: " + path_.string());
     dataset_.reset(raw);
-    driverName_ = dataset_->GetDriver() ? dataset_->GetDriver()->GetDescription() : "";
     const auto crs = buildWrfCrs(dataset_->GetMetadata());
     projectionWkt_ = crs.wkt();
 
@@ -152,19 +129,20 @@ WrfFile::WrfFile(std::filesystem::path path)
     for (int i = 0; subdatasets && subdatasets[i]; ++i) {
         const std::string target = subdatasetName(subdatasets[i]);
         if (target.empty()) continue;
-        const std::string name = subdatasetVariableName(target);
+        const auto finalColon = target.rfind(':');
+        const std::string name = finalColon == std::string::npos ? target : target.substr(finalColon + 1);
         if (knownCoordinates.contains(name)) continue;
         std::unique_ptr<GDALDataset, decltype(&GDALClose)> field(
             static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
         if (!field || field->GetRasterCount() == 0) continue;
-        const auto memoryOrder = variableAttribute(*field, name, "MemoryOrder");
+        const auto memoryOrder = variableMetadata(field->GetMetadata(), name, "MemoryOrder");
         // GDAL exposes vertical-only arrays as narrow rasters; only WRF's XY
         // fields can be located and rendered on the mass grid.
         if (memoryOrder.rfind("XY", 0) != 0) continue;
         WrfVariable variable;
         variable.name = name;
-        variable.description = variableAttribute(*field, name, "description");
-        variable.units = variableAttribute(*field, name, "units");
+        variable.description = variableMetadata(field->GetMetadata(), name, "description");
+        variable.units = variableMetadata(field->GetMetadata(), name, "units");
         const auto dimensions = metadataValue(field->GetMetadata(), "NETCDF_DIM_EXTRA");
         const auto firstExtra = dimensions.find_first_not_of("{Time,}");
         if (firstExtra != std::string::npos) {
@@ -180,13 +158,13 @@ WrfFile::WrfFile(std::filesystem::path path)
     if (variables_.empty()) throw UserError("No displayable WRF/WPS variables were found: " + path_.string());
     int width = std::numeric_limits<int>::max(), height = std::numeric_limits<int>::max();
     for (const auto& variable : variables_) {
-        const std::string target = subdatasetTarget(driverName_, path_, variable.name);
+        const std::string target = subdatasetTarget(path_, variable.name);
         std::unique_ptr<GDALDataset, decltype(&GDALClose)> field(static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
         width = std::min(width, field->GetRasterXSize());
         height = std::min(height, field->GetRasterYSize());
     }
     size_ = {width, height};
-    geotransform_ = buildGeoTransform(driverName_, path_, crs, width, height);
+    geotransform_ = buildGeoTransform(path_, crs, width, height);
     // Geographic bounds for camera framing only (pixel placement uses the
     // projected geotransform above via the warp pipeline, not this box):
     // the four projected raster corners transformed to lon/lat, so a
@@ -203,7 +181,7 @@ WrfFile::WrfFile(std::filesystem::path path)
         }
     }
     for (const auto& variable : variables_) {
-        const std::string target = subdatasetTarget(driverName_, path_, variable.name);
+        const std::string target = subdatasetTarget(path_, variable.name);
         std::unique_ptr<GDALDataset, decltype(&GDALClose)> field(static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
         if (field->GetRasterXSize() == width + 1 && field->GetRasterYSize() == height) staggerAxis_[variable.name] = 1;
         else if (field->GetRasterYSize() == height + 1 && field->GetRasterXSize() == width) staggerAxis_[variable.name] = 0;
@@ -216,7 +194,7 @@ std::vector<float> WrfFile::read(const std::string& variable, int timeIndex, int
     if (info == variables_.end() || timeIndex < 0 || levelIndex < 0 || timeIndex >= info->timeCount || levelIndex >= info->levelCount)
         throw UserError("Variable or time/level index is not available: " + variable);
     const int band = timeIndex * info->levelCount + levelIndex + 1;
-    const std::string target = subdatasetTarget(driverName_, path_, variable);
+    const std::string target = subdatasetTarget(path_, variable);
     std::unique_ptr<GDALDataset, decltype(&GDALClose)> field(
         static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
     if (!field || band > field->GetRasterCount()) throw UserError("Variable or timestep is not available: " + variable);

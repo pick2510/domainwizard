@@ -62,19 +62,24 @@ the feature-complete behavioral reference.
   bounds (now derived from the corrected projected geotransform, not raw
   corner samples). Fixes a real bug found against production WRF output (a
   120x120x64 Hong Kong domain run): some real wrfout files are NetCDF4/
-  HDF5-backed, and on a machine whose GDAL netCDF driver isn't built with
-  HDF5 support, GDAL opens them with its generic HDF5 driver instead - which
-  puts per-variable attributes (MemoryOrder, description, units) on the
-  first band's metadata rather than the subdataset's own metadata, and
-  names subdatasets `HDF5:"path"://VAR` rather than `NETCDF:"path":VAR`
-  (the trailing `//` broke the "substring after the last colon" name
-  parse). Either difference alone was enough to make every variable filter
-  out, throwing "No displayable WRF/WPS variables were found" for an
-  otherwise perfectly normal file. Both are now driver-aware
-  (`variableAttribute` checks band metadata too; `subdatasetVariableName`/
-  `subdatasetTarget` handle both target formats), verified end-to-end
-  against the real failing file (141 variables now discovered, `T2` reads
-  real data).
+  HDF5-backed, and a bare `GDALOpenEx(path)` lets GDAL's driver probing hand
+  such a file to its generic HDF5 driver instead of the netCDF driver on a
+  machine whose netCDF driver isn't built with HDF5 support - which moves
+  per-variable attributes (MemoryOrder, description, units) off the
+  subdataset's own metadata onto its first band's, and names subdatasets
+  `HDF5:"path"://VAR` rather than `NETCDF:"path":VAR`, filtering out every
+  variable and throwing "No displayable WRF/WPS variables were found" for
+  an otherwise perfectly normal file. Fixed the way the Python reference
+  already does it (`wrfreader._open_netcdf`, whose docstring names this
+  exact failure mode): every open is forced through the `NETCDF:"path"`
+  prefix so GDAL's netCDF driver is always the one used, never leaving the
+  choice to driver-priority probing. Verified end-to-end against the real
+  failing file - 164 variables now discovered (up from the 141 an earlier,
+  more complex band-metadata-fallback version of this fix found, since
+  forcing the driver also restores 3D fields like `T` with all 64 vertical
+  levels, which the HDF5 driver's subdataset listing never exposed at all).
+  Regression-tested with a NetCDF4/HDF5-backed copy of an existing fixture
+  (`tests/fixtures/wrfout_multitime_nc4.nc`, `nccopy -k nc4`).
 - WRF filename parsing and multi-file series reads, now with the real
   fast/eager path split from `wrfseries.py`: a series whose every file's
   valid time and single-timestep-per-file assumption can be trusted from
@@ -178,20 +183,6 @@ the feature-complete behavioral reference.
   existing domain tests but haven't been diffed case-for-case.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
-
-## Known gaps found against real production output
-
-- When GDAL falls back to its generic HDF5 driver for a NetCDF4/HDF5-backed
-  WRF file (see above), that driver's classic-raster subdataset listing
-  only exposes 2D (`XY`) fields - 3D fields (`T`, `U`, `V`, `P`, `QVAPOR`,
-  soil fields, ...) never appear as subdatasets at all, even though they
-  can still be opened directly by name if the exact target string is
-  already known. Every 2D field (T2, PSFC, HGT, wind/radiation/precip
-  diagnostics, ...) is unaffected and works today; exposing 3D fields
-  through this driver would need GDAL's multidimensional API rather than
-  the classic raster one this reader uses throughout - not attempted here.
-  Confirmed via the same real 141-variable Hong Kong domain file used to
-  find and fix the bug above.
 
 ## Non-goals retained from Python
 
