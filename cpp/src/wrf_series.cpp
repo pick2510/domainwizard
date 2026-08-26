@@ -45,10 +45,7 @@ GroupedPaths groupWrfPaths(const std::vector<std::filesystem::path>& paths) {
     return result;
 }
 
-namespace {
-constexpr double kGeotransformTolerance = 1e-6;
-
-std::string formatTimestamp(const std::chrono::sys_seconds& validTime) {
+std::string formatWrfTimestamp(const std::chrono::sys_seconds& validTime) {
     const auto day = std::chrono::floor<std::chrono::days>(validTime);
     const std::chrono::year_month_day date{day};
     const auto clock = std::chrono::hh_mm_ss{validTime - day};
@@ -58,6 +55,9 @@ std::string formatTimestamp(const std::chrono::sys_seconds& validTime) {
           << std::setw(2) << clock.minutes().count();
     return label.str();
 }
+
+namespace {
+constexpr double kGeotransformTolerance = 1e-6;
 
 int fileTimeCount(const WrfFile& file) {
     int maxCount = 1;
@@ -90,7 +90,7 @@ WrfFileSeries::WrfFileSeries(std::vector<std::filesystem::path> paths) : paths_(
         // filename, and the first file has exactly one internal timestep -
         // no need to open anything else. See wrfseries.py's module
         // docstring for why this matters for large series.
-        for (const auto& p : parsed) { times_.push_back(formatTimestamp(p->validTime)); }
+        for (const auto& p : parsed) { times_.push_back(formatWrfTimestamp(p->validTime)); }
         for (std::size_t i = 0; i < paths_.size(); ++i) timeMap_.emplace_back(i, 0);
         files_.emplace(0, std::move(first));
     } else {
@@ -136,8 +136,8 @@ std::string WrfFileSeries::name() const {
     const std::string prefix = firstParsed ? (firstParsed->kind + "_d" + firstParsed->domain) : files_.at(0)->path().filename().string();
     const auto lastParsed = parseWrfFilename(paths_.back());
     if (firstParsed && lastParsed) {
-        return prefix + " (" + std::to_string(paths_.size()) + " files, " + formatTimestamp(firstParsed->validTime) +
-               " - " + formatTimestamp(lastParsed->validTime) + ")";
+        return prefix + " (" + std::to_string(paths_.size()) + " files, " + formatWrfTimestamp(firstParsed->validTime) +
+               " - " + formatWrfTimestamp(lastParsed->validTime) + ")";
     }
     return prefix + " (" + std::to_string(paths_.size()) + " files)";
 }

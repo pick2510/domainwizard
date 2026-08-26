@@ -21,6 +21,11 @@ struct ParsedWrfName {
 
 [[nodiscard]] std::optional<ParsedWrfName> parseWrfFilename(const std::filesystem::path& path);
 
+// "YYYY-MM-DD HH:MM" - shared by WrfFileSeries::times() and ViewForm's info
+// overlay (which falls back to a single file's own filename-parsed valid
+// time when it isn't part of a series).
+[[nodiscard]] std::string formatWrfTimestamp(const std::chrono::sys_seconds& validTime);
+
 struct GroupedPaths {
     std::vector<std::vector<std::filesystem::path>> groups;
     std::vector<std::filesystem::path> singles;

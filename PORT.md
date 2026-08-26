@@ -263,6 +263,16 @@ the feature-complete behavioral reference.
   above for the last one, since closed.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
+- Two native-only additions beyond Python parity: the movable colorbar
+  (`TileMapWidget::legend_`) now has a drag-resize handle at its bottom-right
+  corner (`legendResizeHandleRect()`/`legendScale()`, `dragTarget() ==
+  "legend-resize"`) - Python's colorbar is movable but not resizable, so
+  there is no source to port here. And the info overlay
+  (`ViewForm::updateColorbar`) now packs in more than the variable/time it
+  showed before: it falls back to the file's own filename-parsed valid time
+  (`formatWrfTimestamp`, exposed from `wrf_series.hpp`) rather than "Step N
+  of M" when a layer isn't part of a series, and appends the visible
+  level/soil/etc. row (when shown) and the rendered value range.
 
 ## Non-goals retained from Python
 

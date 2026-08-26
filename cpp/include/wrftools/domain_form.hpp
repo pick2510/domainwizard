@@ -47,6 +47,20 @@ public:
     [[nodiscard]] QPushButton* addDomainButton() const noexcept { return addDomainButton_; }
     [[nodiscard]] QPushButton* removeDomainButton() const noexcept { return removeDomainButton_; }
 
+    // Test-facing widget accessors only - mirror the equivalent accessors
+    // already present on ViewForm; production code (this class's own .cpp)
+    // never needs these, it holds the pointers directly.
+    [[nodiscard]] QComboBox* projectionCombo() const noexcept { return projection_; }
+    [[nodiscard]] QLineEdit* trueLat1Field() const noexcept { return trueLat1_; }
+    [[nodiscard]] QLineEdit* trueLat2Field() const noexcept { return trueLat2_; }
+    [[nodiscard]] QLineEdit* standLonField() const noexcept { return standLon_; }
+    [[nodiscard]] QLineEdit* resolutionField() const noexcept { return resolution_; }
+    [[nodiscard]] QLineEdit* ratioField() const noexcept { return ratio_; }
+    [[nodiscard]] QLineEdit* centerLonField() const noexcept { return centerLon_; }
+    [[nodiscard]] QLineEdit* centerLatField() const noexcept { return centerLat_; }
+    [[nodiscard]] QLineEdit* columnsField() const noexcept { return columns_; }
+    [[nodiscard]] QLineEdit* rowsField() const noexcept { return rows_; }
+
 private:
     void importNamelist();
     void exportNamelist();

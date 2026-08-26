@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <unordered_map>
 
@@ -502,8 +503,23 @@ void ViewForm::updateColorbar() {
             map_->setLegend(buildColorbar(title, rendered.minimum, rendered.maximum, colormap(layer->settings.colormap),
                 layer->settings.tickCount, layer->settings.tickFormat, layer->settings.tickDecimals));
         if (showInfo_->isChecked()) {
-            const auto timeLabel = time_->currentIndex() >= 0 ? time_->currentText().toStdString() : std::string{};
-            map_->setInfoText(QString::fromStdString(title + "  —  " + timeLabel));
+            std::string timeLabel = time_->currentIndex() >= 0 ? time_->currentText().toStdString() : std::string{};
+            // time_ falls back to "Step N of M" for a lone file outside a
+            // series - if its filename still encodes a real valid time,
+            // show that instead so the overlay always has a date when one
+            // is knowable.
+            if (!source.seriesTimes()) {
+                if (const auto parsed = parseWrfFilename(layer->filePath)) timeLabel = formatWrfTimestamp(parsed->validTime);
+            }
+            std::vector<std::string> parts{title};
+            if (!timeLabel.empty()) parts.push_back(timeLabel);
+            if (levelLabel_->isVisible()) parts.push_back(levelLabel_->text().toStdString() + " " + std::to_string(level_->value()));
+            char rangeBuffer[64];
+            std::snprintf(rangeBuffer, sizeof rangeBuffer, "range %.3g – %.3g", rendered.minimum, rendered.maximum);
+            parts.emplace_back(rangeBuffer);
+            std::string info;
+            for (std::size_t i = 0; i < parts.size(); ++i) info += (i ? "  —  " : "") + parts[i];
+            map_->setInfoText(QString::fromStdString(info));
         } else map_->setInfoText({});
     } catch (const std::exception&) { map_->setLegend({}); map_->setInfoText({}); }
 }

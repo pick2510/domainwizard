@@ -89,7 +89,10 @@ public:
     [[nodiscard]] bool hasLegend() const noexcept { return !legend_.isNull(); }
     [[nodiscard]] const QPixmap& legendPixmap() const noexcept { return legend_; }
     [[nodiscard]] bool hasInfoText() const noexcept { return !infoText_.isEmpty(); }
+    [[nodiscard]] const QString& infoText() const noexcept { return infoText_; }
     [[nodiscard]] QRectF legendRect() const noexcept { return legendRect_; }
+    [[nodiscard]] QRectF legendResizeHandleRect() const noexcept { return legendResizeHandleRect_; }
+    [[nodiscard]] double legendScale() const noexcept { return legendScale_; }
     [[nodiscard]] QRectF infoRect() const noexcept { return infoRect_; }
     [[nodiscard]] QString dragTarget() const noexcept { return dragTarget_; }
     [[nodiscard]] std::optional<QPointF> legendPosition() const noexcept { return legendPosition_; }
@@ -130,10 +133,18 @@ private:
     QPixmap legend_;
     std::optional<QPointF> legendPosition_;
     QRectF legendRect_;
+    // Uniform scale applied to legend_'s own pixel size when drawing/hit-
+    // testing - dragging the resize handle in legendResizeHandleRect_
+    // changes this rather than re-rendering the pixmap itself, so an
+    // existing colorbar can be enlarged/shrunk without waiting on
+    // ViewForm's next updateColorbar() call.
+    double legendScale_{1.0};
+    QRectF legendResizeHandleRect_;
+    QPointF legendResizeOrigin_;  // legendRect_.topLeft() captured at press time
     QString infoText_;
     std::optional<QPointF> infoPosition_;
     QRectF infoRect_;
-    QString dragTarget_;  // "" | "legend" | "info"
+    QString dragTarget_;  // "" | "legend" | "legend-resize" | "info"
     QPointF dragOffset_;
     double longitude_{0.0};
     double latitude_{20.0};

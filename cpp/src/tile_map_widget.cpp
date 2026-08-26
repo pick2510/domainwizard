@@ -287,9 +287,14 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
     }
 
     if (!legend_.isNull()) {
-        legendRect_ = movableRect(legend_.size(), legendPosition_, /*topRight=*/true);
-        painter.drawPixmap(legendRect_.topLeft(), legend_);
-    } else legendRect_ = {};
+        const QSizeF scaledSize = QSizeF(legend_.size()) * legendScale_;
+        legendRect_ = movableRect(scaledSize, legendPosition_, /*topRight=*/true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawPixmap(legendRect_, legend_, QRectF(QPointF(0, 0), legend_.size()));
+        constexpr double handleSize = 11.0;
+        legendResizeHandleRect_ = QRectF(legendRect_.right() - handleSize, legendRect_.bottom() - handleSize, handleSize, handleSize);
+        painter.fillRect(legendResizeHandleRect_, QColor(90, 90, 90, 200));
+    } else { legendRect_ = {}; legendResizeHandleRect_ = {}; }
 
     if (!infoText_.isEmpty()) {
         constexpr double padding = 6.0;
@@ -319,7 +324,10 @@ void TileMapWidget::wheelEvent(QWheelEvent* event) {
 }
 void TileMapWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) return;
-    if (legendRect_.contains(event->position())) {
+    if (legendResizeHandleRect_.contains(event->position())) {
+        dragTarget_ = "legend-resize";
+        legendResizeOrigin_ = legendRect_.topLeft();
+    } else if (legendRect_.contains(event->position())) {
         dragTarget_ = "legend";
         dragOffset_ = event->position() - legendRect_.topLeft();
     } else if (infoRect_.contains(event->position())) {
@@ -328,6 +336,14 @@ void TileMapWidget::mousePressEvent(QMouseEvent* event) {
     } else { dragging_ = true; dragStart_ = event->position(); }
 }
 void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (dragTarget_ == "legend-resize") {
+        if (const double baseWidth = legend_.width(); baseWidth > 0) {
+            const double rawWidth = event->position().x() - legendResizeOrigin_.x();
+            legendScale_ = std::clamp(rawWidth / baseWidth, 0.4, 3.0);
+        }
+        update();
+        return;
+    }
     if (dragTarget_ == "legend") { legendPosition_ = event->position() - dragOffset_; update(); return; }
     if (dragTarget_ == "info") { infoPosition_ = event->position() - dragOffset_; update(); return; }
     if (!dragging_) return;

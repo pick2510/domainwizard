@@ -631,6 +631,24 @@ TEST_CASE("info overlay hidden by default and shown when checked") {
     CHECK_FALSE(map.hasInfoText());
 }
 
+TEST_CASE("info overlay reports variable, date/time, and value range") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.variableCombo()->setCurrentIndex(form.variableCombo()->findText("T2"));
+    form.showInfoCheck()->setChecked(true);
+
+    REQUIRE(map.hasInfoText());
+    const auto text = map.infoText();
+    CHECK(text.contains("T2"));
+    CHECK(text.contains("2020-01-01 00:00"));  // the series' own first timestamp, not "Step 1 of 3"
+    CHECK(text.contains("range"));
+}
+
 TEST_CASE("computed domain outlines are visually distinguishable") {
     auto project = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
     const auto overlays = computeDomainOverlays(project.domains);

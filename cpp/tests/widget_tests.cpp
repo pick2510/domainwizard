@@ -197,6 +197,58 @@ TEST_CASE("dragging the legend moves it and does not pan the map") {
     CHECK(map.centerLatitude() == Catch::Approx(20.0));
 }
 
+TEST_CASE("legend defaults to unscaled and exposes a resize handle at its corner") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setLegend(QPixmap(60, 30));
+    map.grab();
+    CHECK(map.legendScale() == Catch::Approx(1.0));
+    CHECK(map.legendResizeHandleRect().right() == Catch::Approx(map.legendRect().right()).margin(1));
+    CHECK(map.legendResizeHandleRect().bottom() == Catch::Approx(map.legendRect().bottom()).margin(1));
+}
+
+TEST_CASE("dragging the legend's resize handle grows it and does not move or pan it") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setCenter(10.0, 20.0, 4);
+    map.setLegend(QPixmap(60, 30));
+    map.grab();
+
+    // legendPosition_ is unset, so the legend stays anchored to the
+    // top-right corner (movableRect's default) as it grows - only its
+    // right/top edges, not its top-left, stay put.
+    const auto originalRight = map.legendRect().right();
+    const auto originalTop = map.legendRect().top();
+    const auto handle = map.legendResizeHandleRect().center();
+    press(map, handle);
+    CHECK(map.dragTarget() == "legend-resize");
+    move(map, handle + QPointF(60, 30));  // drag outward by one legend-width
+    map.grab();
+    CHECK(map.legendScale() > 1.5);
+    release(map, handle + QPointF(60, 30));
+    CHECK(map.dragTarget().isEmpty());
+
+    map.grab();
+    CHECK(map.legendRect().right() == Catch::Approx(originalRight).margin(1));
+    CHECK(map.legendRect().top() == Catch::Approx(originalTop).margin(1));
+    CHECK(map.centerLongitude() == Catch::Approx(10.0));
+    CHECK(map.centerLatitude() == Catch::Approx(20.0));
+}
+
+TEST_CASE("shrinking the legend below the minimum scale clamps rather than inverting") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setLegend(QPixmap(60, 30));
+    map.grab();
+
+    const auto handle = map.legendResizeHandleRect().center();
+    press(map, handle);
+    move(map, map.legendRect().topLeft());  // drag all the way back to the anchor
+    map.grab();
+    CHECK(map.legendScale() == Catch::Approx(0.4));
+    release(map, map.legendRect().topLeft());
+}
+
 TEST_CASE("dragging the info overlay moves it independently of the legend") {
     wrftools::TileMapWidget map;
     map.resize(400, 300);
