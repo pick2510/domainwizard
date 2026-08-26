@@ -11,7 +11,34 @@ the feature-complete behavioral reference.
   instructions / CI job. UI code lives in its own `wrftools_ui` library so
   `main_window`/`view_form`/`domain_form`/`tile_map_widget` are linkable from
   tests, not just the executable.
-- Qt main window with shared map and native Domains / View tabs.
+- Qt main window with shared map and native Domains / View / Convert tabs.
+- **Convert tab**: a Qt6 GUI over
+  [convert_geotiff](https://github.com/jbeezley/convert_geotiff) (public
+  domain), a separate small tool for GeoTIFF <-> WPS geogrid conversion that
+  is not part of the Python `wrftools`/GIS4WRF codebase this port otherwise
+  tracks. Its conversion library (`cpp/src/convert_geotiff/`,
+  `cpp/include/convert_geotiff/`) is vendored unmodified - GDAL-free, only
+  linking `libtiff`/`libgeotiff` - as the new `convert_geotiff_lib` CMake
+  target; only its GUI (originally FLTK) was ported, to
+  `GeotiffConvertForm` (`geotiff_convert_form.hpp`/`.cpp`), replacing
+  `Fl::lock()`/`Fl::awake()` with `QMetaObject::invokeMethod(...,
+  Qt::QueuedConnection)` to marshal a background `std::thread`'s progress/
+  completion back to the GUI thread. Follows this project's
+  throwing-validator convention (`runConversion()` throws `UserError`;
+  `startConversionFromSignal()`, wired to the button, catches and shows a
+  `QMessageBox`) rather than the original's direct `fl_alert()` calls, so
+  validation is testable without a blocking modal dialog. The library's own
+  `std::filesystem::current_path()`-based output (tiles/index are written via
+  relative paths) is scoped with an RAII guard that restores the prior
+  working directory afterward, even on exception - the original process-wide
+  `std::filesystem::current_path()` call in the FLTK version never restored
+  it. 12 new Catch2 cases in `ui_tests.cpp` cover direction toggling,
+  field-enablement, validation-throws-UserError, and two real end-to-end
+  conversions (forward via `tests/fixtures/geotiff_convert/utm.tif`, and a
+  forward-then-reverse round-trip) verified against real output files, not
+  just "didn't throw". `libtiff`/`libgeotiff` were already present in the
+  portable Linux bundle as GDAL's own transitive dependencies (GDAL has a
+  built-in GeoTIFF driver), so `build-portable-cpp.sh` needed no changes.
 - OpenStreetMap XYZ map widget: Web Mercator pan and zoom, asynchronous tile
   requests, memory/disk cache with temporary-directory fallback, **named,
   z-ordered raster/vector overlay groups** (so the Domains tab's outlines and

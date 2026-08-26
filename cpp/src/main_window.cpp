@@ -2,6 +2,7 @@
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
 #include "wrftools/domain_form.hpp"
+#include "wrftools/geotiff_convert_form.hpp"
 
 #include <QFileDialog>
 #include <QLabel>
@@ -37,6 +38,7 @@ MainWindow::MainWindow() {
     auto* domainForm = new DomainForm(map_);
     tabs->addTab(scrollWrap(domainForm), "Domains");
     tabs->addTab(scrollWrap(new ViewForm(map_)), "View");
+    tabs->addTab(scrollWrap(new GeotiffConvertForm), "Convert");
     // Only the active tab's redraw should recenter the shared map - without
     // this, e.g. every Domains-tab field edit would yank the camera back
     // while the user is looking at View-tab raster layers.

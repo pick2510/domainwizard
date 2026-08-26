@@ -6,6 +6,7 @@
 #include "wrftools/domain_form.hpp"
 #include "wrftools/domain_overlay.hpp"
 #include "wrftools/error.hpp"
+#include "wrftools/geotiff_convert_form.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
 #include "wrftools/wps_namelist.hpp"
@@ -16,10 +17,16 @@
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeWidget>
+
+#include <chrono>
+#include <filesystem>
 #include <set>
 #include <tuple>
 #include <catch2/catch_approx.hpp>
@@ -32,6 +39,18 @@ int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     return Catch::Session().run(argc, argv);
 }
+
+namespace {
+// Pumps the event loop until a GeotiffConvertForm's background worker
+// finishes (its completion runs via QMetaObject::invokeMethod, so it only
+// happens while the loop is spinning) or 10s elapse, whichever is first -
+// the fixtures used here convert in well under a second.
+void waitWhileRunning(GeotiffConvertForm& form) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+}
+}  // namespace
 
 TEST_CASE("native map widget constructs headlessly") {
     TileMapWidget map;
@@ -705,4 +724,115 @@ TEST_CASE("an out-of-bounds child surfaces as UserError via a field edit") {
     form.paddingLeftField()->setText("100000");
     form.paddingBottomField()->setText("100000");
     CHECK_THROWS_AS(form.applySelectedDomainFields(/*raiseOnInvalid=*/true), UserError);
+}
+
+TEST_CASE("GeotiffConvertForm defaults to the forward direction with forward-only fields enabled") {
+    GeotiffConvertForm form;
+    form.show();  // isVisible() needs the ancestor chain shown at least once
+    CHECK(form.directionCombo()->currentIndex() == 0);
+    CHECK(form.outputDirectoryField()->isVisible());
+    CHECK_FALSE(form.outputTiffField()->isVisible());
+    CHECK(form.borderWidthField()->isEnabled());
+    CHECK(form.categoriesField()->isEnabled() == false);  // categorical starts unchecked
+}
+
+TEST_CASE("switching direction toggles the output field and disables forward-only options") {
+    GeotiffConvertForm form;
+    form.show();
+    form.directionCombo()->setCurrentIndex(1);
+    CHECK_FALSE(form.outputDirectoryField()->isVisible());
+    CHECK(form.outputTiffField()->isVisible());
+    CHECK_FALSE(form.borderWidthField()->isEnabled());
+    CHECK_FALSE(form.categoricalCheck()->isEnabled());
+
+    form.directionCombo()->setCurrentIndex(0);
+    CHECK(form.outputDirectoryField()->isVisible());
+    CHECK_FALSE(form.outputTiffField()->isVisible());
+    CHECK(form.borderWidthField()->isEnabled());
+}
+
+TEST_CASE("checking categorical data enables the categories field") {
+    GeotiffConvertForm form;
+    CHECK_FALSE(form.categoriesField()->isEnabled());
+    form.categoricalCheck()->setChecked(true);
+    CHECK(form.categoriesField()->isEnabled());
+    form.categoricalCheck()->setChecked(false);
+    CHECK_FALSE(form.categoriesField()->isEnabled());
+}
+
+TEST_CASE("running a conversion with no input path throws UserError") {
+    GeotiffConvertForm form;
+    form.setOutputDirectory("/tmp");
+    CHECK_THROWS_AS(form.runConversion(), UserError);
+}
+
+TEST_CASE("running a conversion with no output directory throws UserError") {
+    GeotiffConvertForm form;
+    form.setInputPath("tests/fixtures/geotiff_convert/utm.tif");
+    CHECK_THROWS_AS(form.runConversion(), UserError);
+}
+
+TEST_CASE("an out-of-range tile size throws UserError before any worker starts") {
+    GeotiffConvertForm form;
+    form.setInputPath("tests/fixtures/geotiff_convert/utm.tif");
+    form.setOutputDirectory("/tmp");
+    form.tileSizeField()->setText("0");
+    CHECK_THROWS_AS(form.runConversion(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("checking categorical data with zero categories throws UserError") {
+    GeotiffConvertForm form;
+    form.setInputPath("tests/fixtures/geotiff_convert/utm.tif");
+    form.setOutputDirectory("/tmp");
+    form.categoricalCheck()->setChecked(true);
+    form.categoriesField()->setText("0");
+    CHECK_THROWS_AS(form.runConversion(), UserError);
+}
+
+TEST_CASE("a real GeoTIFF-to-geogrid conversion produces geogrid tiles and an index file") {
+    GeotiffConvertForm form;
+    QTemporaryDir outputDir;
+    REQUIRE(outputDir.isValid());
+
+    // Absolute paths only: runConversion() changes the process's working
+    // directory to the output directory before opening the input file (see
+    // GeotiffConvertForm::runConversion), so a relative input path would
+    // resolve against the wrong directory once the worker thread starts.
+    const auto inputPath = std::filesystem::absolute("tests/fixtures/geotiff_convert/utm.tif");
+    form.setInputPath(QString::fromStdString(inputPath.string()));
+    form.setOutputDirectory(outputDir.path());
+    form.runConversion();
+    waitWhileRunning(form);
+
+    CHECK_FALSE(form.isRunning());
+    CHECK(form.logView()->toPlainText().contains("Conversion complete."));
+    CHECK(std::filesystem::exists(outputDir.filePath("index").toStdString()));
+    CHECK(std::filesystem::exists(outputDir.filePath("00001-00100.00001-00100").toStdString()));
+}
+
+TEST_CASE("a geogrid round-trip via the reverse direction recreates a GeoTIFF") {
+    GeotiffConvertForm forward;
+    QTemporaryDir geogridDir;
+    REQUIRE(geogridDir.isValid());
+    const auto inputPath = std::filesystem::absolute("tests/fixtures/geotiff_convert/utm.tif");
+    forward.setInputPath(QString::fromStdString(inputPath.string()));
+    forward.setOutputDirectory(geogridDir.path());
+    forward.runConversion();
+    waitWhileRunning(forward);
+    REQUIRE(std::filesystem::exists(geogridDir.filePath("index").toStdString()));
+
+    GeotiffConvertForm reverse;
+    QTemporaryDir outputDir;
+    REQUIRE(outputDir.isValid());
+    reverse.directionCombo()->setCurrentIndex(1);
+    reverse.setInputPath(geogridDir.path());
+    const auto outputTiffPath = outputDir.filePath("roundtrip.tif");
+    reverse.setOutputTiffPath(outputTiffPath);
+    reverse.runConversion();
+    waitWhileRunning(reverse);
+
+    CHECK_FALSE(reverse.isRunning());
+    CHECK(reverse.logView()->toPlainText().contains("Conversion complete."));
+    CHECK(std::filesystem::exists(outputTiffPath.toStdString()));
 }

@@ -13,6 +13,36 @@ set(CMAKE_AUTORCC ON)
 find_package(GDAL 3.6 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
 
+# GeoTIFF <-> WPS geogrid conversion, ported from
+# https://github.com/jbeezley/convert_geotiff (public domain) - its own
+# small, GDAL-free library, kept in its own convert_geotiff/ namespace and
+# directories since it's a vendored subsystem, not part of wrftools_core's
+# own geospatial pipeline. Only its FLTK GUI was replaced (see
+# GeotiffConvertForm); the conversion logic itself (cpp/src/convert_geotiff/)
+# is unmodified from upstream.
+find_library(TIFF_LIBRARY NAMES tiff)
+find_path(TIFF_INCLUDE_DIR NAMES tiffio.h)
+if(NOT TIFF_LIBRARY OR NOT TIFF_INCLUDE_DIR)
+    message(FATAL_ERROR "Cannot find TIFF library/headers (libtiff-dev on Debian/Ubuntu, libtiff-devel on Fedora).")
+endif()
+find_library(GEOTIFF_LIBRARY NAMES geotiff)
+find_path(GEOTIFF_INCLUDE_DIR NAMES geotiffio.h PATH_SUFFIXES geotiff libgeotiff)
+if(NOT GEOTIFF_LIBRARY OR NOT GEOTIFF_INCLUDE_DIR)
+    message(FATAL_ERROR "Cannot find GEOTIFF library/headers (libgeotiff-dev on Debian/Ubuntu, libgeotiff-devel on Fedora).")
+endif()
+
+add_library(convert_geotiff_lib
+    cpp/src/convert_geotiff/geogrid_index.cpp
+    cpp/src/convert_geotiff/geotiff_reader.cpp
+    cpp/src/convert_geotiff/geogrid_tile_writer.cpp
+    cpp/src/convert_geotiff/convert.cpp
+    cpp/src/convert_geotiff/geogrid_reader.cpp
+    cpp/src/convert_geotiff/geotiff_writer.cpp
+    cpp/src/convert_geotiff/convert_back.cpp
+)
+target_include_directories(convert_geotiff_lib PUBLIC cpp/include ${TIFF_INCLUDE_DIR} ${GEOTIFF_INCLUDE_DIR})
+target_link_libraries(convert_geotiff_lib PUBLIC ${TIFF_LIBRARY} ${GEOTIFF_LIBRARY})
+
 add_library(wrftools_core
     cpp/src/crs.cpp
     cpp/src/warp.cpp
@@ -38,9 +68,10 @@ add_library(wrftools_ui
     cpp/src/domain_form.cpp
     cpp/src/domain_overlay.cpp
     cpp/src/tile_map_widget.cpp
+    cpp/src/geotiff_convert_form.cpp
 )
 target_include_directories(wrftools_ui PUBLIC cpp/include)
-target_link_libraries(wrftools_ui PUBLIC wrftools_core Qt6::Gui Qt6::Widgets Qt6::Network)
+target_link_libraries(wrftools_ui PUBLIC wrftools_core convert_geotiff_lib Qt6::Gui Qt6::Widgets Qt6::Network)
 target_compile_options(wrftools_ui PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(wrftools_cpp cpp/src/main.cpp)
