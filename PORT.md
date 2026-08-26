@@ -372,6 +372,29 @@ the feature-complete behavioral reference.
   sits relative to its parent's bounds - the resolution/cell size itself
   never changes, matching a manual Grid Extent field edit.
 
+- **System light/dark theme following** (`theme.hpp`/`.cpp`, wired from
+  `main.cpp`): another native-only addition - the Python app never had any
+  theme handling at all. On macOS/Windows, Qt's native style already
+  tracks OS dark mode on its own with zero extra code, so this only
+  actually *changes* anything on Linux (which needs an explicit palette
+  swap; without one, Qt renders a fixed light `Fusion`-ish look regardless
+  of the desktop's dark-mode setting whenever there's no GTK/qt6ct/
+  xdg-desktop-portal integration reporting it) - but it's written as one
+  platform-agnostic path rather than an `#ifdef`, since the same
+  `QStyleHints::colorScheme()`/`colorSchemeChanged` API (Qt 6.5+, hence
+  this port's CMake minimum moving from 6.4 to 6.5) is what every platform
+  reports through, macOS/Windows included, and doing nothing extra there
+  only holds because `applyColorScheme` is a no-op for `Light`/`Unknown`.
+  `darkPalette()` is the well-known Fusion dark-palette recipe (light gray
+  text on a dark gray window/base, not pure white, with a distinct dimmer
+  shade for disabled widgets); `applyColorScheme(app, scheme)` swaps to
+  Fusion + that palette for `Dark` and back to whatever the platform's own
+  native style/palette were (captured once, on its very first call, before
+  anything is ever touched) for `Light` or `Unknown` - called once at
+  startup with the platform's initial `colorScheme()` and again from a
+  `colorSchemeChanged` handler, so toggling the OS theme while the app is
+  running is picked up live, no restart needed.
+
 ## Non-goals retained from Python
 
 - No WPS binary geographical datasets.

@@ -1,9 +1,11 @@
 #include "wrftools/main_window.hpp"
+#include "wrftools/theme.hpp"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QStyleHints>
 #include <gdal.h>
 
 namespace {
@@ -42,6 +44,17 @@ int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     application.setApplicationName("WRF Tools");
     application.setOrganizationName("WRF Tools");
+
+    // Follow the OS light/dark setting rather than always the platform's
+    // default (light) look - this must be the very first call, before any
+    // other style/palette change, since applyColorScheme's first call
+    // captures the untouched native style/palette to revert to later.
+    // Live-updates too: styleHints() outlives the application, so this
+    // connection needs no explicit disconnect.
+    wrftools::applyColorScheme(application, application.styleHints()->colorScheme());
+    QObject::connect(application.styleHints(), &QStyleHints::colorSchemeChanged, &application,
+        [&application](Qt::ColorScheme scheme) { wrftools::applyColorScheme(application, scheme); });
+
     configureGdalData();
     GDALAllRegister();
     wrftools::MainWindow window;

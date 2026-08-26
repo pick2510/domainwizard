@@ -11,7 +11,9 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(GDAL 3.6 REQUIRED)
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
+# 6.5, not just "some Qt6": QStyleHints::colorScheme()/colorSchemeChanged
+# (theme.cpp's system-theme-following) were added in 6.5.
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 # GeoTIFF <-> WPS geogrid conversion, ported from
 # https://github.com/jbeezley/convert_geotiff (public domain) - its own
@@ -62,6 +64,7 @@ target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui)
 target_compile_options(wrftools_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(wrftools_ui
+    cpp/src/theme.cpp
     cpp/src/main_window.cpp
     cpp/src/view_form.cpp
     cpp/src/domain_form.cpp

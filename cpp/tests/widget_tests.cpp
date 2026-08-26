@@ -2,6 +2,7 @@
 #include "wrftools/colorbar.hpp"
 #include "wrftools/colormaps.hpp"
 #include "wrftools/raster_layer.hpp"
+#include "wrftools/theme.hpp"
 
 #include <map>
 #include <optional>
@@ -11,6 +12,8 @@
 #include <QComboBox>
 #include <QImage>
 #include <QMouseEvent>
+#include <QPalette>
+#include <QStyle>
 #include <QTemporaryDir>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_session.hpp>
@@ -521,4 +524,35 @@ TEST_CASE("rendered raster converts to a Qt image") {
     const auto image = wrftools::rasterImage(raster);
     CHECK(image.size() == QSize(2, 1));
     CHECK(image.pixelColor(0, 0) == QColor(255, 0, 0, 255));
+}
+
+TEST_CASE("darkPalette uses a genuinely dark window with light, readable text") {
+    const auto palette = wrftools::darkPalette();
+    CHECK(palette.color(QPalette::Window).lightness() < 100);
+    CHECK(palette.color(QPalette::Base).lightness() < 100);
+    CHECK(palette.color(QPalette::WindowText).lightness() > 150);
+    CHECK(palette.color(QPalette::Text).lightness() > 150);
+    CHECK(palette.color(QPalette::ButtonText).lightness() > 150);
+    // Disabled text is dimmer than enabled text, not identical to it - a
+    // manually-built palette that skips PaletteState::Disabled entirely
+    // would otherwise leave every disabled widget looking enabled.
+    CHECK(palette.color(QPalette::Disabled, QPalette::Text).lightness() < palette.color(QPalette::Text).lightness());
+}
+
+TEST_CASE("applyColorScheme switches to a dark Fusion palette for Dark and reverts otherwise") {
+    REQUIRE(qApp);
+    const auto darkWindowColor = wrftools::darkPalette().color(QPalette::Window);
+
+    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Dark);
+    CHECK(qApp->style()->objectName().compare("fusion", Qt::CaseInsensitive) == 0);
+    CHECK(qApp->palette().color(QPalette::Window) == darkWindowColor);
+
+    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Light);
+    CHECK(qApp->palette().color(QPalette::Window) != darkWindowColor);
+
+    // Back to dark, then Unknown (what an unthemed/offscreen platform
+    // reports) - Unknown must not be treated as dark either.
+    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Dark);
+    wrftools::applyColorScheme(*qApp, Qt::ColorScheme::Unknown);
+    CHECK(qApp->palette().color(QPalette::Window) != darkWindowColor);
 }
