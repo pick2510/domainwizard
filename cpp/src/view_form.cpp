@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
 #include <QTreeWidget>
@@ -82,7 +83,8 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     variable_ = new QComboBox(this); colormap_ = new QComboBox(this); units_ = new QComboBox(this); time_ = new QComboBox(this);
     level_ = new QSpinBox(this); level_->setMinimum(1);
     play_ = new QCheckBox("Play", this); playbackTimer_ = new QTimer(this);
-    opacity_ = new QDoubleSpinBox(this); opacity_->setRange(0.0, 1.0); opacity_->setSingleStep(0.1); opacity_->setValue(0.8);
+    opacity_ = new QSlider(Qt::Horizontal, this); opacity_->setRange(0, 100); opacity_->setValue(80);
+    opacityLabel_ = new QLabel("80%", this);
     autoRange_ = new QCheckBox("Auto range", this); autoRange_->setChecked(true);
     minimum_ = new QDoubleSpinBox(this); maximum_ = new QDoubleSpinBox(this);
     for (auto* range : {minimum_, maximum_}) { range->setRange(-1e30, 1e30); range->setDecimals(4); range->setEnabled(false); }
@@ -94,7 +96,12 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     form->addRow("Time step", time_); form->addRow("", play_);
     form->addRow(levelLabel_, level_);
     form->addRow("Colormap", colormap_); form->addRow("Units", units_);
-    form->addRow("Opacity", opacity_);
+    auto* opacityRow = new QWidget(this);
+    auto* opacityRowLayout = new QHBoxLayout(opacityRow);
+    opacityRowLayout->setContentsMargins(0, 0, 0, 0);
+    opacityRowLayout->addWidget(opacity_);
+    opacityRowLayout->addWidget(opacityLabel_);
+    form->addRow("Opacity", opacityRow);
     form->addRow("", autoRange_); form->addRow("Minimum", minimum_); form->addRow("Maximum", maximum_);
     form->addRow("", interpolate_);
     propertiesGroup_->setLayout(form);
@@ -140,7 +147,7 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(level_, &QSpinBox::valueChanged, this, [this] { applyFieldsFromSignal(); });
     connect(colormap_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsFromSignal(); });
     connect(units_, &QComboBox::currentIndexChanged, this, [this] { applyFieldsFromSignal(); });
-    connect(opacity_, &QDoubleSpinBox::valueChanged, this, [this] { applyFieldsFromSignal(); });
+    connect(opacity_, &QSlider::valueChanged, this, [this](int value) { opacityLabel_->setText(QString("%1%").arg(value)); applyFieldsFromSignal(); });
     connect(autoRange_, &QCheckBox::toggled, this, [this](bool checked) {
         minimum_->setEnabled(!checked); maximum_->setEnabled(!checked);
         // Reverting to auto is an unambiguous, immediately-applicable
@@ -389,7 +396,9 @@ void ViewForm::populatePropertiesPanel() {
         colormap_->setCurrentText(QString::fromStdString(layer->settings.colormap));
         colormap_->blockSignals(colormapOld);
 
-        opacity_->blockSignals(true); opacity_->setValue(layer->settings.opacity); opacity_->blockSignals(false);
+        const int opacityPercent = std::clamp(static_cast<int>(std::lround(layer->settings.opacity * 100.0)), 0, 100);
+        opacity_->blockSignals(true); opacity_->setValue(opacityPercent); opacity_->blockSignals(false);
+        opacityLabel_->setText(QString("%1%").arg(opacityPercent));
         const bool isAuto = !layer->settings.minimum && !layer->settings.maximum;
         autoRange_->blockSignals(true); autoRange_->setChecked(isAuto); autoRange_->blockSignals(false);
         minimum_->setEnabled(!isAuto); maximum_->setEnabled(!isAuto);
@@ -433,7 +442,7 @@ void ViewForm::applyFieldsToSelectedLayer() {
     layer->settings.levelIndex = std::max(0, level_->value() - 1);
     layer->settings.colormap = colormap_->currentText().toStdString();
     layer->settings.unitKey = units_->currentData().toString().toStdString();
-    layer->settings.opacity = opacity_->value();
+    layer->settings.opacity = opacity_->value() / 100.0f;
     layer->settings.interpolate = interpolate_->isChecked();
     if (autoRange_->isChecked()) { layer->settings.minimum.reset(); layer->settings.maximum.reset(); }
     else {

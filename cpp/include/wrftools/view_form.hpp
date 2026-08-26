@@ -13,6 +13,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QTimer;
 class QTreeWidget;
@@ -72,7 +73,7 @@ public:
     [[nodiscard]] QLabel* levelLabel() const noexcept { return levelLabel_; }
     [[nodiscard]] QComboBox* colormapCombo() const noexcept { return colormap_; }
     [[nodiscard]] QComboBox* unitsCombo() const noexcept { return units_; }
-    [[nodiscard]] QDoubleSpinBox* opacitySpin() const noexcept { return opacity_; }
+    [[nodiscard]] QSlider* opacitySlider() const noexcept { return opacity_; }
     [[nodiscard]] QCheckBox* autoRangeCheck() const noexcept { return autoRange_; }
     [[nodiscard]] QDoubleSpinBox* minimumSpin() const noexcept { return minimum_; }
     [[nodiscard]] QDoubleSpinBox* maximumSpin() const noexcept { return maximum_; }
@@ -143,7 +144,8 @@ private:
     QLabel* levelLabel_{};
     QComboBox* colormap_{};
     QComboBox* units_{};
-    QDoubleSpinBox* opacity_{};
+    QSlider* opacity_{};
+    QLabel* opacityLabel_{};
     QCheckBox* autoRange_{};
     QDoubleSpinBox* minimum_{};
     QDoubleSpinBox* maximum_{};

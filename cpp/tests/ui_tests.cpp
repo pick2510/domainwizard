@@ -239,7 +239,7 @@ TEST_CASE("colormap and opacity changes apply to the layer") {
     form.colormapCombo()->setCurrentIndex(plasmaIndex);
     CHECK(form.layers().front().settings.colormap == "plasma");
 
-    form.opacitySpin()->setValue(0.25);
+    form.opacitySlider()->setValue(25);
     CHECK(form.layers().front().settings.opacity == Catch::Approx(0.25));
 }
 
