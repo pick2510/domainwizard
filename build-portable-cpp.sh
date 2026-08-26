@@ -34,7 +34,16 @@ rm -rf "$BUILD_DIR" "$DIST_DIR"
 # (e.g. a self-built copy under $HOME) can otherwise get silently picked
 # instead, producing a "portable" bundle that isn't actually built against
 # the package this script's own dependency instructions assume.
-QT6_CMAKE_DIR=$(find /usr -maxdepth 6 -path "*/cmake/Qt6" -type d 2>/dev/null | head -1)
+# `find` exits non-zero if it hits so much as one permission-denied
+# directory anywhere under /usr (very common on a real system), even though
+# it still printed everything it could find to stdout. Piped into `head -1`
+# under `set -o pipefail`, that non-zero status poisons the whole pipeline;
+# assigned straight into a variable under `set -e`, that silently kills the
+# entire script right here with no error message at all - `head` closing
+# the pipe early makes this trivial to hit. `|| true` keeps the (correct)
+# captured stdout while dropping that spurious pipeline failure; the
+# empty-string check right below still catches a genuine "not found".
+QT6_CMAKE_DIR=$(find /usr -maxdepth 6 -path "*/cmake/Qt6" -type d 2>/dev/null | head -1 || true)
 if [ -z "$QT6_CMAKE_DIR" ]; then
   echo "Could not find a system Qt6 CMake package under /usr (looked for */cmake/Qt6)." >&2
   echo "Install it first (e.g. \`apt install qt6-base-dev\` on Debian/Ubuntu)." >&2
