@@ -54,9 +54,33 @@ WpsBinarySource::WpsBinarySource(std::filesystem::path directory) : directory_(s
     const auto crs = buildGeogCrs(idx);
     projectionWkt_ = crs.wkt();
 
-    const int nx = idx.nx, ny = idx.ny;
+    const int rawNx = idx.nx, rawNy = idx.ny;
     const int nz = idx.nz > 0 ? idx.nz : (idx.tz_e - idx.tz_s + 1);
-    if (nx <= 0 || ny <= 0 || nz <= 0) throw UserError("WPS_GEOG dataset has an invalid size: " + directory_.string());
+    if (rawNx <= 0 || rawNy <= 0 || nz <= 0) throw UserError("WPS_GEOG dataset has an invalid size: " + directory_.string());
+
+    // Some real-world global regular_ll datasets pad nx/ny out to a whole
+    // number of tiles beyond the true 360deg/180deg extent (observed in
+    // NCAR's own topo_gmted2010_5m: tile_x=600 doesn't divide 4320 evenly,
+    // so it ships 4800 columns instead - the trailing 480 are a literal
+    // duplicate of columns 0..479, and similarly 240 trailing rows of
+    // zero-filled padding past the pole). Left in, those extra columns
+    // either get wrongly treated as "not quite a full globe" (skipping the
+    // wraparound fix below entirely) or the zero-filled rows get warped as
+    // if they were real data. Crop back to the true size first - the
+    // padding is always appended at the high-index end, regardless of
+    // which physical direction that raw index happens to represent, since
+    // it comes from read_tiles() rounding up to whole tiles.
+    int nx = rawNx, ny = rawNy;
+    if (idx.proj == convert_geotiff::Projection::RegularLL) {
+        if (idx.dx > 0.f) {
+            const int trueNx = static_cast<int>(std::lround(360.0 / idx.dx));
+            if (trueNx > 0 && rawNx > trueNx) nx = trueNx;
+        }
+        if (idx.dy > 0.f) {
+            const int trueNy = static_cast<int>(std::lround(180.0 / idx.dy));
+            if (trueNy > 0 && rawNy > trueNy) ny = trueNy;
+        }
+    }
     size_ = {nx, ny};
 
     // Same tie-point convention as convert_geotiff's own geotiff_writer.cpp
@@ -137,7 +161,11 @@ WpsBinarySource::WpsBinarySource(std::filesystem::path directory) : directory_(s
             const int srcRow = flipRows ? (ny - 1 - y) : y;
             for (int x = 0; x < nx; ++x) {
                 const int srcCol = columnShift == 0 ? x : ((x - columnShift) % nx + nx) % nx;
-                const float value = raw[(static_cast<std::size_t>(z) * ny + srcRow) * nx + srcCol];
+                // raw is indexed with the uncropped stride (rawNx/rawNy) -
+                // srcRow/srcCol are always within [0, ny)/[0, nx), which is
+                // a subset of the raw extent, so this never touches the
+                // padding rows/columns cropped above.
+                const float value = raw[(static_cast<std::size_t>(z) * rawNy + srcRow) * rawNx + srcCol];
                 buffer_[(static_cast<std::size_t>(z) * ny + y) * nx + x] = value == idx.missing ? std::numeric_limits<float>::quiet_NaN() : value;
             }
         }

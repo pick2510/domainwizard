@@ -535,6 +535,22 @@ it:
   of computing a huge one and discarding the excess. Every existing
   (much smaller) raster is unaffected - the cap only ever kicks in above
   4096, confirmed by the existing warp/render tests' unchanged output sizes.
+- Tile-alignment padding (`wps_binary_source.cpp`): confirmed against a
+  real `topo_gmted2010_5m` dataset - still broken after the two fixes
+  above. `tile_x`/`tile_y` (600) doesn't evenly divide the true global
+  size (4320x2160 at 5 arc-minutes), so `read_tiles` rounds up to a whole
+  number of tiles and the dataset ships 4800x2400 columns/rows instead: the
+  trailing 480 columns turned out to be a literal duplicate of columns
+  0..479 (defeating the longitude-wraparound fix's `lonSpan == 360` check,
+  since raw `nx*dx` came out to 400 degrees, not 360), and the trailing 240
+  rows were zero-filled past the north pole (warped as if real data).
+  Padding is always appended at the high-index end regardless of which
+  physical direction that represents (it comes from `read_tiles` rounding
+  up, not from the data itself), so `WpsBinarySource` now crops `nx`/`ny`
+  down to `round(360/dx)`/`round(180/dy)` whenever the raw size exceeds
+  that - before the wraparound/geotransform math runs, so a
+  tile-padded-but-otherwise-normal dataset like this one still gets the
+  wraparound fix on its now-correctly-sized 4320x2160.
 - `convert_geotiff_lib` was split in `CMakeLists.txt`: the index/tile
   reader (`geogrid_index.cpp`, `geogrid_reader.cpp` - no TIFF/GEOTIFF
   dependency) now lives in its own `convert_geotiff_reader` target, linked

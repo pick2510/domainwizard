@@ -1043,6 +1043,71 @@ TEST_CASE("WpsBinarySource re-wraps a global 0-360 longitude dataset into -180..
     std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("WpsBinarySource crops tile-alignment padding beyond the true global extent") {
+    // Some real-world global regular_ll datasets pad nx/ny out to a whole
+    // number of tiles beyond the true 360deg/180deg extent (observed in
+    // NCAR's own topo_gmted2010_5m: tile_x=600 doesn't divide the true
+    // 4320 columns evenly, so it ships 4800 - the trailing 480 columns are
+    // a literal duplicate of columns 0..479, and 240 trailing rows are
+    // zero-filled past the pole). A hand-built minimal case of the same
+    // shape: dx=dy=90 (true size 4x2), raw tile is 6 columns x 3 rows -
+    // 2 extra padding columns and 1 extra padding row, filled with
+    // sentinel values (44/55/144/155/200) that must never appear in the
+    // output. The 4 real columns still span the full 360 degrees, so this
+    // also exercises the column-wraparound fix on top of the crop.
+    const auto dir = std::filesystem::temp_directory_path() / "wrftools-cpp-wps-geog-pad";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream index(dir / "index");
+        index << "type=continuous\n"
+                 "projection=regular_ll\n"
+                 "missing_value=255\n"
+                 "dx=90.0\n"
+                 "dy=90.0\n"
+                 "known_x=1.0\n"
+                 "known_y=1.0\n"
+                 "known_lat=-45.0\n"
+                 "known_lon=0.0\n"
+                 "wordsize=1\n"
+                 "signed=no\n"
+                 "endian=big\n"
+                 "tile_x=6\n"
+                 "tile_y=3\n"
+                 "tile_z=1\n"
+                 "tile_bdr=0\n"
+                 "scale_factor=1\n"
+                 "units=\"none\"\n"
+                 "description=\"pad test\"\n";
+    }
+    {
+        std::ofstream tile(dir / "00001-00006.00001-00003", std::ios::binary);
+        // Row-major, tile-file row order: row 0 (south, real), row 1
+        // (north, real), row 2 (padding, must be dropped entirely).
+        const unsigned char values[18] = {
+            0, 1, 2, 3, 44, 55,       // south: real cols 0-3, padding cols 4-5
+            10, 11, 12, 13, 144, 155, // north: real cols 0-3, padding cols 4-5
+            200, 200, 200, 200, 200, 200,  // padding row: must never appear
+        };
+        tile.write(reinterpret_cast<const char*>(values), sizeof(values));
+    }
+
+    WpsBinarySource source(dir);
+    CHECK(source.size() == std::array<int, 2>{4, 2});
+    const auto& gt = source.geotransform();
+    CHECK(gt[0] == Catch::Approx(-180.0));
+    CHECK(gt[3] == Catch::Approx(90.0));
+    const auto values = source.read(source.variables().front().name, 0, 0);
+    REQUIRE(values.size() == 8);
+    // Row 0 = north (raw row 1: 10,11,12,13), row 1 = south (raw row 0:
+    // 0,1,2,3), each column-wrapped the same way as the plain wraparound
+    // test above (known_lon=0/known_x=1/dx=90 -> shift=2). No 44/55/144/
+    // 155/200 sentinel may appear anywhere.
+    CHECK(values == std::vector<float>{12, 13, 10, 11, 2, 3, 0, 1});
+
+    std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("WrfSourceRegistry opens a WPS_GEOG directory as a WpsBinarySource, not a NetCDF file") {
     WrfSourceRegistry registry;
     auto& source = registry.open({"tests/fixtures/geotiff_convert/wps_soiltemp_1deg"});
