@@ -71,10 +71,10 @@ ctest --test-dir build-cpp --output-on-failure
 
 ## Packaging
 
-Every push/PR to `cplusplus` builds, tests, and packages the app on both
-Linux and macOS via GitHub Actions (`.github/workflows/cpp.yml`), and
-uploads the portable `wrftools-linux`/`wrftools-macos` bundles as
-downloadable workflow artifacts - no local build needed just to try it.
+Every push/PR builds, tests, and packages the app on both Linux and macOS
+via GitHub Actions (`.github/workflows/cpp.yml`), and uploads the portable
+`wrftools-linux`/`wrftools-macos` bundles as downloadable workflow
+artifacts - no local build needed just to try it.
 
 To build a portable bundle locally instead:
 

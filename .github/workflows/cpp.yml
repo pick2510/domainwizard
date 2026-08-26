@@ -2,9 +2,9 @@ name: Native C++ build
 
 on:
   push:
-    branches: [cplusplus]
+    branches: [master, cplusplus]
   pull_request:
-    branches: [cplusplus]
+    branches: [master, cplusplus]
 
 jobs:
   build-and-test:
