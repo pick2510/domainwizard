@@ -11,6 +11,8 @@
 #include "wrftools/view_form.hpp"
 #include "wrftools/wps_namelist.hpp"
 
+#include <gdal_priv.h>
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -27,8 +29,12 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <set>
+#include <sstream>
 #include <tuple>
+#include <vector>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -878,4 +884,183 @@ TEST_CASE("a geogrid round-trip via the reverse direction recreates a GeoTIFF") 
     CHECK_FALSE(reverse.isRunning());
     CHECK(reverse.logView()->toPlainText().contains("Conversion complete."));
     CHECK(std::filesystem::exists(outputTiffPath.toStdString()));
+}
+
+namespace {
+// Reads a small single-band GeoTIFF fully into memory - used by the
+// real-world fixture tests below to check actual pixel values survived a
+// round trip, not just that the output file exists.
+std::vector<float> readSingleBandGeoTiff(const std::string& path, int& width, int& height) {
+    // convert_geotiff_lib is GDAL-free (writes via libtiff/libgeotiff
+    // directly), so - unlike WrfFile - nothing earlier in the process is
+    // guaranteed to have already registered GDAL's drivers; do it here so
+    // this helper works even when this test case runs in isolation.
+    GDALAllRegister();
+    std::unique_ptr<GDALDataset, decltype(&GDALClose)> dataset(
+        static_cast<GDALDataset*>(GDALOpenEx(path.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
+    REQUIRE(dataset);
+    width = dataset->GetRasterXSize();
+    height = dataset->GetRasterYSize();
+    std::vector<float> data(static_cast<std::size_t>(width) * height);
+    REQUIRE(dataset->GetRasterBand(1)->RasterIO(GF_Read, 0, 0, width, height, data.data(), width, height, GDT_Float32, 0, 0) == CE_None);
+    return data;
+}
+}  // namespace
+
+TEST_CASE("a real WPS_GEOG numerical tile (soiltemp_1deg) converts to a plausible-range GeoTIFF") {
+    // tests/fixtures/geotiff_convert/wps_soiltemp_1deg is an unmodified
+    // single geogrid tile straight from NCAR's WPS_GEOG_LOW_RES mandatory
+    // download (soiltemp_1deg/index + its one tile file) - real continuous
+    // (non-categorical) data, not something this project generated.
+    GeotiffConvertForm reverse;
+    QTemporaryDir outputDir;
+    REQUIRE(outputDir.isValid());
+    reverse.directionCombo()->setCurrentIndex(1);
+    reverse.setInputPath(QString::fromStdString(std::filesystem::absolute("tests/fixtures/geotiff_convert/wps_soiltemp_1deg").string()));
+    const auto outputTiffPath = outputDir.filePath("soiltemp.tif");
+    reverse.setOutputTiffPath(outputTiffPath);
+    reverse.runConversion();
+    waitWhileRunning(reverse);
+
+    CHECK_FALSE(reverse.isRunning());
+    CHECK(reverse.logView()->toPlainText().contains("Conversion complete."));
+
+    int width = 0, height = 0;
+    const auto data = readSingleBandGeoTiff(outputTiffPath.toStdString(), width, height);
+    CHECK(width == 180);
+    CHECK(height == 180);
+    // Annual mean deep soil temperature in Kelvin, over a 1-degree global
+    // grid where ocean pixels carry the index's missing_value=0.0 - every
+    // non-missing decoded value (already scaled by scale_factor=0.01)
+    // should land well within a physically sane range, not raw unscaled
+    // integers or noise, and at least some land pixels must be present.
+    int landPixels = 0;
+    for (const auto value : data) {
+        if (value == 0.0f) continue;
+        CHECK(value > 200.0f);
+        CHECK(value < 320.0f);
+        ++landPixels;
+    }
+    CHECK(landPixels > 0);
+}
+
+TEST_CASE("a real WPS_GEOG numerical tile round-trips forward again into a new geogrid tile") {
+    GeotiffConvertForm reverse;
+    QTemporaryDir geotiffDir;
+    REQUIRE(geotiffDir.isValid());
+    reverse.directionCombo()->setCurrentIndex(1);
+    reverse.setInputPath(QString::fromStdString(std::filesystem::absolute("tests/fixtures/geotiff_convert/wps_soiltemp_1deg").string()));
+    const auto tiffPath = geotiffDir.filePath("soiltemp.tif");
+    reverse.setOutputTiffPath(tiffPath);
+    reverse.runConversion();
+    waitWhileRunning(reverse);
+    REQUIRE(std::filesystem::exists(tiffPath.toStdString()));
+
+    GeotiffConvertForm forward;
+    QTemporaryDir geogridDir;
+    REQUIRE(geogridDir.isValid());
+    forward.setInputPath(tiffPath);
+    forward.setOutputDirectory(geogridDir.path());
+    forward.runConversion();
+    waitWhileRunning(forward);
+
+    CHECK_FALSE(forward.isRunning());
+    CHECK(forward.logView()->toPlainText().contains("Conversion complete."));
+    CHECK(std::filesystem::exists(geogridDir.filePath("index").toStdString()));
+    // The 180x180 GeoTIFF gets split into 100-pixel tiles (the form's
+    // default tile size), so the first tile file covers only 1-100.
+    CHECK(std::filesystem::exists(geogridDir.filePath("00001-00100.00001-00100").toStdString()));
+
+    std::ifstream indexFile(geogridDir.filePath("index").toStdString());
+    std::ostringstream indexContent;
+    indexContent << indexFile.rdbuf();
+    CHECK(indexContent.str().find("categorical") == std::string::npos);  // stays continuous, not miscategorized
+}
+
+TEST_CASE("a real-derived categorical GeoTIFF forward-converts to a categorical geogrid index") {
+    // tests/fixtures/geotiff_convert/landuse_dominant_category.tif is a
+    // small 24x24 crop, derived (dominant-category-per-pixel argmax) from a
+    // real NCAR WPS_GEOG_LOW_RES modis_landuse_20class_5m_with_lakes tile -
+    // genuine per-pixel MODIFIED_IGBP_MODIS_NOAH category codes (1-21), not
+    // synthetic data. There is no single-layer type=categorical dataset in
+    // NCAR's own mandatory download to pull directly (its landuse/soiltype
+    // sets ship as per-category continuous fraction layers instead), so this
+    // is the closest real-world stand-in for exercising this tool's own
+    // categorical option end to end.
+    GeotiffConvertForm forward;
+    QTemporaryDir geogridDir;
+    REQUIRE(geogridDir.isValid());
+    const auto inputPath = std::filesystem::absolute("tests/fixtures/geotiff_convert/landuse_dominant_category.tif");
+    forward.setInputPath(QString::fromStdString(inputPath.string()));
+    forward.setOutputDirectory(geogridDir.path());
+    forward.categoricalCheck()->setChecked(true);
+    forward.categoriesField()->setText("21");
+    forward.runConversion();
+    waitWhileRunning(forward);
+
+    CHECK_FALSE(forward.isRunning());
+    CHECK(forward.logView()->toPlainText().contains("Conversion complete."));
+    REQUIRE(std::filesystem::exists(geogridDir.filePath("index").toStdString()));
+
+    std::ifstream indexFile(geogridDir.filePath("index").toStdString());
+    std::ostringstream indexContent;
+    indexContent << indexFile.rdbuf();
+    const auto index = indexContent.str();
+    CHECK(index.find("type = categorical") != std::string::npos);
+    CHECK(index.find("category_min = 1") != std::string::npos);
+    CHECK(index.find("category_max = 22") != std::string::npos);  // categorical_range (21) + 1, per convert.cpp
+}
+
+TEST_CASE("that categorical geogrid round-trips back to a GeoTIFF with the same category values") {
+    GeotiffConvertForm forward;
+    QTemporaryDir geogridDir;
+    REQUIRE(geogridDir.isValid());
+    const auto inputPath = std::filesystem::absolute("tests/fixtures/geotiff_convert/landuse_dominant_category.tif");
+    forward.setInputPath(QString::fromStdString(inputPath.string()));
+    forward.setOutputDirectory(geogridDir.path());
+    forward.categoricalCheck()->setChecked(true);
+    forward.categoriesField()->setText("21");
+    // Match the tile size to the fixture's own 24x24 extent - the geogrid
+    // reader infers the overall raster size purely from the union of tile
+    // filenames on disk (there's no separate stored width/height), so the
+    // default 100px tile size would pad the round trip out to 100x100.
+    forward.tileSizeField()->setText("24");
+    forward.runConversion();
+    waitWhileRunning(forward);
+    REQUIRE(std::filesystem::exists(geogridDir.filePath("index").toStdString()));
+
+    GeotiffConvertForm reverse;
+    QTemporaryDir outputDir;
+    REQUIRE(outputDir.isValid());
+    reverse.directionCombo()->setCurrentIndex(1);
+    reverse.setInputPath(geogridDir.path());
+    const auto outputTiffPath = outputDir.filePath("landuse_roundtrip.tif");
+    reverse.setOutputTiffPath(outputTiffPath);
+    reverse.runConversion();
+    waitWhileRunning(reverse);
+    CHECK(reverse.logView()->toPlainText().contains("Conversion complete."));
+
+    int originalWidth = 0, originalHeight = 0;
+    const auto original = readSingleBandGeoTiff(inputPath.string(), originalWidth, originalHeight);
+    int roundTripWidth = 0, roundTripHeight = 0;
+    const auto roundTrip = readSingleBandGeoTiff(outputTiffPath.toStdString(), roundTripWidth, roundTripHeight);
+
+    REQUIRE(roundTripWidth == originalWidth);
+    REQUIRE(roundTripHeight == originalHeight);
+    // Category codes are small integers written with no lossy predictor, so
+    // the round trip must reproduce them exactly - except right at this
+    // fixture's own domain edge. tileSizeField() above was set to exactly
+    // match the fixture's extent (one tile = the whole "domain"), which
+    // real WPS_GEOG data never does; every real dataset's tiles keep this
+    // few-pixel edge margin filled by a *neighboring* tile's real data. A
+    // margin of tile_bdr (3) pixels around a truly edgeless single-tile
+    // domain has nothing to source from, so it's excluded here rather than
+    // asserted on.
+    constexpr int margin = 3;
+    for (int y = margin; y < originalHeight - margin; ++y) {
+        for (int x = margin; x < originalWidth - margin; ++x) {
+            const auto i = static_cast<std::size_t>(y) * originalWidth + x;
+            CHECK(roundTrip[i] == original[i]);
+        }
+    }
 }

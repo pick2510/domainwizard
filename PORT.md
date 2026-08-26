@@ -36,7 +36,33 @@ the feature-complete behavioral reference.
   field-enablement, validation-throws-UserError, and two real end-to-end
   conversions (forward via `tests/fixtures/geotiff_convert/utm.tif`, and a
   forward-then-reverse round-trip) verified against real output files, not
-  just "didn't throw". `libtiff`/`libgeotiff` were already present in the
+  just "didn't throw". Four more cases exercise both directions against real
+  geographic data pulled from NCAR's own
+  [`geog_low_res_mandatory.tar.gz`](https://www2.mmm.ucar.edu/wrf/src/wps_files/geog_low_res_mandatory.tar.gz):
+  `tests/fixtures/geotiff_convert/wps_soiltemp_1deg/` is one unmodified
+  `soiltemp_1deg` geogrid tile (continuous/numerical, real deep-soil-
+  temperature values in Kelvin) exercised in the reverse direction
+  (geogrid -> GeoTIFF, checking every non-missing pixel lands in a sane
+  physical range) and then forward again (GeoTIFF -> a new geogrid tile,
+  checking the index stays `type = continuous`). There is no single-layer
+  `type = categorical` dataset anywhere in that mandatory download to pull
+  directly - NCAR's own landuse/soiltype sets ship as per-category
+  *continuous* fraction layers instead (`tile_z` > 1, `type = continuous`
+  even though `category_min`/`category_max` are present) - so
+  `tests/fixtures/geotiff_convert/landuse_dominant_category.tif` is a small
+  24x24 GeoTIFF derived from one (real, downloaded, not synthetic)
+  `modis_landuse_20class_5m_with_lakes` tile by taking the per-pixel
+  dominant category (argmax across its 21 fraction layers) - genuine
+  MODIFIED_IGBP_MODIS_NOAH category codes, exercised forward (with the
+  categorical checkbox and 21 categories, checking the written index says
+  `type = categorical`/`category_max = 22`) and then reverse again,
+  checking the round-tripped pixels match exactly except within a
+  `tile_bdr`-wide margin of this fixture's own edge - a single 24x24 crop
+  declared as its own whole tiled "domain" has no neighboring tile to
+  source real border data from, unlike every actual WPS_GEOG dataset, so
+  that margin is real-but-unrepresentative degenerate-domain-edge behavior
+  in the vendored library rather than something this port's own code
+  touches. `libtiff`/`libgeotiff` were already present in the
   portable Linux bundle as GDAL's own transitive dependencies (GDAL has a
   built-in GeoTIFF driver), so `build-portable-cpp.sh` needed no changes.
 - OpenStreetMap XYZ map widget: Web Mercator pan and zoom, asynchronous tile
