@@ -102,8 +102,13 @@ the feature-complete behavioral reference.
   tests for `DomainForm` (tree shape from a real namelist, selection via
   `setCurrentItem`) and `ViewForm` (a 4-file series collapsing to one file
   row, a 2-layer stack built and hidden via real checkbox clicks) in a new
-  `wrftools_ui_tests` binary. Current local result: all CTest targets pass
-  (25 CTest entries; `wrftools_ui_tests` alone runs 6 Catch2 cases).
+  `wrftools_ui_tests` binary. Substantially ports `test_units.py`,
+  `test_colormaps.py`, `test_colorbar.py`, `test_crs_datum.py`, and
+  `test_wrfreader.py`, including three synthetic-fixture rejection tests
+  (unsupported `MAP_PROJ`, rotated pole, a GDAL-openable non-WRF GeoTIFF)
+  generated via `ncgen`/`gdal_translate` from real fixture CDL dumps
+  (`tests/fixtures/wrf_unknown_projection.nc`, `wrf_rotated_pole.nc`,
+  `not_a_wrf_file.tif`). Current local result: all 45 CTest entries pass.
 - `RasterLayer` carries per-layer `tickCount`/`tickFormat`/`tickDecimals`,
   wired to a "Colorbar" group in `ViewForm` (tick format `auto`/`fixed`/
   `scientific`, decimals only enabled for the latter two). Deliberately
@@ -135,9 +140,13 @@ the feature-complete behavioral reference.
 - macOS `.app` bundling - no macOS machine available to build or verify
   this from within the current working environment.
 - Port the remaining Python tests (197 total in the Python suite; the native
-  suite has grown from 17 to 25 CTest entries / ~28 Catch2 cases but is
-  still far short) - especially `tests/test_ui_view_layers.py`'s 43 cases,
-  now that the layer stack exists to test against.
+  suite has grown to 45 CTest entries). Still unported: `test_wrfseries.py`
+  (20 cases), `test_tilemap_overlays.py` (13 cases), `test_rasterlayer.py`
+  (33 cases), `test_ui_view_layers.py` (43 cases, the largest remaining
+  gap, now that the layer stack exists to test against), `test_export.py`
+  (2 cases); `test_core_domain_tree.py`/`test_ui_domain_tree.py` are likely
+  mostly covered already by the existing domain tests but haven't been
+  diffed case-for-case.
 - Run and require the macOS CI job, then address any Homebrew-specific
   compiler or deployment findings.
 

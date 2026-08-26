@@ -9,7 +9,11 @@
 
 namespace wrftools {
 // tickFormat is one of "auto" (%.3g, decimals ignored), "fixed" (%.*f), or
-// "scientific" (%.*e). Mirrors colorbar.py's _format_tick.
+// "scientific" (%.*e). Exposed (not just used internally by buildColorbar)
+// so its exact formatting contract can be pinned directly, matching
+// colorbar.py's own _format_tick tests.
+[[nodiscard]] std::string formatColorbarTick(double value, const std::string& format = "auto", int decimals = 2);
+
 [[nodiscard]] QPixmap buildColorbar(const std::string& title, float minimum, float maximum, const ColorLut& lut,
     int tickCount = 3, const std::string& tickFormat = "auto", int tickDecimals = 2);
 

@@ -7,14 +7,12 @@
 #include <cstdio>
 
 namespace wrftools {
-namespace {
-std::string formatTick(double value, const std::string& format, int decimals) {
+std::string formatColorbarTick(double value, const std::string& format, int decimals) {
     char buffer[64];
     if (format == "fixed") std::snprintf(buffer, sizeof buffer, "%.*f", decimals, value);
     else if (format == "scientific") std::snprintf(buffer, sizeof buffer, "%.*e", decimals, value);
     else std::snprintf(buffer, sizeof buffer, "%.3g", value);
     return buffer;
-}
 }
 
 QPixmap buildColorbar(const std::string& title, float minimum, float maximum, const ColorLut& lut, int tickCount, const std::string& tickFormat, int tickDecimals) {
@@ -38,7 +36,7 @@ QPixmap buildColorbar(const std::string& title, float minimum, float maximum, co
         const int y = 28 + static_cast<int>((1.0 - fraction) * barHeight);
         painter.drawLine(margin + barWidth, y, margin + barWidth + 5, y);
         const double value = minimum + fraction * (maximum - minimum);
-        painter.drawText(margin + barWidth + 9, y + 5, QString::fromStdString(formatTick(value, tickFormat, tickDecimals)));
+        painter.drawText(margin + barWidth + 9, y + 5, QString::fromStdString(formatColorbarTick(value, tickFormat, tickDecimals)));
     }
     return image;
 }

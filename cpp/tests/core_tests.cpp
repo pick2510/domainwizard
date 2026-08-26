@@ -8,6 +8,7 @@
 #include "wrftools/raster_layer.hpp"
 #include "wrftools/warp.hpp"
 #include "wrftools/layer_renderer.hpp"
+#include "wrftools/colorbar.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -18,6 +19,10 @@
 #include <fstream>
 #include <numeric>
 #include <limits>
+#include <memory>
+#include <set>
+
+#include <gdal_priv.h>
 
 using namespace wrftools;
 
@@ -141,6 +146,81 @@ TEST_CASE("GDAL-backed reader reports dimensions and destaggers wind fields") {
     CHECK_THROWS_AS(file.read("U", 0, 3), UserError);
 }
 
+// Ported from tests/test_wrfreader.py's remaining cases not already
+// covered above.
+TEST_CASE("geo_em fixture exposes exactly its two static 2D variables") {
+    WrfFile file("tests/fixtures/geo_em_small.nc");
+    std::set<std::string> names;
+    for (const auto& variable : file.variables()) names.insert(variable.name);
+    CHECK(names == std::set<std::string>{"HGT_M", "LU_INDEX"});
+    for (const auto& variable : file.variables()) {
+        CHECK_FALSE(variable.extraDimension.has_value());
+        CHECK(variable.timeCount == 1);
+        CHECK(variable.levelCount == 1);
+    }
+}
+
+// Regression coverage for a real bug: GDAL exposes 1D vertical-only
+// variables (ZS/DZS, MemoryOrder "Z  ") as tiny (N,1) "rasters" that
+// corrupted mass-grid-size inference and silently dropped every real 2D
+// variable from a genuine wrfout file - see wrf_file.cpp's MemoryOrder
+// filter.
+TEST_CASE("1D vertical-only variables are excluded and don't break 2D ones") {
+    WrfFile file("tests/fixtures/wrfout_with_1d_var.nc");
+    const auto& variables = file.variables();
+    CHECK_FALSE(std::any_of(variables.begin(), variables.end(), [](const WrfVariable& v) { return v.name == "ZS"; }));
+    CHECK_FALSE(std::any_of(variables.begin(), variables.end(), [](const WrfVariable& v) { return v.name == "DZS"; }));
+    CHECK(std::any_of(variables.begin(), variables.end(), [](const WrfVariable& v) { return v.name == "T2"; }));
+    CHECK(std::any_of(variables.begin(), variables.end(), [](const WrfVariable& v) { return v.name == "HGT"; }));
+    CHECK(file.size() == std::array<int, 2>{8, 8});
+}
+
+TEST_CASE("WrfFile rejects an unsupported MAP_PROJ") {
+    CHECK_THROWS_AS(WrfFile("tests/fixtures/wrf_unknown_projection.nc"), UnsupportedError);
+}
+
+TEST_CASE("WrfFile rejects a rotated-pole lat/lon projection") {
+    CHECK_THROWS_AS(WrfFile("tests/fixtures/wrf_rotated_pole.nc"), UnsupportedError);
+}
+
+TEST_CASE("WrfFile rejects a GDAL-openable file with no MAP_PROJ attribute") {
+    CHECK_THROWS_AS(WrfFile("tests/fixtures/not_a_wrf_file.tif"), UserError);
+}
+
+TEST_CASE("level index selects distinct data") {
+    WrfFile file("tests/fixtures/wrfout_multitime.nc");
+    std::set<long> roundedMeans;
+    for (int level = 0; level < 3; ++level) {
+        const auto values = file.read("U", 0, level);
+        const auto mean = std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
+        roundedMeans.insert(std::lround(mean * 1000));
+    }
+    CHECK(roundedMeans.size() == 3);
+}
+
+TEST_CASE("destaggering averages adjacent staggered cells") {
+    // Reads U's raw (undestaggered) band directly via a separate GDAL
+    // handle and checks WrfFile::read's destaggered output against the
+    // textbook definition: the average of each pair of adjacent staggered
+    // cells along the staggered axis.
+    GDALAllRegister();
+    const std::string target = "NETCDF:\"tests/fixtures/wrfout_multitime.nc\":U";
+    std::unique_ptr<GDALDataset, decltype(&GDALClose)> raw(
+        static_cast<GDALDataset*>(GDALOpenEx(target.c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)), GDALClose);
+    REQUIRE(raw);
+    const int width = raw->GetRasterXSize(), height = raw->GetRasterYSize();
+    std::vector<float> rawValues(static_cast<std::size_t>(width) * height);
+    REQUIRE(raw->GetRasterBand(1)->RasterIO(GF_Read, 0, 0, width, height, rawValues.data(), width, height, GDT_Float32, 0, 0) == CE_None);
+
+    WrfFile file("tests/fixtures/wrfout_multitime.nc");
+    const auto destaggered = file.read("U", 0, 0);
+    REQUIRE(destaggered.size() == static_cast<std::size_t>(height) * (width - 1));
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width - 1; ++x) {
+        const float expected = (rawValues[static_cast<std::size_t>(y) * width + x] + rawValues[static_cast<std::size_t>(y) * width + x + 1]) / 2.0f;
+        CHECK(destaggered[static_cast<std::size_t>(y) * (width - 1) + x] == Catch::Approx(expected).epsilon(1e-5));
+    }
+}
+
 TEST_CASE("WPS sibling fixture imports and exports") {
     const auto project = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
     REQUIRE(project.domains.domains().size() == 4);
@@ -178,6 +258,27 @@ TEST_CASE("fillDomains bboxes match the Python reference for a sibling tree") {
         CHECK(domains[i].bounds->maxX == Catch::Approx(expected[i].maxX).margin(1e-3));
         CHECK(domains[i].bounds->maxY == Catch::Approx(expected[i].maxY).margin(1e-3));
     }
+}
+
+// Ported from tests/test_crs_datum.py's
+// test_root_domain_corner_lonlat_matches_sphere_datum, which exists to
+// pin the WRF-sphere datum choice (radius 6370000 m, not WGS84) - see that
+// file's module docstring for why a bbox CORNER, not the center, is the
+// point that actually exercises the datum (a projection's own origin
+// always round-trips to itself regardless of datum). These exact values
+// are the Python suite's own pinned constants, not re-derived here.
+TEST_CASE("root domain bbox corners match the Python reference (WRF sphere datum)") {
+    auto project = readWpsNamelist("tests/fixtures/namelist_siblings.wps");
+    project.domains.fillDomains();
+    const auto& root = project.domains.domains().front();
+    REQUIRE(root.bounds.has_value());
+    const auto projection = project.domains.projection();
+    const auto bottomLeft = projection.toLonLat({root.bounds->minX, root.bounds->minY});
+    const auto topRight = projection.toLonLat({root.bounds->maxX, root.bounds->maxY});
+    CHECK(bottomLeft.lon == Catch::Approx(3.112809).margin(1e-5));
+    CHECK(bottomLeft.lat == Catch::Approx(43.905622).margin(1e-5));
+    CHECK(topRight.lon == Catch::Approx(10.476400).margin(1e-5));
+    CHECK(topRight.lat == Catch::Approx(49.014080).margin(1e-5));
 }
 
 TEST_CASE("WPS export preserves nesting and root projection fields") {
@@ -234,6 +335,51 @@ TEST_CASE("unit conversions match WRF display choices") {
     CHECK_THROWS_AS(findUnit("K", "kn"), std::out_of_range);
 }
 
+// Ported from tests/test_units.py's remaining cases not already covered
+// above.
+TEST_CASE("unit conversions: unrecognized/blank/category units offer only native") {
+    CHECK(conversionsFor("some-made-up-unit").size() == 1);
+    CHECK(conversionsFor("").size() == 1);
+    CHECK(conversionsFor("category").size() == 1);
+    CHECK(conversionsFor("some-made-up-unit").front().key == "native");
+}
+
+TEST_CASE("unit conversions: Kelvin to Fahrenheit boiling point") {
+    CHECK(convert(373.15, findUnit("K", "degF")) == Catch::Approx(212.0));
+}
+
+TEST_CASE("unit conversions: m/s to knots matches the pinned conversion factor") {
+    CHECK(convert(1.0, findUnit("m s-1", "kn")) == Catch::Approx(1.9438444924406046));
+}
+
+TEST_CASE("unit conversions: CF-style m/s spelling variants all normalize the same") {
+    for (const std::string& spelling : {"m s-1", "m/s", "ms-1", "M S-1", "  m   s-1  "}) {
+        const auto options = conversionsFor(spelling);
+        std::vector<std::string> keys;
+        for (const auto& option : options) keys.push_back(option.key);
+        std::sort(keys.begin(), keys.end());
+        CHECK(keys == std::vector<std::string>{"kmh", "kn", "mph", "native"});
+    }
+}
+
+TEST_CASE("unit conversions: round-trip native to target and back is lossless") {
+    const auto unit = findUnit("Pa", "hpa");
+    const double nativeValue = 101325.0;
+    const double converted = convert(nativeValue, unit);
+    const double back = (converted - unit.offset) / unit.scale;
+    CHECK(back == Catch::Approx(nativeValue));
+}
+
+// Ported from tests/test_colorbar.py's _format_tick cases - pure string
+// formatting, no QApplication needed.
+TEST_CASE("colorbar tick formatting matches the Python reference") {
+    CHECK(formatColorbarTick(291.123456) == "291");
+    CHECK(formatColorbarTick(0.000123456) == "0.000123");
+    CHECK(formatColorbarTick(3.14159, "fixed", 2) == "3.14");
+    CHECK(formatColorbarTick(3.14159, "fixed", 0) == "3");
+    CHECK(formatColorbarTick(12345.0, "scientific", 2) == "1.23e+04");
+}
+
 TEST_CASE("colormaps preserve end points and transparent no-data") {
     const auto& lut = colormap("viridis");
     CHECK(lut.front() == Rgb{68, 1, 84});
@@ -253,6 +399,53 @@ TEST_CASE("categorical colormap indexes classes directly") {
     CHECK(pixels[1] != pixels[0]);
     CHECK(pixels[2][3] == 0);
     CHECK(pixels[3][3] == 0);
+}
+
+// Ported from tests/test_colormaps.py's remaining cases not already
+// covered above.
+TEST_CASE("colormaps: unknown name is rejected") {
+    CHECK_THROWS_AS(colormap("not-a-real-colormap"), std::out_of_range);
+}
+
+TEST_CASE("colormaps: degenerate range is fully transparent") {
+    const auto& lut = colormap("viridis");
+    const std::vector<float> values{1.0f, 2.0f};
+    const auto image = applyColormap(values, 5.0f, 5.0f, lut);
+    CHECK(image[0][3] == 0);
+    CHECK(image[1][3] == 0);
+}
+
+TEST_CASE("colormaps: out-of-range values clip to the LUT ends") {
+    const auto& lut = colormap("viridis");
+    const std::vector<float> values{-100.0f, 100.0f};
+    const auto image = applyColormap(values, 0.0f, 10.0f, lut);
+    CHECK(Rgb{image[0][0], image[0][1], image[0][2]} == lut.front());
+    CHECK(Rgb{image[1][0], image[1][1], image[1][2]} == lut.back());
+}
+
+TEST_CASE("colormaps: jet starts blue and ends red") {
+    const auto& lut = colormap("jet");
+    CHECK(lut.front()[2] > lut.front()[0]);  // blue > red at the low end
+    CHECK(lut.back()[0] > lut.back()[2]);    // red > blue at the high end
+}
+
+TEST_CASE("categorical colormap: unknown-scheme fallback is deterministic across calls") {
+    const auto first = categoricalLut("SOME_UNKNOWN_SCHEME", 1, 5);
+    const auto second = categoricalLut("SOME_UNKNOWN_SCHEME", 1, 5);
+    for (int value = 1; value <= 5; ++value) {
+        CHECK(first.labels.at(value) == "Category " + std::to_string(value));
+        CHECK(first.lut[static_cast<std::size_t>(value)] == second.lut[static_cast<std::size_t>(value)]);
+    }
+}
+
+TEST_CASE("categorical colormap: out-of-LUT-range index is transparent") {
+    const auto legend = categoricalLut("MODIFIED_IGBP_MODIS_NOAH", 1, 20);
+    const std::vector<float> values{1.0f, 2.0f, std::numeric_limits<float>::quiet_NaN(), 999.0f};
+    const auto pixels = applyCategoricalColormap(values, legend.lut);
+    CHECK(Rgb{pixels[0][0], pixels[0][1], pixels[0][2]} == legend.lut[1]);
+    CHECK(Rgb{pixels[1][0], pixels[1][1], pixels[1][2]} == legend.lut[2]);
+    CHECK(pixels[2][3] == 0);  // NaN
+    CHECK(pixels[3][3] == 0);  // out of LUT range
 }
 
 // Pinned against gis4wrf.core.readers.categories.LANDUSE: `uv run python -c

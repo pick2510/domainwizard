@@ -54,6 +54,28 @@ TEST_CASE("native colorbar formats ticks per the requested style") {
     CHECK(fixed.size() == scientific.size());
 }
 
+TEST_CASE("native colorbar varies with colormap, range, and tick count") {
+    const auto viridis = wrftools::buildColorbar("T2 (K)", 0, 10, wrftools::colormap("viridis"));
+    const auto plasma = wrftools::buildColorbar("T2 (K)", 0, 10, wrftools::colormap("plasma"));
+    CHECK(viridis.toImage() != plasma.toImage());
+
+    const auto narrow = wrftools::buildColorbar("T2 (K)", 0, 10, wrftools::colormap("viridis"));
+    const auto wide = wrftools::buildColorbar("T2 (K)", 0, 100, wrftools::colormap("viridis"));
+    CHECK(narrow.toImage() != wide.toImage());
+
+    const auto three = wrftools::buildColorbar("T2 (K)", 0, 10, wrftools::colormap("viridis"), 3);
+    const auto seven = wrftools::buildColorbar("T2 (K)", 0, 10, wrftools::colormap("viridis"), 7);
+    CHECK(three.toImage() != seven.toImage());
+}
+
+TEST_CASE("categorical legend is a nonempty pixmap for known landuse values") {
+    const auto legend = wrftools::categoricalLut("MODIFIED_IGBP_MODIS_NOAH", 1, 20);
+    const auto pixmap = wrftools::buildCategoricalLegend(legend.lut, legend.labels, {1, 2, 17}, "LU_INDEX");
+    CHECK_FALSE(pixmap.isNull());
+    CHECK(pixmap.width() > 0);
+    CHECK(pixmap.height() > 0);
+}
+
 TEST_CASE("categorical legend grows with row count and caps at 20 plus a summary row") {
     const auto legend = wrftools::categoricalLut("USGS", 1, 3);
     const std::map<int, std::string> labels{{1, "a"}, {2, "b"}, {3, "c"}};
