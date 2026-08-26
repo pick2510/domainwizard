@@ -231,13 +231,34 @@ the feature-complete behavioral reference.
   kernel/ABI) - promises portability across a comparably-recent-or-newer
   glibc than the build machine, not literally any glibc the way
   `build-portable.sh`'s Docker/manylinux pipeline does for the Python side.
+- **Portable macOS artifact (`build-portable-macos.sh`)**: builds Release
+  and bundles the `MACOSX_BUNDLE` app (`dist/wrftools.app`) via Qt's own
+  `macdeployqt` (Qt frameworks/plugins) followed by `dylibbundler`
+  (everything else non-system - GDAL, PROJ, and their own transitive
+  deps), then copies GDAL/PROJ's data directories into
+  `Contents/share/{gdal,proj}` - the same relative layout
+  `configureGdalData()` already looks for beside the executable (which
+  lives at `Contents/MacOS/wrftools` inside a bundle), so no `GDAL_DATA`/
+  `PROJ_DATA` environment setup is needed at run time. Zips the result to
+  `dist/wrftools-macos.zip`. Unlike `bundle_linux.cmake` (a from-scratch
+  `file(GET_RUNTIME_DEPENDENCIES)` walk, since Linux has no macdeployqt
+  equivalent), this leans on the two tools that are the de facto standard
+  for this exact job on macOS. **Not verified end-to-end** - no macOS
+  machine available to build or run this from within the current working
+  environment; CI (which does have one) is the actual first real test of
+  it, and this note should be revisited once a macOS CI run has confirmed
+  the artifact actually launches and finds its own GDAL/PROJ data.
+- **CI now uploads both as GitHub Actions build artifacts**
+  (`.github/workflows/cpp.yml`, `wrftools-linux`/`wrftools-macos`) on
+  every push/PR to `cplusplus`, once - not instead of - the existing
+  Debug build/test steps pass; the portable-bundle step is a second,
+  separate Release/`BUILD_TESTING=OFF` configure+build, matching what
+  running either script by hand already does.
 
 ## Still required for feature parity
 
 ### Packaging and verification
 
-- macOS `.app` bundling - no macOS machine available to build or verify
-  this from within the current working environment.
 - Every Python test file now has a ported counterpart except for one
   case, since fixed (see below): `test_core_domain_tree.py`/
   `test_ui_domain_tree.py`'s sibling-tree round-trip, renumbering,
