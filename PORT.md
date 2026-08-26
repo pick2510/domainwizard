@@ -325,6 +325,29 @@ the feature-complete behavioral reference.
   explicitly - dragging a root's whole subtree is a consequence of that,
   not special-cased code.
 
+  Two follow-ups landed with the first drag-and-drop pass, from real usage
+  feedback ("big latency", "no frame around the moving object"):
+  - **Latency**: `Crs::toXy`/`toLonLat` (`crs.cpp`) were rebuilding a whole
+    `OGRSpatialReference` pair and `OGRCoordinateTransformation` from the
+    proj4 string on *every single call* - fine in isolation, but
+    `domainoverlay.cpp`'s `densifiedRing` calls one of them up to ~200
+    times per domain outline, reusing the *same* `Crs` instance for every
+    domain and every vertex. Every mouse-move tick during a drag re-ran
+    that whole densify-and-reproject pass, so the per-call GDAL/PROJ setup
+    cost (parsing, `proj.db` lookups) was paid hundreds of times per frame.
+    `Crs` now lazily builds its `OGRCoordinateTransformation` pair once
+    (a `shared_ptr<TransformCache>`, so copies of the same `Crs` share it
+    too) and reuses it for the instance's lifetime - a real perf fix, not
+    just a drag-specific one: it also cut the whole native CTest suite's
+    wall time from ~24s to ~2.4s, since `core_tests`/`widget_tests` exercise
+    plenty of repeated transforms of their own.
+  - **Precision**: the polygon actually being dragged now redraws on top of
+    everything else with a white-halo + black-dashed outline
+    (`TileMapWidget::overlayPath`, used by both the normal vector-overlay
+    paint pass and this highlight pass so they always trace the identical
+    outline) - a plain colored outline was easy to lose against similarly
+    colored basemap tiles or an overlapping domain while dragging.
+
 ## Non-goals retained from Python
 
 - No WPS binary geographical datasets.

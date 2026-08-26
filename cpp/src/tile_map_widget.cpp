@@ -261,6 +261,16 @@ void TileMapWidget::ensureTile(int x, int y, int zoom) {
     });
 }
 
+QPainterPath TileMapWidget::overlayPath(const VectorOverlay& overlay, QPointF topLeft) const {
+    QPainterPath path;
+    for (std::size_t index = 0; index < overlay.points.size(); ++index) {
+        const auto projected = worldPixel(overlay.points[index].lon, overlay.points[index].lat, zoom_) - topLeft;
+        if (index == 0) path.moveTo(projected); else path.lineTo(projected);
+    }
+    if (overlay.closed) path.closeSubpath();
+    return path;
+}
+
 QPointF TileMapWidget::viewportTopLeft() const {
     const auto center = worldPixel();
     return center - QPointF(width() / 2.0, height() / 2.0);
@@ -311,14 +321,31 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
     std::sort(vectorKeys.begin(), vectorKeys.end(), [this](const QString& a, const QString& b) { return vectorGroups_[a].z < vectorGroups_[b].z; });
     for (const auto& key : vectorKeys) for (const auto& overlay : vectorGroups_[key].overlays) {
         if (overlay.points.size() < 2) continue;
-        QPainterPath path;
-        for (std::size_t index = 0; index < overlay.points.size(); ++index) {
-            const auto projected = worldPixel(overlay.points[index].lon, overlay.points[index].lat, zoom_) - topLeft;
-            if (index == 0) path.moveTo(projected); else path.lineTo(projected);
-        }
-        if (overlay.closed) path.closeSubpath();
+        const auto path = overlayPath(overlay, topLeft);
         painter.setPen(QPen(overlay.color, overlay.width));
         painter.drawPath(path);
+    }
+
+    // While an overlay drag is in progress (see setOverlayDragHandlers),
+    // redraw just that one polygon with a high-contrast white-halo +
+    // black-dashed outline on top of everything else - the plain colored
+    // outline used above is easy to lose track of against similarly
+    // colored basemap tiles/neighboring domains while dragging, making
+    // precise placement hard to judge.
+    if (dragTarget_ == "overlay" && vectorGroups_.contains(draggableGroup_)) {
+        const auto& overlays = vectorGroups_[draggableGroup_].overlays;
+        if (draggedOverlayIndex_ < overlays.size()) {
+            const auto& dragged = overlays[draggedOverlayIndex_];
+            if (dragged.points.size() >= 2) {
+                const auto path = overlayPath(dragged, topLeft);
+                painter.setPen(QPen(Qt::white, dragged.width + 4));
+                painter.drawPath(path);
+                QPen outline(Qt::black, dragged.width + 1.5);
+                outline.setDashPattern({4, 3});
+                painter.setPen(outline);
+                painter.drawPath(path);
+            }
+        }
     }
 
     if (!legend_.isNull()) {

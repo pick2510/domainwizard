@@ -19,6 +19,7 @@
 #include <QWidget>
 
 class QComboBox;
+class QPainterPath;
 
 namespace wrftools {
 // A selectable basemap tile source - name/url/attribution/maxZoom mirror the
@@ -141,6 +142,11 @@ private:
     // last-in-the-group first (see setDraggableVectorOverlayGroup). Sets
     // outIndex and returns true on the first (topmost) containing polygon.
     [[nodiscard]] bool hitTestOverlay(const QString& groupName, QPointF screenPoint, std::size_t& outIndex) const;
+    // Screen-space QPainterPath for one overlay's lon/lat ring, given the
+    // viewport's world-pixel top-left - shared by paintEvent's normal
+    // vector-overlay pass and its drag-highlight pass so they always trace
+    // the exact same outline.
+    [[nodiscard]] QPainterPath overlayPath(const VectorOverlay& overlay, QPointF topLeft) const;
 
     std::vector<TileProvider> providers_;
     int currentProviderIndex_{0};

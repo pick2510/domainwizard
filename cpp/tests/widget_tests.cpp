@@ -4,6 +4,7 @@
 #include "wrftools/raster_layer.hpp"
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include <QApplication>
@@ -266,6 +267,73 @@ TEST_CASE("dragging the info overlay moves it independently of the legend") {
 
     CHECK(map.infoPosition().has_value());
     CHECK(map.legendPosition() == legendPosBefore);  // untouched
+}
+
+TEST_CASE("a press inside a draggable overlay group's polygon starts an overlay drag, reports the hit index and lon/lat") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setCenter(0.0, 0.0, 6);
+    map.setVectorOverlayGroup("domains", {{{{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}, {-1.0, -1.0}}, Qt::red, 2.0, /*closed=*/true}});
+    map.setDraggableVectorOverlayGroup("domains");
+
+    std::optional<std::size_t> startedIndex;
+    std::optional<wrftools::LonLat> startedLonLat;
+    int moveCount = 0;
+    bool ended = false;
+    map.setOverlayDragHandlers(
+        [&](std::size_t index, wrftools::LonLat lonLat) { startedIndex = index; startedLonLat = lonLat; },
+        [&](std::size_t, wrftools::LonLat) { ++moveCount; },
+        [&] { ended = true; });
+
+    map.grab();  // populates real screen geometry for the polygon
+    const QPointF widgetCenter(map.width() / 2.0, map.height() / 2.0);  // lon=0/lat=0, inside the polygon
+    press(map, widgetCenter);
+    CHECK(map.dragTarget() == "overlay");
+    REQUIRE(startedIndex.has_value());
+    CHECK(*startedIndex == 0);
+    REQUIRE(startedLonLat.has_value());
+    CHECK(startedLonLat->lon == Catch::Approx(0.0).margin(0.01));
+    CHECK(startedLonLat->lat == Catch::Approx(0.0).margin(0.01));
+
+    move(map, widgetCenter + QPointF(20, 15));
+    CHECK(moveCount == 1);
+    // The drag-highlight pass (a second, white-halo + black-dashed redraw
+    // of the dragged polygon) must not crash mid-drag.
+    CHECK_NOTHROW(map.grab());
+
+    release(map, widgetCenter + QPointF(20, 15));
+    CHECK(map.dragTarget().isEmpty());
+    CHECK(ended);
+}
+
+TEST_CASE("a press outside every polygon in the draggable group falls through to panning") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setCenter(0.0, 0.0, 6);
+    map.setVectorOverlayGroup("domains", {{{{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}, {-1.0, -1.0}}, Qt::red, 2.0, /*closed=*/true}});
+    map.setDraggableVectorOverlayGroup("domains");
+    bool started = false;
+    map.setOverlayDragHandlers([&](std::size_t, wrftools::LonLat) { started = true; }, {}, {});
+
+    map.grab();
+    press(map, QPointF(5, 5));  // far corner, well outside the polygon
+    CHECK(map.dragTarget().isEmpty());
+    CHECK_FALSE(started);
+}
+
+TEST_CASE("an empty draggable group name disables overlay dragging entirely") {
+    wrftools::TileMapWidget map;
+    map.resize(400, 300);
+    map.setCenter(0.0, 0.0, 6);
+    map.setVectorOverlayGroup("domains", {{{{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}, {-1.0, -1.0}}, Qt::red, 2.0, /*closed=*/true}});
+    // Never armed via setDraggableVectorOverlayGroup.
+    bool started = false;
+    map.setOverlayDragHandlers([&](std::size_t, wrftools::LonLat) { started = true; }, {}, {});
+
+    map.grab();
+    press(map, QPointF(map.width() / 2.0, map.height() / 2.0));
+    CHECK(map.dragTarget().isEmpty());
+    CHECK_FALSE(started);
 }
 
 TEST_CASE("dragging empty map area still pans as before") {

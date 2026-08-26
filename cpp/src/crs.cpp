@@ -46,6 +46,25 @@ Coordinate2D transformPoint(const OGRSpatialReference& from, const OGRSpatialRef
 }
 }  // namespace
 
+struct Crs::TransformCache {
+    OGRSpatialReference srs;
+    OGRSpatialReference lonLatSrs;
+    std::unique_ptr<OGRCoordinateTransformation> toXy;
+    std::unique_ptr<OGRCoordinateTransformation> toLonLat;
+};
+
+const Crs::TransformCache& Crs::transformCache() const {
+    if (cache_) return *cache_;
+    auto built = std::make_shared<TransformCache>();
+    built->srs = srsFromProj4(proj4_);
+    built->lonLatSrs = lonLatVariantOf(built->srs);
+    built->toXy.reset(OGRCreateCoordinateTransformation(&built->lonLatSrs, &built->srs));
+    built->toLonLat.reset(OGRCreateCoordinateTransformation(&built->srs, &built->lonLatSrs));
+    if (!built->toXy || !built->toLonLat) throw UserError("Could not create coordinate transformation.");
+    cache_ = std::move(built);
+    return *cache_;
+}
+
 Crs Crs::lonLat() { return Crs("+proj=latlong" + sphereSuffix()); }
 
 Crs Crs::wgs84() { return Crs("+proj=longlat +datum=WGS84 +no_defs"); }
@@ -85,16 +104,15 @@ std::string Crs::wkt() const {
 }
 
 Coordinate2D Crs::toXy(LonLat value) const {
-    const auto srs = srsFromProj4(proj4_);
-    const auto lonLatSrs = lonLatVariantOf(srs);
-    return transformPoint(lonLatSrs, srs, {value.lon, value.lat});
+    double x = value.lon, y = value.lat;
+    if (!transformCache().toXy->Transform(1, &x, &y)) throw UserError("Coordinate transformation failed.");
+    return {x, y};
 }
 
 LonLat Crs::toLonLat(Coordinate2D value) const {
-    const auto srs = srsFromProj4(proj4_);
-    const auto lonLatSrs = lonLatVariantOf(srs);
-    const auto result = transformPoint(srs, lonLatSrs, value);
-    return {result.x, result.y};
+    double x = value.x, y = value.y;
+    if (!transformCache().toLonLat->Transform(1, &x, &y)) throw UserError("Coordinate transformation failed.");
+    return {x, y};
 }
 
 Bounds2D Crs::transformBbox(Bounds2D bounds, const Crs& target) const {

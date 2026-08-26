@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 
 namespace wrftools {
@@ -46,6 +47,18 @@ public:
 
 private:
     explicit Crs(std::string proj4) : proj4_(std::move(proj4)) {}
+    struct TransformCache;
+    // Lazily built on first toXy()/toLonLat() call and reused for every
+    // later one on this same Crs instance - a naive per-call
+    // OGRCreateCoordinateTransformation was cheap in isolation but, called
+    // ~200 times per domain outline (see domain_overlay.cpp's
+    // densifiedRing, which reuses one Crs across every domain and every
+    // vertex), made every redraw during a map drag noticeably laggy.
+    // shared_ptr (not unique_ptr) so a copy of this Crs shares the cache
+    // rather than rebuilding it - GDAL's OGRSpatialReference/
+    // OGRCoordinateTransformation types live only in crs.cpp.
+    [[nodiscard]] const TransformCache& transformCache() const;
+    mutable std::shared_ptr<TransformCache> cache_;
     std::string proj4_;
 };
 
