@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -21,15 +21,46 @@ jobs:
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja qt gdal proj catch2 dylibbundler
+      # MSYS2/MinGW64 rather than MSVC+vcpkg: its package repo already has
+      # prebuilt Qt6/GDAL/PROJ/Catch2 (matching the apt/brew jobs' approach
+      # of using the OS's own package manager instead of building
+      # dependencies from source), and its GCC accepts the same
+      # -Wall/-Wextra/-Wpedantic flags CMakeLists.txt already sets
+      # unconditionally - MSVC's cl.exe does not take those.
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-gdal
+            mingw-w64-x86_64-proj
+            mingw-w64-x86_64-libtiff
+            mingw-w64-x86_64-libgeotiff
+            mingw-w64-x86_64-catch
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
       - name: Configure macOS
         if: runner.os == 'macOS'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      # Shared across all three OSes - MSYS2's own toolchain/cmake/ninja are
+      # only on PATH inside its own shell, so Windows runs these through it
+      # while Linux/macOS keep the runner's default shell.
       - name: Build
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
         run: cmake --build build-cpp
       - name: Test
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
         run: ctest --test-dir build-cpp --output-on-failure
       # Packaged separately from the Debug build/test above (its own fresh
       # Release, BUILD_TESTING=OFF configure+build) - only reached once
