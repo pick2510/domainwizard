@@ -59,12 +59,16 @@ MainWindow::MainWindow() {
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({360, 940});
     setCentralWidget(splitter);
-    auto* action = menuBar()->addMenu("&File")->addAction("Export Map Image...");
+    auto* filemenu = menuBar()->addMenu("&File");
+    auto* action = filemenu->addAction("Export Map Image...");
+    auto* close = filemenu->addAction("Close");
+    close->setShortcut(QKeySequence::Quit);
     action->setShortcut(QKeySequence::SaveAs);
     connect(action, &QAction::triggered, this, [this] {
         const auto path = QFileDialog::getSaveFileName(this, "Export map image as", "map.png", "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)");
         if (!path.isEmpty()) static_cast<void>(map_->exportImage(path));
     });
+    connect(close, &QAction::triggered, this,&QCoreApplication::quit);
 
     // Options > Theme: System follows the OS light/dark setting (see
     // theme.hpp's resolveColorScheme/applyColorScheme - GNOME's own
