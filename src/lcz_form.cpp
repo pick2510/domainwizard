@@ -241,8 +241,15 @@ void LczForm::runLcz() {
     // This does mean a large LCZ raster's reprojection briefly blocks the
     // UI; PORT_W2W.MD documents this as a deliberate simplification rather
     // than adding a second background pre-check pass for one warp call.
-    const auto wrfNetcdf = NetcdfFile::open(wrfFileStd, NetcdfFile::Mode::ReadOnly);
-    auto clean = checkLczIntegrity(lczFile.toStdString(), lczBand, wrfNetcdf);
+    // Closed before the worker thread below starts its own NetCDF/HDF5
+    // calls on this same file - HDF5 isn't thread-safe on every platform
+    // (Fedora's system libhdf5 is built without --enable-threadsafe), so
+    // this handle must not still be open, let alone mid-close, once that
+    // thread starts running.
+    auto clean = [&] {
+        const auto wrfNetcdf = NetcdfFile::open(wrfFileStd, NetcdfFile::Mode::ReadOnly);
+        return checkLczIntegrity(lczFile.toStdString(), lczBand, wrfNetcdf);
+    }();
 
     log_->clear();
     results_->clear();
