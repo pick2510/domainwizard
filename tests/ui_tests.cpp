@@ -58,7 +58,7 @@ int main(int argc, char* argv[]) {
     application.setOrganizationName("WRF Tools Tests");
     application.setApplicationName("wrftools_ui_tests");
     const int result = Catch::Session().run(argc, argv);
-    // quick_exit skips static-destructor/atexit teardown (Qt, GDAL/netCDF's
+    // _Exit skips ALL static-destructor/atexit teardown (Qt, GDAL/netCDF's
     // own driver-unregistration hooks, ...) - on Windows CI that teardown
     // path has been observed to hang indefinitely well after every test has
     // already run and reported its result (confirmed: "All tests passed"
@@ -67,7 +67,7 @@ int main(int argc, char* argv[]) {
     // timeout failure. The test process's own state doesn't need to survive
     // past this point, so skipping it is safe here even though it wouldn't
     // be in the shipped app.
-    std::quick_exit(result);
+    std::_Exit(result);
 }
 
 namespace {
