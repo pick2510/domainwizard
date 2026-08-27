@@ -82,7 +82,7 @@ jobs:
       - name: Diagnose whether Qt or GDAL causes the hang (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 4
+        timeout-minutes: 5
         run: |
           $mingw = "$env:RUNNER_TEMP\msys64\mingw64"
           $env:PATH = "$mingw\bin;$env:PATH"
@@ -136,6 +136,23 @@ jobs:
           }' | Out-File -Encoding ascii probe_combined.cpp
           & "$mingw\bin\g++.exe" -std=c++20 probe_combined.cpp -o probe_combined.exe @qtFlags "-I$mingw\include" "-L$mingw\lib" -lgdal
           Run-Probe "probe_combined" ".\probe_combined.exe"
+
+          # probe_combined hung; neither Qt alone nor GDAL alone did. Splits
+          # that result one more way: does merely LINKING both together
+          # hang (no GDALOpen call at all), or is it specifically opening a
+          # real netCDF/HDF5 file with both linked in?
+          '#include <cstdio>
+          #include <cstdlib>
+          #include <QImage>
+          #include <gdal_priv.h>
+          int main() {
+              GDALAllRegister();
+              QImage image(4, 4, QImage::Format_RGBA8888);
+              puts("probe_combined_noopen ok");
+              std::_Exit(0);
+          }' | Out-File -Encoding ascii probe_combined_noopen.cpp
+          & "$mingw\bin\g++.exe" -std=c++20 probe_combined_noopen.cpp -o probe_combined_noopen.exe @qtFlags "-I$mingw\include" "-L$mingw\lib" -lgdal
+          Run-Probe "probe_combined_noopen" ".\probe_combined_noopen.exe"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
