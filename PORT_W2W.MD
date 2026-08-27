@@ -741,6 +741,44 @@ plain `geo_em.d04.nc` both correctly stay at the bare `MMINLU` scheme
 despite the `NUM_LAND_CAT=41` coincidence for the extent file. 2 new
 `core_tests.cpp` cases. CTest count 114 -> 116.
 
+**Follow-up: a permanent regression test for `wrfGridInfo`'s actual
+geographic accuracy, not just its arithmetic.** A user asked whether the
+LCZ module's use of real WGS84 (`Crs::wgs84()`) instead of the WRF-sphere
+convention used everywhere else in the app (`crs.toXy()`) could shift the
+LCZ data it writes. Verified empirically (not just by re-reading the doc
+comment) that the two are numerically identical for this specific
+transform - PROJ applies no actual datum shift between "WGS84" and a
+synthetic sphere with no declared `+towgs84` linkage, so both source CRSes
+produce bit-identical `(e, n)` for the same `CEN_LON`/`CEN_LAT`, on all
+three real WRF projections tested (Lambert, Mercator, `eqc`).
+
+That only proves internal consistency, though - not that `wrfGridInfo`'s
+analytically-derived grid is actually where geogrid.exe itself put it. So
+also checked against real ground truth: computed several pixel centers
+from `wrfGridInfo`'s geotransform, inverse-projected them back to lon/lat,
+and compared against the file's own `XLAT_M`/`XLONG_M` arrays (geogrid.exe's
+own authoritative per-pixel coordinates) at those same indices. Real
+Lambert and lat-lon/`eqc` fixtures agreed to 1-3 meters on 1000-1112m
+grids (well under 0.3% of one pixel); a real user-supplied Hong Kong
+domain (three genuine Mercator geo_em files from geogrid.exe) agreed to
+under 1.4 meters on 250-6250m grids. One repo fixture
+(`tests/fixtures/geo_em_small.nc`, MAP_PROJ=3) initially looked like a
+~2.2km miss - traced to that fixture's own `CEN_LON`/`CEN_LAT`/`STAND_LON`
+attributes not matching its own `XLAT_M`/`XLONG_M` arrays at all (a
+hand-crafted test fixture never meant to be geodesically self-consistent,
+confirmed by inspecting its raw coordinate arrays against its stated
+center), not a `wrfGridInfo` bug.
+
+Added `checkGridMatchesFileCoordinates()` + a new `core_tests.cpp` case
+pinning this ground-truth check against the two real fixtures with
+self-consistent metadata (Shanghai Lambert, Zaragoza eqc) as a standing
+regression guard - loose bounds (5m against 1000m+ grids), since the goal
+is catching a real mispositioning bug reappearing, not re-deriving the
+exact observed error to the millimeter. No genuine Mercator fixture with
+correct metadata exists in this repo to add a third pinned case; the
+Mercator verification against the real Hong Kong domain is documented here
+instead. CTest count 116 -> 117.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

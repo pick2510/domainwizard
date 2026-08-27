@@ -1409,6 +1409,58 @@ TEST_CASE("wrfGridInfo matches w2w's own _get_wrf_grid_info for a MAP_PROJ=1 (La
     CHECK(info.geotransform[5] == Catch::Approx(1000.0));
 }
 
+namespace {
+// Round-trips a handful of wrfGridInfo-derived pixel centers back to lon/
+// lat and compares them against the file's own geogrid.exe-written
+// XLAT_M/XLONG_M arrays at those same indices - the ground-truth check for
+// "is this grid actually where geogrid put it", not just "internally
+// self-consistent" or "matches w2w.py's own arithmetic" (both already
+// covered by the pinned-geotransform tests above). maxErrorMeters is a
+// loose bound (real observed error on these fixtures is 1-3m, against
+// 1000-1112m pixel spacing) - this is a regression guard against a real
+// mispositioning bug reappearing, not a tight numerical pin.
+void checkGridMatchesFileCoordinates(const std::filesystem::path& path, double maxErrorMeters) {
+    const auto file = NetcdfFile::open(path, NetcdfFile::Mode::ReadOnly);
+    const auto grid = wrfGridInfo(file);
+    const auto xlat = file.readFloat("XLAT_M");
+    const auto xlong = file.readFloat("XLONG_M");
+    const auto shape = file.shape("XLAT_M");  // {1, ny, nx}
+    const int nx = static_cast<int>(shape[2]), ny = static_cast<int>(shape[1]);
+
+    const int checks[][2] = {{0, 0}, {nx - 1, 0}, {0, ny - 1}, {nx - 1, ny - 1}, {nx / 2, ny / 2}};
+    for (const auto& rc : checks) {
+        const int col = rc[0], row = rc[1];
+        const double px = grid.geotransform[0] + (col + 0.5) * grid.geotransform[1] + (row + 0.5) * grid.geotransform[2];
+        const double py = grid.geotransform[3] + (col + 0.5) * grid.geotransform[4] + (row + 0.5) * grid.geotransform[5];
+        const auto lonLat = grid.crs.toLonLat({px, py});
+        const std::size_t idx = static_cast<std::size_t>(row) * static_cast<std::size_t>(nx) + static_cast<std::size_t>(col);
+        const double dLat = lonLat.lat - xlat[idx], dLon = lonLat.lon - xlong[idx];
+        const double errorMeters = std::sqrt(dLat * dLat + dLon * dLon) * 111000.0;  // rough deg->m, plenty for this bound
+        CAPTURE(path.string(), col, row, lonLat.lon, lonLat.lat, xlong[idx], xlat[idx], errorMeters);
+        CHECK(errorMeters < maxErrorMeters);
+    }
+}
+}  // namespace
+
+TEST_CASE("wrfGridInfo's grid lines up with geogrid.exe's own XLAT_M/XLONG_M coordinates, not just w2w.py's own arithmetic") {
+    // The pinned-geotransform tests above only prove this port's numbers
+    // match w2w.py's own numbers - not that either is geographically
+    // correct. This checks against real geogrid.exe output directly: a
+    // real Lambert domain (Shanghai) and a real lat-lon/eqc domain
+    // (Zaragoza), corner and center pixels, well under one pixel of
+    // agreement in every case.
+    checkGridMatchesFileCoordinates("tests/fixtures/lcz/geo_em.d02_Shanghai.nc", 5.0);  // MAP_PROJ=1, dx=dy=1000m
+    checkGridMatchesFileCoordinates("tests/fixtures/lcz/geo_em.d04.nc", 5.0);            // MAP_PROJ=6, dx=dy=1111.8m
+    // Mercator (MAP_PROJ=3) has no real geogrid.exe-produced fixture with
+    // self-consistent CEN_LON/CEN_LAT in this repo to pin against here
+    // (tests/fixtures/geo_em_small.nc is a hand-crafted fixture whose own
+    // CEN_LON/CEN_LAT/STAND_LON don't match its own XLAT_M/XLONG_M arrays
+    // - confirmed by inspection, not a wrfGridInfo bug) - separately
+    // verified by hand against a real user-supplied Hong Kong domain
+    // (three real Mercator geo_em files, sub-1.4m agreement on 250-6250m
+    // grids), see PORT_W2W.MD.
+}
+
 TEST_CASE("warpToGrid reprojects into a caller-specified destination grid, not just EPSG:3857") {
     const auto sourceCrs = Crs::fromProj4("+proj=merc +lon_0=0 +x_0=0 +y_0=0 +a=6370000 +b=6370000 +no_defs");
     const int width = 4, height = 4;
