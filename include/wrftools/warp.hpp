@@ -41,4 +41,16 @@ enum class ResampleMethod { Bilinear, Average, Mode, Nearest };
     const std::array<double, 6>& sourceGeotransform, const std::string& destWkt, const std::array<double, 6>& destGeotransform, int destWidth,
     int destHeight, ResampleMethod resampling);
 
+// Reprojects into a target CRS with GDAL choosing the output size/
+// geotransform on its own (unlike warpToGrid) - what w2w's
+// check_lcz_integrity needs to normalize an LCZ GeoTIFF to EPSG:4326
+// before any of the per-UCP resamplers touch it. Shares its
+// implementation with warpToWebMercator internally (both let GDAL pick
+// the output size for a plain "-t_srs <dest>" warp); warpToWebMercator is
+// kept as its own function rather than a thin wrapper callers have to
+// remember to parameterize, since EPSG:3857 + bilinear is its only ever
+// use in this codebase.
+[[nodiscard]] WarpedRaster warpToCrs(std::span<const float> values, int width, int height, const std::string& sourceWkt,
+    const std::array<double, 6>& sourceGeotransform, const std::string& destWkt, ResampleMethod resampling);
+
 }  // namespace wrftools

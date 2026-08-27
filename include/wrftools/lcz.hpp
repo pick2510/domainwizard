@@ -63,4 +63,24 @@ struct WrfGridInfo {
 // Python; this project's convention is to throw instead).
 void removeUrban(const std::filesystem::path& srcPath, const std::filesystem::path& dstPath, int npixNlc, std::optional<int> npixArea = std::nullopt);
 
+// An LCZ raster normalized to EPSG:4326 - w2w's own "_clean.tif"
+// (check_lcz_integrity, w2w.py:360-429), kept in memory rather than
+// written to a temp file since nothing downstream needs it to persist.
+struct LczRaster {
+    std::vector<float> values;  // class labels 1-17, row-major top-down
+    int width{};
+    int height{};
+    std::string wkt;  // always a canonical EPSG:4326 WKT, regardless of the source file's own CRS
+    std::array<double, 6> geotransform{};
+};
+
+// Ports check_lcz_integrity: relabels a 100-series (LCZ Generator) class
+// scheme to 1-17, reprojects to EPSG:4326 if the source isn't already
+// (nearest-neighbor, since classes are categorical), and verifies the LCZ
+// raster's extent covers `wrfFile`'s domain (its XLONG_M/XLAT_M bounds) in
+// every direction - throws UserError if it doesn't, matching Python's
+// sys.exit(1) via this project's own convention. `lczBand` is 0-indexed,
+// matching w2w's own `-l`/`--lcz-band` argument.
+[[nodiscard]] LczRaster checkLczIntegrity(const std::filesystem::path& lczPath, int lczBand, const NetcdfFile& wrfFile);
+
 }  // namespace wrftools

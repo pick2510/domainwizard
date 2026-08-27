@@ -31,29 +31,27 @@ constexpr float kNodataSentinel = -9999.0f;
 constexpr int kMaxWarpDimension = 4096;
 
 // Cheap (no resampling) query for the pixel size GDALWarp would naturally
-// pick for a plain "-t_srs EPSG:3857" warp with no -ts/-tr override -
+// pick for a plain "-t_srs <destWkt>" warp with no -ts/-tr override -
 // mirrors what the gdalwarp CLI itself computes internally before running
 // the actual warp. Returns false (leaving outWidth/outHeight untouched) if
 // GDAL can't suggest one, in which case the caller falls back to letting
 // GDALWarp decide on its own.
-bool suggestedWarpSize(GDALDatasetH source, int& outWidth, int& outHeight) {
-    OGRSpatialReference targetSrs;
-    targetSrs.importFromEPSG(3857);
-    targetSrs.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
-    char* targetWkt = nullptr;
-    if (targetSrs.exportToWkt(&targetWkt) != OGRERR_NONE || !targetWkt) return false;
-    void* transformer = GDALCreateGenImgProjTransformer(source, nullptr, nullptr, targetWkt, FALSE, 0.0, 1);
-    CPLFree(targetWkt);
+bool suggestedWarpSize(GDALDatasetH source, const char* destWkt, int& outWidth, int& outHeight) {
+    void* transformer = GDALCreateGenImgProjTransformer(source, nullptr, nullptr, destWkt, FALSE, 0.0, 1);
     if (!transformer) return false;
     double geoTransform[6];
     const bool ok = GDALSuggestedWarpOutput(source, GDALGenImgProjTransform, transformer, geoTransform, &outWidth, &outHeight) == CE_None;
     GDALDestroyGenImgProjTransformer(transformer);
     return ok;
 }
-}
 
-WarpedRaster warpToWebMercator(std::span<const float> values, int width, int height,
-    const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform) {
+// Shared body of warpToWebMercator and warpToCrs - both let GDAL discover
+// the output size/geotransform for a plain "-t_srs <destWkt>" warp (unlike
+// warpToGrid, which reprojects into an ALREADY-known destination grid, and
+// so uses GDALReprojectImage directly instead - see warpToGrid's own
+// comment for why the two don't share an implementation).
+WarpedRaster warpToCrsImpl(std::span<const float> values, int width, int height, const std::string& sourceWkt,
+    const std::array<double, 6>& sourceGeotransform, const std::string& destWkt, const char* resamplingFlag) {
     GDALAllRegister();
     auto* memDriver = GetGDALDriverManager()->GetDriverByName("MEM");
     if (!memDriver) throw UserError("GDAL's MEM driver is unavailable.");
@@ -79,8 +77,9 @@ WarpedRaster warpToWebMercator(std::span<const float> values, int width, int hei
     // discarding the excess after the fact.
     std::string targetWidthText, targetHeightText;
     int suggestedWidth = 0, suggestedHeight = 0;
-    std::vector<const char*> argv{"-of", "MEM", "-t_srs", "EPSG:3857", "-r", "bilinear"};
-    if (suggestedWarpSize(sourceHandle, suggestedWidth, suggestedHeight) && std::max(suggestedWidth, suggestedHeight) > kMaxWarpDimension) {
+    std::vector<const char*> argv{"-of", "MEM", "-t_srs", destWkt.c_str(), "-r", resamplingFlag};
+    if (suggestedWarpSize(sourceHandle, destWkt.c_str(), suggestedWidth, suggestedHeight) &&
+        std::max(suggestedWidth, suggestedHeight) > kMaxWarpDimension) {
         const double scale = static_cast<double>(kMaxWarpDimension) / std::max(suggestedWidth, suggestedHeight);
         targetWidthText = std::to_string(std::max(1, static_cast<int>(std::lround(suggestedWidth * scale))));
         targetHeightText = std::to_string(std::max(1, static_cast<int>(std::lround(suggestedHeight * scale))));
@@ -95,7 +94,7 @@ WarpedRaster warpToWebMercator(std::span<const float> values, int width, int hei
     std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> warped(
         GDALDataset::FromHandle(GDALWarp("", nullptr, 1, &sourceHandle, options.get(), &usageError)),
         [](GDALDataset* d) { if (d) GDALClose(d); });
-    if (!warped) throw UserError("GDAL warp to EPSG:3857 failed.");
+    if (!warped) throw UserError("GDAL warp failed.");
 
     const int warpedWidth = warped->GetRasterXSize(), warpedHeight = warped->GetRasterYSize();
     std::vector<float> warpedValues(static_cast<std::size_t>(warpedWidth) * warpedHeight);
@@ -117,6 +116,33 @@ WarpedRaster warpToWebMercator(std::span<const float> values, int width, int hei
     const double minX = warpedTransform[0], maxY = warpedTransform[3];
     const double maxX = minX + warpedTransform[1] * warpedWidth, minY = maxY + warpedTransform[5] * warpedHeight;
     return {std::move(warpedValues), warpedWidth, warpedHeight, {minX, minY, maxX, maxY}};
+}
+}  // namespace
+
+WarpedRaster warpToWebMercator(std::span<const float> values, int width, int height,
+    const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform) {
+    OGRSpatialReference targetSrs;
+    targetSrs.importFromEPSG(3857);
+    targetSrs.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    char* targetWktRaw = nullptr;
+    if (targetSrs.exportToWkt(&targetWktRaw) != OGRERR_NONE || !targetWktRaw) throw UserError("Could not build the EPSG:3857 target CRS.");
+    std::string targetWkt(targetWktRaw);
+    CPLFree(targetWktRaw);
+    return warpToCrsImpl(values, width, height, sourceWkt, sourceGeotransform, targetWkt, "bilinear");
+}
+
+WarpedRaster warpToCrs(std::span<const float> values, int width, int height, const std::string& sourceWkt,
+    const std::array<double, 6>& sourceGeotransform, const std::string& destWkt, ResampleMethod resampling) {
+    const char* flag = [&] {
+        switch (resampling) {
+            case ResampleMethod::Bilinear: return "bilinear";
+            case ResampleMethod::Average: return "average";
+            case ResampleMethod::Mode: return "mode";
+            case ResampleMethod::Nearest: return "near";
+        }
+        return "near";
+    }();
+    return warpToCrsImpl(values, width, height, sourceWkt, sourceGeotransform, destWkt, flag);
 }
 
 std::vector<float> warpToGrid(std::span<const float> values, int width, int height, const std::string& sourceWkt,

@@ -1488,6 +1488,60 @@ TEST_CASE("removeUrban rejects an NPIX_AREA larger than the domain") {
     std::filesystem::remove(dst);
 }
 
+TEST_CASE("checkLczIntegrity passes an already-WGS84 LCZ GeoTIFF through unchanged and confirms it covers the WRF domain") {
+    const auto wrf = NetcdfFile::open("tests/fixtures/lcz/geo_em.d04.nc", NetcdfFile::Mode::ReadOnly);
+    const auto clean = checkLczIntegrity("tests/fixtures/lcz/lcz_zaragoza.tif", 0, wrf);
+
+    CHECK(clean.width == 1210);
+    CHECK(clean.height == 765);
+    // Pinned against a live check_lcz_integrity() run (add_wrf_version,
+    // 7801b3e) on this exact fixture pair.
+    CHECK(clean.geotransform[0] == Catch::Approx(-1.7002029439153534));
+    CHECK(clean.geotransform[1] == Catch::Approx(0.0013474837091883177));
+    CHECK(clean.geotransform[2] == Catch::Approx(0.0));
+    CHECK(clean.geotransform[3] == Catch::Approx(42.195661701819475));
+    CHECK(clean.geotransform[4] == Catch::Approx(0.0));
+    CHECK(clean.geotransform[5] == Catch::Approx(-0.0013474837091883162));
+    REQUIRE(clean.values.size() == static_cast<std::size_t>(clean.width) * clean.height);
+    CHECK(clean.values[0] == 14.0f);  // row 0, col 0
+    CHECK(clean.values[static_cast<std::size_t>(clean.height / 2) * clean.width + clean.width / 2] == 8.0f);  // row 382, col 605
+}
+
+TEST_CASE("checkLczIntegrity reprojects a UTM LCZ GeoTIFF and relabels 100-series class codes") {
+    const auto wrf = NetcdfFile::open("tests/fixtures/lcz/geo_em.d02_Shanghai.nc", NetcdfFile::Mode::ReadOnly);
+    const auto clean = checkLczIntegrity("tests/fixtures/lcz/Shanghai.tif", 0, wrf);
+
+    // Pinned against a live check_lcz_integrity() run (add_wrf_version,
+    // 7801b3e): testing/Shanghai.tif is UTM zone 51N with 100-series
+    // (LCZ Generator) class codes and a real -1 NoData value - this one
+    // fixture exercises the reprojection, relabeling, AND NoData-exclusion
+    // paths all at once.
+    CHECK(clean.width == 1001);
+    CHECK(clean.height == 904);
+    CHECK(clean.geotransform[0] == Catch::Approx(121.06546942474998));
+    CHECK(clean.geotransform[1] == Catch::Approx(0.0009768493252783942));
+    CHECK(clean.geotransform[3] == Catch::Approx(31.662660675894173));
+    CHECK(clean.geotransform[5] == Catch::Approx(-0.0009768493252784018));
+
+    const auto at = [&](int row, int col) { return clean.values[static_cast<std::size_t>(row) * clean.width + col]; };
+    CHECK(at(0, 0) == 0.0f);      // outside the source UTM tile's coverage -> NoData -> clamped to 0
+    CHECK(at(903, 1000) == 0.0f);
+    CHECK(at(452, 500) == 14.0f);  // center
+    CHECK(at(10, 10) == 0.0f);
+    CHECK(at(100, 100) == 14.0f);
+    CHECK(at(500, 500) == 4.0f);
+    CHECK(at(900, 50) == 14.0f);
+    // Every value is either 0 (NoData) or a valid 1-17 LCZ class - the
+    // 100-series relabeling ran and covered the whole raster (a partial
+    // relabel would leave stray 101-107 values behind).
+    for (float v : clean.values) CHECK((v == 0.0f || (v >= 1.0f && v <= 17.0f)));
+}
+
+TEST_CASE("checkLczIntegrity rejects an LCZ GeoTIFF that doesn't cover the WRF domain") {
+    const auto wrf = NetcdfFile::open("tests/fixtures/lcz/geo_em.d04.nc", NetcdfFile::Mode::ReadOnly);
+    CHECK_THROWS_AS(checkLczIntegrity("tests/fixtures/lcz/lcz_too_small.tif", 0, wrf), UserError);
+}
+
 TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matching w2w's own category-count expansion") {
     const auto dst = lczFixtureCopy("resize");
 

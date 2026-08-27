@@ -1,15 +1,22 @@
 #include "wrftools/lcz.hpp"
 #include "wrftools/error.hpp"
+#include "wrftools/warp.hpp"
 
 #include "third_party/nanoflann.hpp"
 
 #include <netcdf.h>
+#include <gdal_priv.h>
+#include <ogr_spatialref.h>
+#include <cpl_conv.h>
 
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <map>
+#include <memory>
 #include <numbers>
+#include <set>
 
 namespace wrftools {
 namespace {
@@ -78,6 +85,17 @@ float modalValue(const std::vector<float>& values) {
     for (const auto& [value, count] : counts)  // std::map iterates in ascending key order
         if (count > bestCount) { bestCount = count; bestValue = value; }
     return static_cast<float>(bestValue);
+}
+
+std::string canonicalWgs84Wkt() {
+    OGRSpatialReference srs;
+    srs.importFromEPSG(4326);
+    srs.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    char* wkt = nullptr;
+    if (srs.exportToWkt(&wkt) != OGRERR_NONE || !wkt) throw UserError("Could not build the EPSG:4326 CRS.");
+    std::string result(wkt);
+    CPLFree(wkt);
+    return result;
 }
 
 }  // namespace
@@ -246,6 +264,93 @@ void removeUrban(const std::filesystem::path& srcPath, const std::filesystem::pa
     numLandCat.type = NC_INT;
     numLandCat.numbers = {21.0};
     dst.putAttribute("", numLandCat);
+}
+
+LczRaster checkLczIntegrity(const std::filesystem::path& lczPath, int lczBand, const NetcdfFile& wrfFile) {
+    GDALAllRegister();
+    std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> dataset(
+        GDALDataset::FromHandle(GDALOpenEx(lczPath.string().c_str(), GDAL_OF_RASTER | GDAL_OF_READONLY, nullptr, nullptr, nullptr)),
+        [](GDALDataset* d) { if (d) GDALClose(d); });
+    if (!dataset) throw UserError("Cannot find LCZ map file: " + lczPath.string());
+    if (lczBand < 0 || lczBand >= dataset->GetRasterCount())
+        throw UserError("Cannot read the requested LCZ band " + std::to_string(lczBand) + " from the LCZ GeoTIFF - check the -l/--lcz-band argument.");
+
+    const int width = dataset->GetRasterXSize(), height = dataset->GetRasterYSize();
+    std::vector<float> values(static_cast<std::size_t>(width) * height);
+    auto* band = dataset->GetRasterBand(lczBand + 1);  // GDAL bands are 1-indexed
+    if (band->RasterIO(GF_Read, 0, 0, width, height, values.data(), width, height, GDT_Float32, 0, 0) != CE_None)
+        throw UserError("Could not read the LCZ GeoTIFF: " + lczPath.string());
+    // warpToCrs (like the rest of this pipeline) treats NaN as nodata, but
+    // GDAL doesn't convert a band's registered NoData value to NaN on
+    // read - do that ourselves so a real nodata value (e.g. -1, as
+    // testing/Shanghai.tif uses) is actually excluded from the warp below,
+    // rather than participating in nearest-neighbor resampling as if it
+    // were real LCZ class data.
+    int hasNodata = 0;
+    const double nodata = band->GetNoDataValue(&hasNodata);
+    if (hasNodata)
+        for (auto& value : values)
+            if (value == static_cast<float>(nodata)) value = std::numeric_limits<float>::quiet_NaN();
+
+    std::array<double, 6> sourceGeotransform{};
+    if (dataset->GetGeoTransform(sourceGeotransform.data()) != CE_None) throw UserError("LCZ GeoTIFF has no geotransform: " + lczPath.string());
+    const std::string sourceWkt = dataset->GetProjectionRef() ? dataset->GetProjectionRef() : "";
+
+    // _replace_lcz_number (w2w.py): if any 100-series (LCZ Generator)
+    // class label is present, remap the WHOLE raster through
+    // {1..10 -> 1..10, 101..107 -> 11..17} - matching w2w.py's own
+    // dict-based remap, including that a value outside both ranges is
+    // left unchanged here (Python's pandas .map() would instead turn it
+    // into NaN and then undefined-behavior-cast that to int32, which
+    // isn't a deliberate design choice worth reproducing).
+    const bool has100Series = std::any_of(values.begin(), values.end(), [](float v) { return v >= 101.0f && v <= 107.0f; });
+    if (has100Series) {
+        std::map<int, int> remap;
+        for (int v = 1; v <= 10; ++v) remap[v] = v;
+        for (int v = 101; v <= 107; ++v) remap[v] = v - 101 + 11;
+        for (auto& value : values) {
+            if (std::isnan(value)) continue;
+            const auto found = remap.find(static_cast<int>(std::lround(value)));
+            if (found != remap.end()) value = static_cast<float>(found->second);
+        }
+    }
+
+    const std::string wgs84Wkt = canonicalWgs84Wkt();
+    OGRSpatialReference sourceSrs, wgs84Srs;
+    sourceSrs.importFromWkt(sourceWkt.c_str());
+    wgs84Srs.importFromEPSG(4326);
+    const bool alreadyWgs84 = sourceSrs.IsSame(&wgs84Srs);
+
+    std::array<double, 6> geotransform = sourceGeotransform;
+    int finalWidth = width, finalHeight = height;
+    if (!alreadyWgs84) {
+        auto warped = warpToCrs(values, width, height, sourceWkt, sourceGeotransform, wgs84Wkt, ResampleMethod::Nearest);
+        for (auto& value : warped.values)
+            if (!(value > 0.0f)) value = 0.0f;  // xr.where(lcz.data > 0, lcz.data, 0) - also clears any NaN a partial-coverage warp left behind
+        finalWidth = warped.width;
+        finalHeight = warped.height;
+        const double dx = (warped.bounds3857.maxX - warped.bounds3857.minX) / finalWidth;
+        const double dy = (warped.bounds3857.maxY - warped.bounds3857.minY) / finalHeight;
+        geotransform = {warped.bounds3857.minX, dx, 0.0, warped.bounds3857.maxY, 0.0, -dy};
+        values = std::move(warped.values);
+    }
+
+    // _check_lcz_wrf_extent: the LCZ raster must cover the WRF domain's
+    // own XLONG_M/XLAT_M bounds in every direction (strict inequality,
+    // matching w2w.py exactly).
+    const double lczXmin = geotransform[0], lczYmax = geotransform[3];
+    const double lczXmax = lczXmin + geotransform[1] * finalWidth, lczYmin = lczYmax + geotransform[5] * finalHeight;
+    const auto wrfLon = wrfFile.readFloat("XLONG_M");
+    const auto wrfLat = wrfFile.readFloat("XLAT_M");
+    const auto [wrfLonMinIt, wrfLonMaxIt] = std::minmax_element(wrfLon.begin(), wrfLon.end());
+    const auto [wrfLatMinIt, wrfLatMaxIt] = std::minmax_element(wrfLat.begin(), wrfLat.end());
+    const double wrfXmin = *wrfLonMinIt, wrfXmax = *wrfLonMaxIt, wrfYmin = *wrfLatMinIt, wrfYmax = *wrfLatMaxIt;
+    if (!(wrfXmin > lczXmin && wrfXmax < lczXmax && wrfYmin > lczYmin && wrfYmax < lczYmax))
+        throw UserError(std::format("LCZ domain should be larger than the WRF domain in all directions. LCZ bounds (xmin, ymin, xmax, ymax): "
+                                     "({}, {}, {}, {}); WRF bounds (xmin, ymin, xmax, ymax): ({}, {}, {}, {})",
+            lczXmin, lczYmin, lczXmax, lczYmax, wrfXmin, wrfYmin, wrfXmax, wrfYmax));
+
+    return {std::move(values), finalWidth, finalHeight, wgs84Wkt, geotransform};
 }
 
 }  // namespace wrftools
