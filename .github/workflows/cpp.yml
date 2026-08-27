@@ -3,8 +3,12 @@ name: Native C++ build
 on:
   push:
     branches: [master, cplusplus]
+    tags: ['v*']
   pull_request:
     branches: [master, cplusplus]
+
+permissions:
+  contents: write  # only release job needs this, to create the GitHub Release and upload assets
 
 jobs:
   build-and-test:
@@ -126,3 +130,29 @@ jobs:
         with:
           name: wrftools-windows
           path: dist/wrftools-windows.zip
+
+  release:
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      # Only the Linux artifact is uploaded as a bare directory (the
+      # macOS/Windows packaging scripts already produce a single .zip each,
+      # so those artifacts download as one file) - zip it here so all three
+      # release assets are a single downloadable file apiece.
+      - name: Zip the Linux artifact
+        run: |
+          cd artifacts/wrftools-linux
+          zip -r ../wrftools-linux.zip .
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/wrftools-linux.zip
+            artifacts/wrftools-macos/wrftools-macos.zip
+            artifacts/wrftools-windows/wrftools-windows.zip
+          generate_release_notes: true
