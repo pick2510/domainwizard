@@ -807,6 +807,41 @@ Confirmed each of the 9 previously-CI-failing tests passes locally after
 the change - CTest count unchanged (117), no new cases, this is a pure bug
 fix in existing test infrastructure.
 
+**Follow-up: the temp_directory_path() fix above surfaced a second, genuine
+Windows-only bug in the same 7 tests.** After that fix, CI's Windows job
+still failed the same 7 tests (Linux/macOS were not re-checked, but the
+Windows failure mode confirms this is real regardless) - this time with
+`filesystem error: cannot remove: The process cannot access the file
+because it is being used by another process`, e.g. on
+`wrftools-cpp-lcz-e2e-LCZ_params.nc`. Root cause: each of these 7 tests
+opens a `NetcdfFile` (e.g. `const auto params = NetcdfFile::open(paramsPath,
+...)`) to verify the pipeline's output, keeps that variable alive for the
+rest of the test (including through the final `std::filesystem::remove` of
+that same path), and only lets its destructor close the underlying handle
+at the test's closing brace - *after* the removal already ran. POSIX
+allows unlinking an open file (the directory entry goes away immediately;
+the data persists until the last handle closes) - Windows does not, by
+default: `DeleteFile`/`std::filesystem::remove` fails outright while any
+handle to the file remains open, including one held by the same process.
+This was invisible in every environment this was developed and tested in
+(Linux/macOS, always) and even survived the Full LCZ pipeline test running
+49612/49613 assertions correctly - it's purely a test-cleanup-ordering
+issue, not a production-code bug (the actual `NetcdfFile::resizeDimension`/
+`rebuildStructure`/`copyFile` implementations already close their own
+handles carefully before renaming/removing internally, as their own doc
+comments note).
+
+Fixed by wrapping each test's read-and-verify section in its own `{ }`
+scope, so the `NetcdfFile` (or, in one case, two `std::ifstream`s) closes
+via RAII before the trailing `std::filesystem::remove` call - no change to
+any production code. Confirmed no other `std::filesystem::remove` call
+site in `core_tests.cpp` has the same live-handle problem (all others
+either never open a handle on the removed path in test scope, or already
+close it in a nested scope/explicit `.close()`/`out.close()` before
+removing). CTest count unchanged (117) - pure test-infrastructure fix,
+verified locally (Linux); a fresh CI run is the actual cross-platform
+check.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

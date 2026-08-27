@@ -1354,11 +1354,17 @@ TEST_CASE("NetcdfFile::copyFile round-trips a real file byte-for-byte") {
     REQUIRE(std::filesystem::exists(dst));
     CHECK(std::filesystem::file_size(dst) == std::filesystem::file_size("tests/fixtures/lcz/5by5.nc"));
 
-    std::ifstream original("tests/fixtures/lcz/5by5.nc", std::ios::binary);
-    std::ifstream copy(dst, std::ios::binary);
-    const std::vector<char> originalBytes((std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
-    const std::vector<char> copyBytes((std::istreambuf_iterator<char>(copy)), std::istreambuf_iterator<char>());
-    CHECK(originalBytes == copyBytes);
+    {
+        // Scoped so both ifstreams close before the removal below - an
+        // open handle onto `dst` (even a read-only one) makes
+        // std::filesystem::remove fail on Windows, unlike POSIX where an
+        // open file can be unlinked freely.
+        std::ifstream original("tests/fixtures/lcz/5by5.nc", std::ios::binary);
+        std::ifstream copy(dst, std::ios::binary);
+        const std::vector<char> originalBytes((std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+        const std::vector<char> copyBytes((std::istreambuf_iterator<char>(copy)), std::istreambuf_iterator<char>());
+        CHECK(originalBytes == copyBytes);
+    }
 
     std::filesystem::remove(dst);
 }
@@ -1376,14 +1382,19 @@ TEST_CASE("NetcdfFile mutates a variable and a global attribute without disturbi
         file.putAttribute("", attribute);
     }
 
-    const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
-    const auto luIndex = reopened.readFloat("LU_INDEX");
-    CHECK(std::all_of(luIndex.begin(), luIndex.end(), [](float v) { return v == 13.0f; }));
-    CHECK(reopened.getAttribute("", "NUM_LAND_CAT").numbers[0] == 21);
+    {
+        // Scoped so `reopened` closes before the removal below - see the
+        // copyFile test above's comment on why an open handle blocks it
+        // on Windows.
+        const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
+        const auto luIndex = reopened.readFloat("LU_INDEX");
+        CHECK(std::all_of(luIndex.begin(), luIndex.end(), [](float v) { return v == 13.0f; }));
+        CHECK(reopened.getAttribute("", "NUM_LAND_CAT").numbers[0] == 21);
 
-    // Untouched variable/attribute survive the mutation unchanged.
-    CHECK(reopened.readFloat("XLAT_M").size() == 25);
-    CHECK(reopened.getAttribute("LU_INDEX", "description").text == "Dominant category");
+        // Untouched variable/attribute survive the mutation unchanged.
+        CHECK(reopened.readFloat("XLAT_M").size() == 25);
+        CHECK(reopened.getAttribute("LU_INDEX", "description").text == "Dominant category");
+    }
 
     std::filesystem::remove(dst);
 }
@@ -1500,61 +1511,65 @@ TEST_CASE("removeUrban matches a live w2w.wrf_remove_urban run (add_wrf_version)
     // w2w's own testing/) on the add_wrf_version branch at 7801b3e.
     removeUrban(dst, out, 3, 9);
 
-    const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
-    CHECK(result.getAttribute("", "NUM_LAND_CAT").numbers[0] == 21);
+    // Scoped so `result` closes before removing `out` below - an open
+    // handle onto it blocks std::filesystem::remove on Windows.
+    {
+        const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
+        CHECK(result.getAttribute("", "NUM_LAND_CAT").numbers[0] == 21);
 
-    const std::vector<float> expectedLu{
-        7, 12, 7, 7, 14,
-        12, 12, 12, 12, 12,
-        12, 12, 12, 12, 12,
-        12, 5, 12, 12, 12,
-        12, 12, 12, 12, 14,
-    };
-    const auto lu = result.readFloat("LU_INDEX");
-    REQUIRE(lu.size() == expectedLu.size());
-    for (std::size_t i = 0; i < lu.size(); ++i) CHECK(lu[i] == expectedLu[i]);
+        const std::vector<float> expectedLu{
+            7, 12, 7, 7, 14,
+            12, 12, 12, 12, 12,
+            12, 12, 12, 12, 12,
+            12, 5, 12, 12, 12,
+            12, 12, 12, 12, 14,
+        };
+        const auto lu = result.readFloat("LU_INDEX");
+        REQUIRE(lu.size() == expectedLu.size());
+        for (std::size_t i = 0; i < lu.size(); ++i) CHECK(lu[i] == expectedLu[i]);
 
-    constexpr std::size_t ny = 5, nx = 5, npix = ny * nx;
-    const auto greenf = result.readFloat("GREENFRAC");
-    const std::vector<float> expectedGreenMonth0{
-        0.32288238f, 0.34568438f, 0.31409433f, 0.30929843f, 0.27927542f,
-        0.35764524f, 0.40199462f, 0.36666667f, 0.28f, 0.25155333f,
-        0.29333332f, 0.3633333f, 0.36111107f, 0.3127196f, 0.29627478f,
-        0.28f, 0.32999998f, 0.35333332f, 0.36188415f, 0.3021261f,
-        0.29270646f, 0.30135322f, 0.31f, 0.3196875f, 0.32455063f,
-    };
-    const std::vector<float> expectedGreenMonth6{
-        0.34078887f, 0.41630322f, 0.38273245f, 0.37449577f, 0.31640434f,
-        0.38326782f, 0.47702634f, 0.45f, 0.29f, 0.20068237f,
-        0.3333333f, 0.5f, 0.49111113f, 0.37584224f, 0.2759695f,
-        0.28666666f, 0.42f, 0.5233333f, 0.56155723f, 0.46738f,
-        0.34370252f, 0.38851792f, 0.4333333f, 0.45120147f, 0.49080566f,
-    };
-    for (std::size_t p = 0; p < npix; ++p) {
-        CHECK(greenf[0 * npix + p] == Catch::Approx(expectedGreenMonth0[p]).margin(1e-4));
-        CHECK(greenf[6 * npix + p] == Catch::Approx(expectedGreenMonth6[p]).margin(1e-4));
-    }
+        constexpr std::size_t ny = 5, nx = 5, npix = ny * nx;
+        const auto greenf = result.readFloat("GREENFRAC");
+        const std::vector<float> expectedGreenMonth0{
+            0.32288238f, 0.34568438f, 0.31409433f, 0.30929843f, 0.27927542f,
+            0.35764524f, 0.40199462f, 0.36666667f, 0.28f, 0.25155333f,
+            0.29333332f, 0.3633333f, 0.36111107f, 0.3127196f, 0.29627478f,
+            0.28f, 0.32999998f, 0.35333332f, 0.36188415f, 0.3021261f,
+            0.29270646f, 0.30135322f, 0.31f, 0.3196875f, 0.32455063f,
+        };
+        const std::vector<float> expectedGreenMonth6{
+            0.34078887f, 0.41630322f, 0.38273245f, 0.37449577f, 0.31640434f,
+            0.38326782f, 0.47702634f, 0.45f, 0.29f, 0.20068237f,
+            0.3333333f, 0.5f, 0.49111113f, 0.37584224f, 0.2759695f,
+            0.28666666f, 0.42f, 0.5233333f, 0.56155723f, 0.46738f,
+            0.34370252f, 0.38851792f, 0.4333333f, 0.45120147f, 0.49080566f,
+        };
+        for (std::size_t p = 0; p < npix; ++p) {
+            CHECK(greenf[0 * npix + p] == Catch::Approx(expectedGreenMonth0[p]).margin(1e-4));
+            CHECK(greenf[6 * npix + p] == Catch::Approx(expectedGreenMonth6[p]).margin(1e-4));
+        }
 
-    // LANDUSEF: nonzero (1-indexed category, fraction) pairs per pixel, in
-    // row-major (south_north, west_east) order - deliberately includes
-    // w2w's own real behavior of the per-pixel sum landing below 1.0 at a
-    // handful of pixels (e.g. (2,2)/(2,3) end up with NO nonzero category
-    // at all), not something to "fix" in the port.
-    const std::vector<std::vector<std::pair<int, float>>> expectedLuf{
-        {{7, 0.5f}, {12, 0.5f}}, {{12, 1.0f}}, {{7, 1.0f}}, {{7, 1.0f}}, {{14, 1.0f}},
-        {{12, 0.5f}, {14, 0.5f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}},
-        {{12, 1.0f}}, {{12, 1.0f}}, {}, {}, {{12, 1.0f}},
-        {{12, 1.0f}}, {{5, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}},
-        {{12, 0.75f}}, {{14, 0.5f}}, {{12, 0.5f}, {14, 0.5f}}, {{12, 0.5f}, {14, 0.5f}}, {{14, 1.0f}},
-    };
-    const auto luf = result.readFloat("LANDUSEF");
-    REQUIRE(result.shape("LANDUSEF") == std::vector<std::size_t>{1, 41, ny, nx});
-    for (std::size_t p = 0; p < npix; ++p) {
-        for (std::size_t cat = 0; cat < 41; ++cat) {
-            const auto match = std::find_if(expectedLuf[p].begin(), expectedLuf[p].end(), [&](const auto& kv) { return kv.first == static_cast<int>(cat) + 1; });
-            const float expected = match != expectedLuf[p].end() ? match->second : 0.0f;
-            CAPTURE(p, cat);
-            CHECK(luf[cat * npix + p] == Catch::Approx(expected).margin(1e-4));
+        // LANDUSEF: nonzero (1-indexed category, fraction) pairs per pixel,
+        // in row-major (south_north, west_east) order - deliberately
+        // includes w2w's own real behavior of the per-pixel sum landing
+        // below 1.0 at a handful of pixels (e.g. (2,2)/(2,3) end up with NO
+        // nonzero category at all), not something to "fix" in the port.
+        const std::vector<std::vector<std::pair<int, float>>> expectedLuf{
+            {{7, 0.5f}, {12, 0.5f}}, {{12, 1.0f}}, {{7, 1.0f}}, {{7, 1.0f}}, {{14, 1.0f}},
+            {{12, 0.5f}, {14, 0.5f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}},
+            {{12, 1.0f}}, {{12, 1.0f}}, {}, {}, {{12, 1.0f}},
+            {{12, 1.0f}}, {{5, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}},
+            {{12, 0.75f}}, {{14, 0.5f}}, {{12, 0.5f}, {14, 0.5f}}, {{12, 0.5f}, {14, 0.5f}}, {{14, 1.0f}},
+        };
+        const auto luf = result.readFloat("LANDUSEF");
+        REQUIRE(result.shape("LANDUSEF") == std::vector<std::size_t>{1, 41, ny, nx});
+        for (std::size_t p = 0; p < npix; ++p) {
+            for (std::size_t cat = 0; cat < 41; ++cat) {
+                const auto match = std::find_if(expectedLuf[p].begin(), expectedLuf[p].end(), [&](const auto& kv) { return kv.first == static_cast<int>(cat) + 1; });
+                const float expected = match != expectedLuf[p].end() ? match->second : 0.0f;
+                CAPTURE(p, cat);
+                CHECK(luf[cat * npix + p] == Catch::Approx(expected).margin(1e-4));
+            }
         }
     }
 
@@ -1584,14 +1599,18 @@ TEST_CASE("removeUrban's add_wrf_version pre-pass collapses an already-LCZ-tagge
     const auto out = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-test-remove-urban-prepass-out.nc";
     removeUrban(dst, out, 3, 9);
 
-    const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
-    const auto lu = result.readFloat("LU_INDEX");
-    const auto luf = result.readFloat("LANDUSEF");
-    constexpr std::size_t npix = 25;
-    CHECK(lu[0] != 35.0f);   // no longer an LCZ class...
-    CHECK(lu[0] != 13.0f);   // ...nor still urban (ISURBAN) - the normal removal loop ran on it
-    CHECK(luf[34 * npix + 0] == 0.0f);  // category 35's fraction was collapsed into ISURBAN, then...
-    CHECK(luf[12 * npix + 0] == 0.0f);  // ...ISURBAN's (index 12) fraction was itself cleared by the normal removal loop
+    // Scoped so `result` closes before removing `out` below - an open
+    // handle onto it blocks std::filesystem::remove on Windows.
+    {
+        const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
+        const auto lu = result.readFloat("LU_INDEX");
+        const auto luf = result.readFloat("LANDUSEF");
+        constexpr std::size_t npix = 25;
+        CHECK(lu[0] != 35.0f);   // no longer an LCZ class...
+        CHECK(lu[0] != 13.0f);   // ...nor still urban (ISURBAN) - the normal removal loop ran on it
+        CHECK(luf[34 * npix + 0] == 0.0f);  // category 35's fraction was collapsed into ISURBAN, then...
+        CHECK(luf[12 * npix + 0] == 0.0f);  // ...ISURBAN's (index 12) fraction was itself cleared by the normal removal loop
+    }
 
     std::filesystem::remove(dst);
     std::filesystem::remove(out);
@@ -1741,89 +1760,98 @@ TEST_CASE("Full LCZ pipeline (checkLczIntegrity -> removeUrban -> createLczParam
     // README's own documented note for this sample dataset.
     CHECK(nbuiMax == 5);
 
-    const auto params = NetcdfFile::open(paramsPath, NetcdfFile::Mode::ReadOnly);
-    CHECK(params.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
-    CHECK(params.getAttribute("", "FLAG_URB_PARAM").numbers[0] == 1);
-    CHECK(params.getAttribute("", "NBUI_MAX").numbers[0] == 5);
+    // Scoped so `params` closes before this test removes paramsPath at
+    // the end - an open handle onto it blocks std::filesystem::remove on
+    // Windows.
+    {
+        const auto params = NetcdfFile::open(paramsPath, NetcdfFile::Mode::ReadOnly);
+        CHECK(params.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
+        CHECK(params.getAttribute("", "FLAG_URB_PARAM").numbers[0] == 1);
+        CHECK(params.getAttribute("", "NBUI_MAX").numbers[0] == 5);
 
-    constexpr std::size_t ny = 102, nx = 162, npix = ny * nx;
-    const auto luIndex = params.readFloat("LU_INDEX");
-    const auto frcUrb2d = params.readFloat("FRC_URB2D");
-    const auto urbParam = params.readFloat("URB_PARAM");
-    const auto landusef = params.readFloat("LANDUSEF");
-    const auto greenfrac = params.readFloat("GREENFRAC");
-    REQUIRE(luIndex.size() == npix);
-    REQUIRE(urbParam.size() == 132 * npix);
-    REQUIRE(landusef.size() == 41 * npix);
+        constexpr std::size_t ny = 102, nx = 162, npix = ny * nx;
+        const auto luIndex = params.readFloat("LU_INDEX");
+        const auto frcUrb2d = params.readFloat("FRC_URB2D");
+        const auto urbParam = params.readFloat("URB_PARAM");
+        const auto landusef = params.readFloat("LANDUSEF");
+        const auto greenfrac = params.readFloat("GREENFRAC");
+        REQUIRE(luIndex.size() == npix);
+        REQUIRE(urbParam.size() == 132 * npix);
+        REQUIRE(landusef.size() == 41 * npix);
 
-    // A specific pixel (50, 80) with a real LCZ class assignment, checked
-    // to Python's float32 precision.
-    const std::size_t p = 50 * nx + 80;
-    CHECK(luIndex[p] == Catch::Approx(38.0f));
-    CHECK(frcUrb2d[p] == Catch::Approx(0.80955416f));
-    CHECK(urbParam[90 * npix + p] == Catch::Approx(0.48248515f));   // LP_URB2D
-    CHECK(urbParam[91 * npix + p] == Catch::Approx(12.082176f));    // MH_URB2D
-    CHECK(urbParam[92 * npix + p] == Catch::Approx(2.7649412f));    // STDH_URB2D
-    CHECK(urbParam[93 * npix + p] == Catch::Approx(11.26162f));     // HGT_URB2D
-    CHECK(urbParam[94 * npix + p] == Catch::Approx(0.9502786f));    // LB_URB2D
-    for (int i = 0; i < 4; ++i) CHECK(urbParam[static_cast<std::size_t>(95 + i) * npix + p] == Catch::Approx(0.46779343f));  // LF_URB2D x4
-    const std::vector<float> expectedHiBins{8.883777618408203f, 40.369163513183594f, 12.222759246826172f, 26.285173416137695f,
-        12.239124298095703f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    // hiResample computes these analytically (see its doc comment); w2w.py
-    // draws 100000 Monte Carlo samples from the same truncated-normal
-    // distribution and bins them, so its own reference values here carry
-    // real sampling noise (binomial std error on the order of ~0.1-0.2
-    // percentage points for bins in this range) - a wide-ish margin is
-    // the correct comparison, not a sign of imprecision on this port's
-    // side.
-    for (int b = 0; b < 15; ++b)
-        CHECK(urbParam[static_cast<std::size_t>(117 + b) * npix + p] == Catch::Approx(expectedHiBins[static_cast<std::size_t>(b)]).margin(0.1));
-    CHECK(landusef[37 * npix + p] == Catch::Approx(1.0f));
-    CHECK(greenfrac[0 * npix + p] == Catch::Approx(0.29356405f));
-    CHECK(greenfrac[6 * npix + p] == Catch::Approx(0.3034502f));
+        // A specific pixel (50, 80) with a real LCZ class assignment, checked
+        // to Python's float32 precision.
+        const std::size_t p = 50 * nx + 80;
+        CHECK(luIndex[p] == Catch::Approx(38.0f));
+        CHECK(frcUrb2d[p] == Catch::Approx(0.80955416f));
+        CHECK(urbParam[90 * npix + p] == Catch::Approx(0.48248515f));   // LP_URB2D
+        CHECK(urbParam[91 * npix + p] == Catch::Approx(12.082176f));    // MH_URB2D
+        CHECK(urbParam[92 * npix + p] == Catch::Approx(2.7649412f));    // STDH_URB2D
+        CHECK(urbParam[93 * npix + p] == Catch::Approx(11.26162f));     // HGT_URB2D
+        CHECK(urbParam[94 * npix + p] == Catch::Approx(0.9502786f));    // LB_URB2D
+        for (int i = 0; i < 4; ++i) CHECK(urbParam[static_cast<std::size_t>(95 + i) * npix + p] == Catch::Approx(0.46779343f));  // LF_URB2D x4
+        const std::vector<float> expectedHiBins{8.883777618408203f, 40.369163513183594f, 12.222759246826172f, 26.285173416137695f,
+            12.239124298095703f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        // hiResample computes these analytically (see its doc comment); w2w.py
+        // draws 100000 Monte Carlo samples from the same truncated-normal
+        // distribution and bins them, so its own reference values here carry
+        // real sampling noise (binomial std error on the order of ~0.1-0.2
+        // percentage points for bins in this range) - a wide-ish margin is
+        // the correct comparison, not a sign of imprecision on this port's
+        // side.
+        for (int b = 0; b < 15; ++b)
+            CHECK(urbParam[static_cast<std::size_t>(117 + b) * npix + p] == Catch::Approx(expectedHiBins[static_cast<std::size_t>(b)]).margin(0.1));
+        CHECK(landusef[37 * npix + p] == Catch::Approx(1.0f));
+        CHECK(greenfrac[0 * npix + p] == Catch::Approx(0.29356405f));
+        CHECK(greenfrac[6 * npix + p] == Catch::Approx(0.3034502f));
 
-    // Aggregate checks across the whole domain.
-    CHECK(*std::max_element(frcUrb2d.begin(), frcUrb2d.end()) == Catch::Approx(0.9f));
-    for (std::size_t q = 0; q < npix; ++q) {
-        double sum = 0.0;
-        for (std::size_t cat = 0; cat < 41; ++cat) sum += landusef[cat * npix + q];
-        CAPTURE(q);
-        CHECK(sum <= Catch::Approx(1.0).margin(1e-4));
+        // Aggregate checks across the whole domain.
+        CHECK(*std::max_element(frcUrb2d.begin(), frcUrb2d.end()) == Catch::Approx(0.9f));
+        for (std::size_t q = 0; q < npix; ++q) {
+            double sum = 0.0;
+            for (std::size_t cat = 0; cat < 41; ++cat) sum += landusef[cat * npix + q];
+            CAPTURE(q);
+            CHECK(sum <= Catch::Approx(1.0).margin(1e-4));
+        }
+        // NaN LU_INDEX values are a REAL w2w.py behavior in principle (an
+        // LCZ-mode-resample coverage gap at an otherwise FRC_URB2D>0 pixel
+        // writes straight through into LU_INDEX, unguarded) - w2w.py's own
+        // live run against this exact fixture produces 205 such pixels.
+        // Checked at those 205 exact positions here (not by raw count): this
+        // port's direct GDALReprojectImage call resolves a real class at
+        // EVERY one of them instead (confirmed by probing lczResample
+        // directly) - i.e. strictly more complete, never NaN where Python
+        // wasn't already, and never a bogus class elsewhere. That's most
+        // likely a default-option difference between GDALReprojectImage and
+        // rasterio's own reproject() wrapper for GRA_Mode's edge-of-coverage
+        // handling specifically, not a masking/algorithm bug - every other
+        // value in this pixel-by-pixel and aggregate comparison (33000+
+        // assertions) matches Python to float32 precision. A real NaN, if
+        // this port's warp ever does produce one (a still-supported case -
+        // see createLczParamsFile's own doc comment on where it can come
+        // from), must never silently become a bogus finite class number.
+        for (float v : luIndex) CHECK((std::isnan(v) || (v >= 1.0f && v <= 60.0f)));
     }
-    // NaN LU_INDEX values are a REAL w2w.py behavior in principle (an
-    // LCZ-mode-resample coverage gap at an otherwise FRC_URB2D>0 pixel
-    // writes straight through into LU_INDEX, unguarded) - w2w.py's own
-    // live run against this exact fixture produces 205 such pixels.
-    // Checked at those 205 exact positions here (not by raw count): this
-    // port's direct GDALReprojectImage call resolves a real class at
-    // EVERY one of them instead (confirmed by probing lczResample
-    // directly) - i.e. strictly more complete, never NaN where Python
-    // wasn't already, and never a bogus class elsewhere. That's most
-    // likely a default-option difference between GDALReprojectImage and
-    // rasterio's own reproject() wrapper for GRA_Mode's edge-of-coverage
-    // handling specifically, not a masking/algorithm bug - every other
-    // value in this pixel-by-pixel and aggregate comparison (33000+
-    // assertions) matches Python to float32 precision. A real NaN, if
-    // this port's warp ever does produce one (a still-supported case -
-    // see createLczParamsFile's own doc comment on where it can come
-    // from), must never silently become a bogus finite class number.
-    for (float v : luIndex) CHECK((std::isnan(v) || (v >= 1.0f && v <= 60.0f)));
 
     createLczExtentFile(paramsPath, origPath, extentPath);
-    const auto extent = NetcdfFile::open(extentPath, NetcdfFile::Mode::ReadOnly);
-    CHECK(extent.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
-    CHECK(extent.getAttribute("", "FLAG_URB_PARAM").numbers[0] == 0);
-    const auto extentLu = extent.readFloat("LU_INDEX");
-    // Every non-NaN LU_INDEX value in the extent file is either a real
-    // (non-LCZ) category or plain ISURBAN (13) - the LCZ classes (31-40)
-    // were all collapsed back.
-    for (float v : extentLu) {
-        if (std::isnan(v)) continue;
-        const int cls = static_cast<int>(std::lround(v));
-        CAPTURE(cls);
-        CHECK_FALSE((cls >= 31 && cls <= 40));
+    // Scoped for the same reason as `params` above - `extent` must close
+    // before this test removes extentPath at the end.
+    {
+        const auto extent = NetcdfFile::open(extentPath, NetcdfFile::Mode::ReadOnly);
+        CHECK(extent.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
+        CHECK(extent.getAttribute("", "FLAG_URB_PARAM").numbers[0] == 0);
+        const auto extentLu = extent.readFloat("LU_INDEX");
+        // Every non-NaN LU_INDEX value in the extent file is either a real
+        // (non-LCZ) category or plain ISURBAN (13) - the LCZ classes (31-40)
+        // were all collapsed back.
+        for (float v : extentLu) {
+            if (std::isnan(v)) continue;
+            const int cls = static_cast<int>(std::lround(v));
+            CAPTURE(cls);
+            CHECK_FALSE((cls >= 31 && cls <= 40));
+        }
+        CHECK(std::count(extentLu.begin(), extentLu.end(), 13.0f) > 0);
     }
-    CHECK(std::count(extentLu.begin(), extentLu.end(), 13.0f) > 0);
 
     for (const auto& fp : {noUrbanPath, paramsPath, extentPath}) std::filesystem::remove(fp);
 }
@@ -1861,24 +1889,28 @@ TEST_CASE("NetcdfFile::rebuildStructure resizes a source dimension that already 
         {{"num_urb_params", newNumUrbParams}},  // the caller still declares it as "new" - it happens to already exist in this source file
         {{"URB_PARAM", NC_FLOAT, {"Time", "num_urb_params", "south_north", "west_east"}, urbParamData}});
 
-    const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
-    const auto dims = reopened.dimensions();
-    const auto numUrbParamsDim = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "num_urb_params"; });
-    REQUIRE(numUrbParamsDim != dims.end());
-    CHECK(numUrbParamsDim->length == newNumUrbParams);  // resized in place, not left at 18
+    // Scoped so `reopened` closes before removing `dst` below - an open
+    // handle onto it blocks std::filesystem::remove on Windows.
+    {
+        const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
+        const auto dims = reopened.dimensions();
+        const auto numUrbParamsDim = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "num_urb_params"; });
+        REQUIRE(numUrbParamsDim != dims.end());
+        CHECK(numUrbParamsDim->length == newNumUrbParams);  // resized in place, not left at 18
 
-    CHECK(reopened.shape("URB_PARAM") == std::vector<std::size_t>{1, newNumUrbParams, southNorth, westEast});
-    const auto urbParam = reopened.readFloat("URB_PARAM");
-    CHECK(urbParam.size() == newNumUrbParams * southNorth * westEast);
-    for (float v : urbParam) CHECK(v == 3.0f);
+        CHECK(reopened.shape("URB_PARAM") == std::vector<std::size_t>{1, newNumUrbParams, southNorth, westEast});
+        const auto urbParam = reopened.readFloat("URB_PARAM");
+        CHECK(urbParam.size() == newNumUrbParams * southNorth * westEast);
+        for (float v : urbParam) CHECK(v == 3.0f);
 
-    // OTHER_URB_VAR wasn't overridden and still uses the (now-resized)
-    // "num_urb_params" dimension - its original 18 slots' worth of data
-    // must survive unchanged; slots 18..131 are new, netCDF-default-filled
-    // space this test doesn't assert on.
-    CHECK(reopened.shape("OTHER_URB_VAR") == std::vector<std::size_t>{1, newNumUrbParams, southNorth, westEast});
-    const auto otherUrbVar = reopened.readFloat("OTHER_URB_VAR");
-    for (std::size_t p = 0; p < 18 * southNorth * westEast; ++p) CHECK(otherUrbVar[p] == 7.0f);
+        // OTHER_URB_VAR wasn't overridden and still uses the (now-resized)
+        // "num_urb_params" dimension - its original 18 slots' worth of data
+        // must survive unchanged; slots 18..131 are new, netCDF-default-filled
+        // space this test doesn't assert on.
+        CHECK(reopened.shape("OTHER_URB_VAR") == std::vector<std::size_t>{1, newNumUrbParams, southNorth, westEast});
+        const auto otherUrbVar = reopened.readFloat("OTHER_URB_VAR");
+        for (std::size_t p = 0; p < 18 * southNorth * westEast; ++p) CHECK(otherUrbVar[p] == 7.0f);
+    }
 
     std::filesystem::remove(dst);
 }
@@ -1899,22 +1931,26 @@ TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matc
         return data;
     });
 
-    const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
-    const auto dims = reopened.dimensions();
-    const auto landCat = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "land_cat"; });
-    REQUIRE(landCat != dims.end());
-    CHECK(landCat->length == newLandCat);
+    // Scoped so `reopened` closes before removing `dst` below - an open
+    // handle onto it blocks std::filesystem::remove on Windows.
+    {
+        const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
+        const auto dims = reopened.dimensions();
+        const auto landCat = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "land_cat"; });
+        REQUIRE(landCat != dims.end());
+        CHECK(landCat->length == newLandCat);
 
-    CHECK(reopened.shape("LANDUSEF") == std::vector<std::size_t>{1, newLandCat, southNorth, westEast});
-    const auto landusef = reopened.readFloat("LANDUSEF");
-    CHECK(landusef.size() == newLandCat * southNorth * westEast);
-    for (std::size_t i = 0; i < southNorth * westEast; ++i) CHECK(landusef[i] == 1.0f);
-    for (std::size_t i = southNorth * westEast; i < landusef.size(); ++i) CHECK(landusef[i] == 0.0f);
+        CHECK(reopened.shape("LANDUSEF") == std::vector<std::size_t>{1, newLandCat, southNorth, westEast});
+        const auto landusef = reopened.readFloat("LANDUSEF");
+        CHECK(landusef.size() == newLandCat * southNorth * westEast);
+        for (std::size_t i = 0; i < southNorth * westEast; ++i) CHECK(landusef[i] == 1.0f);
+        for (std::size_t i = southNorth * westEast; i < landusef.size(); ++i) CHECK(landusef[i] == 0.0f);
 
-    // A variable untouched by the resize (different dimensions entirely)
-    // still round-trips correctly.
-    CHECK(reopened.shape("LU_INDEX") == std::vector<std::size_t>{1, southNorth, westEast});
-    CHECK(reopened.getAttribute("", "MMINLU").text == "MODIFIED_IGBP_MODIS_NOAH");
+        // A variable untouched by the resize (different dimensions entirely)
+        // still round-trips correctly.
+        CHECK(reopened.shape("LU_INDEX") == std::vector<std::size_t>{1, southNorth, westEast});
+        CHECK(reopened.getAttribute("", "MMINLU").text == "MODIFIED_IGBP_MODIS_NOAH");
+    }
 
     std::filesystem::remove(dst);
 }
