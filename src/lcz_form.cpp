@@ -6,6 +6,7 @@
 
 #include <QColor>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -15,7 +16,6 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
-#include <QMetaObject>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -156,9 +156,7 @@ LczForm::LczForm(QWidget* parent) : QWidget(parent) {
     connect(runButton_, &QPushButton::clicked, this, [this] { startLczFromSignal(); });
 }
 
-LczForm::~LczForm() {
-    if (worker_.joinable()) worker_.join();
-}
+LczForm::~LczForm() = default;
 
 void LczForm::setLczFile(const QString& path) { lczFile_->setText(path); }
 void LczForm::setWrfFile(const QString& path) { wrfFile_->setText(path); }
@@ -233,92 +231,79 @@ void LczForm::runLcz() {
     const auto ucpTable = usingCustomUcpTable ? loadUcpTable(customUcpTable_->text().toStdString()) : defaultUcpTable();
     if (usingCustomUcpTable) checkCustomUcpTableIntegrity(ucpTable);
 
-    // check_lcz_integrity runs synchronously here, on the GUI thread,
-    // before the Run button even disables - matching w2w.py's own main()
-    // sequencing (it's literally the first pipeline step) while surfacing
-    // a domain-coverage/band mistake as an immediate UserError rather than
-    // only discovering it after the background job has already started.
-    // This does mean a large LCZ raster's reprojection briefly blocks the
-    // UI; PORT_W2W.MD documents this as a deliberate simplification rather
-    // than adding a second background pre-check pass for one warp call.
-    // Closed before the worker thread below starts its own NetCDF/HDF5
-    // calls on this same file - HDF5 isn't thread-safe on every platform
-    // (Fedora's system libhdf5 is built without --enable-threadsafe), so
-    // this handle must not still be open, let alone mid-close, once that
-    // thread starts running.
-    auto clean = [&] {
-        const auto wrfNetcdf = NetcdfFile::open(wrfFileStd, NetcdfFile::Mode::ReadOnly);
-        return checkLczIntegrity(lczFile.toStdString(), lczBand, wrfNetcdf);
-    }();
-
     log_->clear();
     results_->clear();
     nbuiMaxLabel_->clear();
     progress_->setRange(0, 0);  // busy indicator - the pipeline has no natural per-step unit count
     setRunning(true);
-    logLine("Check LCZ integrity: OK.");
+    // See the class comment in lcz_form.hpp for why this whole pipeline
+    // runs right here on the GUI thread rather than a background
+    // std::thread: on at least one real configuration, netCDF-C/GDAL used
+    // from a second OS thread after the GUI thread has already touched
+    // them deadlocks, regardless of handle lifetime. Always reset
+    // running_ on the way out, including via an exception - RunningGuard's
+    // destructor runs during stack unwinding just as much as on a normal
+    // return.
+    struct RunningGuard {
+        LczForm* form;
+        ~RunningGuard() { form->setRunning(false); }
+    } runningGuard{this};
 
-    worker_ = std::thread([this, wrfFileString, builtLcz, ucpTable, wrfVersion, frcThreshold, npixNlc, npixArea, clean = std::move(clean)]() mutable {
-        QString error;
-        bool hasError = false;
-        std::vector<std::string> parentMessages;
-        std::vector<CheckResult> checkResults;
-        int nbuiMax = 0;
-        try {
-            const auto stem = wrfFileString.substr(0, wrfFileString.size() - 3);
-            const auto dstNuFile = stem + "_NoUrban.nc";
-            const auto dstLczParamsFile = stem + "_LCZ_params.nc";
-            const auto dstLczExtentFile = stem + "_LCZ_extent.nc";
+    try {
+        logLine("Check LCZ integrity...");
+        QCoreApplication::processEvents();
+        auto clean = [&] {
+            const auto wrfNetcdf = NetcdfFile::open(wrfFileStd, NetcdfFile::Mode::ReadOnly);
+            return checkLczIntegrity(lczFile.toStdString(), lczBand, wrfNetcdf);
+        }();
+        logLine("Check LCZ integrity: OK.");
 
-            QMetaObject::invokeMethod(this, [this] { logLine("Replace WRF urban land use with surrounding natural land cover..."); }, Qt::QueuedConnection);
-            removeUrban(wrfFileString, dstNuFile, npixNlc, npixArea);
+        const auto stem = wrfFileString.substr(0, wrfFileString.size() - 3);
+        const auto dstNuFile = stem + "_NoUrban.nc";
+        const auto dstLczParamsFile = stem + "_LCZ_params.nc";
+        const auto dstLczExtentFile = stem + "_LCZ_extent.nc";
 
-            QMetaObject::invokeMethod(this, [this] { logLine("Create LCZ-based geo_em file..."); }, Qt::QueuedConnection);
-            const LczParamsInputs inputs{dstNuFile, wrfFileString, clean, builtLcz, ucpTable, wrfVersion, frcThreshold};
-            nbuiMax = createLczParamsFile(inputs, dstLczParamsFile);
+        logLine("Replace WRF urban land use with surrounding natural land cover...");
+        QCoreApplication::processEvents();
+        removeUrban(wrfFileString, dstNuFile, npixNlc, npixArea);
 
-            QMetaObject::invokeMethod(
-                this, [this] { logLine("Create LCZ-based urban extent geo_em file..."); }, Qt::QueuedConnection);
-            createLczExtentFile(dstLczParamsFile, wrfFileString, dstLczExtentFile);
+        logLine("Create LCZ-based geo_em file...");
+        QCoreApplication::processEvents();
+        const LczParamsInputs inputs{dstNuFile, wrfFileString, clean, builtLcz, ucpTable, wrfVersion, frcThreshold};
+        const int nbuiMax = createLczParamsFile(inputs, dstLczParamsFile);
 
-            QMetaObject::invokeMethod(
-                this, [this] { logLine("Expanding land categories of parent domain(s)..."); }, Qt::QueuedConnection);
-            parentMessages = expandLandCatParents(wrfFileString, wrfVersion);
+        logLine("Create LCZ-based urban extent geo_em file...");
+        QCoreApplication::processEvents();
+        createLczExtentFile(dstLczParamsFile, wrfFileString, dstLczExtentFile);
 
-            QMetaObject::invokeMethod(this, [this] { logLine("Running sanity checks..."); }, Qt::QueuedConnection);
-            // No *_clean.tif is ever written to disk by this port's
-            // checkLczIntegrity (the cleaned raster stays in memory - see
-            // lcz.hpp) - pass a path that can never exist so
-            // checksAndCleaning's cleanup step is a harmless no-op.
-            const ChecksAndCleaningInputs checksInputs{"", wrfFileString, dstNuFile, dstLczExtentFile, dstLczParamsFile};
-            checkResults = checksAndCleaning(checksInputs, ucpTable);
-        } catch (const std::exception& e) {
-            error = QString::fromUtf8(e.what());
-            hasError = true;
+        logLine("Expanding land categories of parent domain(s)...");
+        QCoreApplication::processEvents();
+        const auto parentMessages = expandLandCatParents(wrfFileString, wrfVersion);
+        for (const auto& message : parentMessages) logLine(QString::fromStdString(message));
+
+        logLine("Running sanity checks...");
+        QCoreApplication::processEvents();
+        // No *_clean.tif is ever written to disk by this port's
+        // checkLczIntegrity (the cleaned raster stays in memory - see
+        // lcz.hpp) - pass a path that can never exist so
+        // checksAndCleaning's cleanup step is a harmless no-op.
+        const ChecksAndCleaningInputs checksInputs{"", wrfFileString, dstNuFile, dstLczExtentFile, dstLczParamsFile};
+        const auto checkResults = checksAndCleaning(checksInputs, ucpTable);
+
+        progress_->setRange(0, 1);
+        progress_->setValue(1);
+        for (const auto& result : checkResults) {
+            auto* item = new QListWidgetItem(QString::fromStdString(result.name + ": " + result.message), results_);
+            item->setForeground(result.status == CheckStatus::Ok ? QColor(Qt::darkGreen) : QColor(Qt::darkYellow));
         }
-
-        QMetaObject::invokeMethod(
-            this,
-            [this, hasError, error, parentMessages, checkResults, nbuiMax] {
-                setRunning(false);
-                progress_->setRange(0, 1);
-                if (hasError) {
-                    progress_->setValue(0);
-                    logLine("ERROR: " + error);
-                    QMessageBox::critical(this, "LCZ", error);
-                    return;
-                }
-                progress_->setValue(1);
-                for (const auto& message : parentMessages) logLine(QString::fromStdString(message));
-                for (const auto& result : checkResults) {
-                    auto* item = new QListWidgetItem(QString::fromStdString(result.name + ": " + result.message), results_);
-                    item->setForeground(result.status == CheckStatus::Ok ? QColor(Qt::darkGreen) : QColor(Qt::darkYellow));
-                }
-                nbuiMaxLabel_->setText(QString("Set nbui_max to %1 during compilation, in order to optimize memory storage.").arg(nbuiMax));
-                logLine("LCZ processing complete.");
-            },
-            Qt::QueuedConnection);
-    });
+        nbuiMaxLabel_->setText(QString("Set nbui_max to %1 during compilation, in order to optimize memory storage.").arg(nbuiMax));
+        logLine("LCZ processing complete.");
+    } catch (const std::exception& e) {
+        progress_->setRange(0, 1);
+        progress_->setValue(0);
+        logLine("ERROR: " + QString::fromUtf8(e.what()));
+        throw;
+    }
 }
 
 }  // namespace wrftools

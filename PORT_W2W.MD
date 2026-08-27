@@ -617,6 +617,43 @@ against the file so the two can't silently drift apart. CTest count 111 ->
 113 (2 new core_tests.cpp cases: the drift-pin above and one for
 `loadUcpTableFromString` directly).
 
+**Follow-up: `LczForm`'s background thread was a real, reproducible
+deadlock hazard, not just a theoretical one - removed.** A user reported a
+run that hung indefinitely; the `wrftools_ui_tests` end-to-end LCZ case
+(which had previously passed) started failing the same way once run
+against a rebuilt tree. Root-caused via direct reproduction, isolated from
+Qt entirely: a small standalone program that (1) opens a `NetcdfFile` and
+calls `checkLczIntegrity` (touching GDAL) on the main thread, closes that
+handle, then (2) spawns a `std::thread` that calls `NetcdfFile::open` again
+on a *different* file - hangs forever, on this machine's system libhdf5
+(built without `--enable-threadsafe`). Confirmed the closed-handle theory
+an intermediate commit had already tried (closing the `NetcdfFile` before
+starting the worker thread) does NOT fix it - the deadlock isn't about
+concurrently-open handles, it's that netCDF-C/HDF5's global state becomes
+thread-affined to whichever OS thread first touches it, and using it from
+a second thread later - even fully sequentially, even after every prior
+handle is closed - deadlocks. Since `main.cpp` itself calls
+`GDALAllRegister()` on the GUI thread before any window exists, and GDAL is
+used elsewhere in this app's GUI-thread code (rendering, domain overlays),
+this state is *always* already thread-affined to the GUI thread by the
+time a user opens the LCZ tab - so backgrounding only `checkLczIntegrity`,
+or any subset of the pipeline, could never have been safe on such a build.
+
+Fixed by removing `LczForm`'s `std::thread` entirely: `runLcz()` now runs
+the whole pipeline synchronously on the GUI thread, calling
+`QCoreApplication::processEvents()` between stages so the UI still
+repaints/responds between them (fully blocked only within any single
+stage) - the same tradeoff this project had already accepted for
+`checkLczIntegrity` alone, now extended to the whole run. `GeotiffConvertForm`
+keeps its own background thread unchanged: it is safe specifically because
+`convert_geotiff_lib` is GDAL-free by design (writes via libtiff/libgeotiff
+directly, per its own doc comment), so it never touches this hazard.
+`wrftools_ui_tests`' full LCZ run (previously ~20s) now finishes
+comfortably within its 60s deadline; the full suite's total time rose from
+about 60s to about 200s purely because that one Qt test process is no
+longer overlapping GUI-thread event-loop spinning with worker-thread GDAL
+work - not a regression, just the honest cost of the safe design.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <thread>
 #include <QWidget>
 
 class QComboBox;
@@ -17,9 +16,28 @@ namespace wrftools {
 // The "LCZ" tab: a GUI over the Stage 2-4 LCZ pipeline (removeUrban ->
 // createLczParamsFile -> createLczExtentFile -> expandLandCatParents ->
 // checksAndCleaning), ported from add_wrf_version's main() (w2w.py:57-239).
-// Mirrors GeotiffConvertForm's shape: file pickers, an argument panel, a
-// background std::thread doing the actual work, and QMetaObject::
-// invokeMethod to marshal progress/results back to the GUI thread.
+//
+// Unlike GeotiffConvertForm, this form runs its entire pipeline
+// synchronously on the GUI thread, NOT on a background std::thread -
+// deliberately, not as an oversight. GeotiffConvertForm's own worker
+// thread is safe only because convert_geotiff_lib is GDAL-free by design
+// (writes via libtiff/libgeotiff directly); this pipeline is built on
+// NetcdfFile (netCDF-C) and GDAL warps, and on at least one real
+// configuration (Fedora's system libhdf5, built without
+// --enable-threadsafe) using netCDF-C/GDAL from a second OS thread AFTER
+// the main/GUI thread has already touched them - even with every handle
+// already fully closed, non-concurrently - deadlocks the process. Confirmed
+// by direct reproduction, not theoretical: since main.cpp's own
+// GDALAllRegister() call (and ordinary GDAL use elsewhere in this app, all
+// on the GUI thread) means GDAL/HDF5 state is *always* already
+// thread-affined to the GUI thread by the time a user opens this tab, no
+// background thread here can ever be safe on such a build - moving only
+// checkLczIntegrity off the GUI thread would not have helped. runLcz()
+// calls QCoreApplication::processEvents() between pipeline stages instead,
+// so the UI still repaints/responds to a resize between stages even though
+// it's fully blocked while inside any single one (the same tradeoff this
+// project already accepted for checkLczIntegrity alone, now extended to
+// the whole run - see PORT_W2W.MD Stage 5's follow-up note).
 //
 // Unlike w2w.py's CLI, this form has no separate io_dir argument: every
 // output path this pipeline writes is derived directly from the target
@@ -47,14 +65,13 @@ public:
     void setWrfFile(const QString& path);
     void setCustomUcpTable(const QString& path);
 
-    // Validates every field and, if valid, runs checkLczIntegrity
-    // synchronously (surfacing a domain-coverage/band/UCP-table mistake
-    // immediately, before any background work starts or the Run button
-    // even disables - matching this project's applyFieldsToSelectedLayer/
-    // applySelectedDomainFields convention of throwing UserError rather
-    // than popping a blocking QMessageBox), then spawns a background
-    // thread running the rest of the pipeline. Public so tests can assert
-    // on validation failures directly with CHECK_THROWS_AS.
+    // Validates every field, then runs the entire pipeline synchronously
+    // (see the class comment for why it isn't backgrounded) - any
+    // UserError, whether from field validation or from a pipeline stage
+    // itself, propagates out of this call. Public so tests can assert on
+    // failures directly with CHECK_THROWS_AS; the Run button itself is
+    // wired to startLczFromSignal(), which catches and shows a
+    // QMessageBox for a real click.
     void runLcz();
     [[nodiscard]] bool isRunning() const noexcept { return running_; }
 
@@ -101,7 +118,6 @@ private:
     QListWidget* results_{};
     QLabel* nbuiMaxLabel_{};
 
-    std::thread worker_;
     std::atomic<bool> running_{false};
 };
 
