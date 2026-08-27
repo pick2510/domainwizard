@@ -82,7 +82,7 @@ jobs:
       - name: Diagnose whether Qt or GDAL causes the hang (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 3
+        timeout-minutes: 4
         run: |
           $mingw = "$env:RUNNER_TEMP\msys64\mingw64"
           $env:PATH = "$mingw\bin;$env:PATH"
@@ -115,6 +115,27 @@ jobs:
           int main() { GDALAllRegister(); puts("probe_gdal ok"); std::_Exit(0); }' | Out-File -Encoding ascii probe_gdal.cpp
           & "$mingw\bin\g++.exe" -std=c++20 probe_gdal.cpp -o probe_gdal.exe "-I$mingw\include" "-L$mingw\lib" -lgdal
           Run-Probe "probe_gdal" ".\probe_gdal.exe"
+
+          # Neither alone hung - combines both AND actually opens a real
+          # netCDF fixture via GDAL (closer to what WrfFile's constructor,
+          # test #1's own hang site, does than just GDALAllRegister()) to
+          # isolate whether it's the Qt+GDAL combination, or netCDF/HDF5
+          # file I/O specifically, that's responsible.
+          '#include <cstdio>
+          #include <cstdlib>
+          #include <QImage>
+          #include <gdal_priv.h>
+          int main() {
+              GDALAllRegister();
+              QImage image(4, 4, QImage::Format_RGBA8888);
+              auto* ds = GDALOpen("NETCDF:tests/fixtures/wrfout_with_1d_var.nc:T2", GA_ReadOnly);
+              puts(ds ? "opened dataset" : "open FAILED");
+              if (ds) GDALClose(ds);
+              puts("probe_combined ok");
+              std::_Exit(0);
+          }' | Out-File -Encoding ascii probe_combined.cpp
+          & "$mingw\bin\g++.exe" -std=c++20 probe_combined.cpp -o probe_combined.exe @qtFlags "-I$mingw\include" "-L$mingw\lib" -lgdal
+          Run-Probe "probe_combined" ".\probe_combined.exe"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
