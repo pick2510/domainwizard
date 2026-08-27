@@ -1715,6 +1715,61 @@ TEST_CASE("Full LCZ pipeline (checkLczIntegrity -> removeUrban -> createLczParam
     for (const auto& fp : {noUrbanPath, paramsPath, extentPath}) std::filesystem::remove(fp);
 }
 
+TEST_CASE("NetcdfFile::rebuildStructure resizes a source dimension that already collides with an override's new dimension name") {
+    // Real-world regression: a geo_em file straight out of a newer
+    // geogrid.exe run can already have urban physics configured, with its
+    // own "num_urb_params" dimension - the EXACT name createLczParamsFile
+    // needs for its own URB_PARAM override. Before this fix,
+    // rebuildStructure always ran an unconditional nc_def_dim for every
+    // `newDimensions` entry, which failed with "String match to name in
+    // use" the instant a source file already had that name (confirmed
+    // against a real user-supplied Hong Kong domain: geogrid.exe's own
+    // output already carries `num_urb_params = 132`). 5by5.nc doesn't
+    // have this dimension itself (its own URB_PARAM uses an oddly-named
+    // "18" dimension, like the Zaragoza sample data) - added here to
+    // reproduce the collision deliberately.
+    const auto dst = lczFixtureCopy("rebuild_collision");
+    {
+        auto file = NetcdfFile::open(dst, NetcdfFile::Mode::ReadWrite);
+        file.defineDimension("num_urb_params", 18);
+        file.defineVariable("OTHER_URB_VAR", NC_FLOAT, {"Time", "num_urb_params", "south_north", "west_east"});
+        std::vector<float> data(1 * 18 * 5 * 5, 7.0f);
+        file.writeFloat("OTHER_URB_VAR", data);
+    }
+
+    const std::size_t southNorth = 5, westEast = 5, newLandCat = 45, newNumUrbParams = 132;
+    const std::vector<float> urbParamData(1 * newNumUrbParams * southNorth * westEast, 3.0f);
+    NetcdfFile::rebuildStructure(
+        dst, "land_cat", newLandCat,
+        [&](const std::string& variableName) -> std::optional<std::vector<float>> {
+            if (variableName != "LANDUSEF") return std::nullopt;
+            return std::vector<float>(newLandCat * southNorth * westEast, 0.0f);
+        },
+        {{"num_urb_params", newNumUrbParams}},  // the caller still declares it as "new" - it happens to already exist in this source file
+        {{"URB_PARAM", NC_FLOAT, {"Time", "num_urb_params", "south_north", "west_east"}, urbParamData}});
+
+    const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
+    const auto dims = reopened.dimensions();
+    const auto numUrbParamsDim = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "num_urb_params"; });
+    REQUIRE(numUrbParamsDim != dims.end());
+    CHECK(numUrbParamsDim->length == newNumUrbParams);  // resized in place, not left at 18
+
+    CHECK(reopened.shape("URB_PARAM") == std::vector<std::size_t>{1, newNumUrbParams, southNorth, westEast});
+    const auto urbParam = reopened.readFloat("URB_PARAM");
+    CHECK(urbParam.size() == newNumUrbParams * southNorth * westEast);
+    for (float v : urbParam) CHECK(v == 3.0f);
+
+    // OTHER_URB_VAR wasn't overridden and still uses the (now-resized)
+    // "num_urb_params" dimension - its original 18 slots' worth of data
+    // must survive unchanged; slots 18..131 are new, netCDF-default-filled
+    // space this test doesn't assert on.
+    CHECK(reopened.shape("OTHER_URB_VAR") == std::vector<std::size_t>{1, newNumUrbParams, southNorth, westEast});
+    const auto otherUrbVar = reopened.readFloat("OTHER_URB_VAR");
+    for (std::size_t p = 0; p < 18 * southNorth * westEast; ++p) CHECK(otherUrbVar[p] == 7.0f);
+
+    std::filesystem::remove(dst);
+}
+
 TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matching w2w's own category-count expansion") {
     const auto dst = lczFixtureCopy("resize");
 

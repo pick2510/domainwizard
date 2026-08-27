@@ -654,6 +654,46 @@ about 60s to about 200s purely because that one Qt test process is no
 longer overlapping GUI-thread event-loop spinning with worker-thread GDAL
 work - not a regression, just the honest cost of the safe design.
 
+**Follow-up: a second real "String match to name in use" collision, found
+against a user's actual Hong Kong domain.** `createLczParamsFile`'s
+`rebuildStructure` call declares `num_urb_params` as a brand-new dimension
+(`newDimensions`) for its `URB_PARAM` override. Stage 3's own fixture
+(`sample_data/geo_em.d04.nc`) already had an existing, differently-shaped
+URB_PARAM - but its parameter-count dimension happened to be named
+something else entirely (`\18`, an oddly-named leftover from an older
+geogrid convention), so it never collided with the literal name
+`num_urb_params` and this case went unexercised. A user's real geogrid.exe
+output (a Hong Kong domain, from a newer WRF/WPS build) already names that
+dimension exactly `num_urb_params` - because that build's default urban
+physics scheme already uses the modern 132-parameter layout - so
+`rebuildStructure`'s unconditional `nc_def_dim("num_urb_params", ...)`
+failed immediately: `NetCDF error (nc_def_dim num_urb_params): NetCDF:
+String match to name in use`.
+
+Fixed generally, not by special-casing this one name:
+`NetcdfFile::rebuildStructure` (`netcdf_file.cpp`) now checks each
+`newDimensions` entry against the source file's own dimensions first; a
+name that already exists is folded into the same resize-in-place handling
+`resizedDimensionName` already got (so it's grown/shrunk to the requested
+length as part of the normal dimension-copy pass, not redefined from
+scratch), and only genuinely-new names go through the original
+"define-from-scratch" path. A non-overridden variable that happens to
+share the resized dimension (verified with a synthetic `OTHER_URB_VAR` in
+the new test) is unaffected: it's still copied using the SOURCE file's own
+element counts for that axis, so its original data survives unchanged into
+the newly-larger dimension.
+
+Verified two ways: (1) a new, fast `core_tests.cpp` case
+(`NetcdfFile::rebuildStructure resizes a source dimension that already
+collides with an override's new dimension name`) using a synthetic
+5by5.nc-based fixture that deliberately adds a `num_urb_params` dimension
+first - confirmed to fail with the user's exact error message when run
+against the pre-fix code (via a `git stash` of just this fix), and to pass
+with it; (2) the full pipeline run end-to-end against the user's actual
+Hong Kong `geo_em.d03.nc` + `HK.tif` (outside the repo, not committed -
+privacy/size), which completed successfully (`nbui_max=11`) after the fix,
+having failed at this exact point before it. CTest count 113 -> 114.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

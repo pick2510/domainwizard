@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <numeric>
+#include <optional>
+#include <set>
 #include <utility>
 
 namespace wrftools {
@@ -510,6 +512,28 @@ void NetcdfFile::rebuildStructure(const std::filesystem::path& path, const std::
     try {
         for (const auto& name : attributeNames(srcNcid, NC_GLOBAL)) copyAttribute(srcNcid, NC_GLOBAL, name, dstNcid, NC_GLOBAL);
 
+        // A `newDimensions` entry is usually genuinely new (e.g.
+        // "num_urb_params" on a source file that never had urban physics
+        // configured at all), but some real-world geo_em files already
+        // carry a dimension of that exact name themselves - e.g. from a
+        // newer WRF/geogrid version's own default urban physics scheme, or
+        // from a file this tool (or w2w itself) already processed once.
+        // Treat any such collision as a resize of the EXISTING dimension
+        // (same handling as resizedDimensionName below), not a fresh
+        // nc_def_dim - which would otherwise fail with "String match to
+        // name in use" the moment a real file already has it.
+        std::set<std::string> newDimensionNamesAlreadyInSource;
+        for (const auto& [name, length] : newDimensions) {
+            int existingDimid = -1;
+            if (nc_inq_dimid(srcNcid, name.c_str(), &existingDimid) == NC_NOERR) newDimensionNamesAlreadyInSource.insert(name);
+        }
+        const auto resizedLengthFor = [&](const std::string& name) -> std::optional<std::size_t> {
+            if (name == resizedDimensionName) return resizedDimensionNewLength;
+            for (const auto& [newName, newLength] : newDimensions)
+                if (newName == name && newDimensionNamesAlreadyInSource.contains(name)) return newLength;
+            return std::nullopt;
+        };
+
         // Existing dimensions - ids assigned in definition order on both
         // sides, as in resizeDimension.
         int ndims = 0;
@@ -521,13 +545,17 @@ void NetcdfFile::rebuildStructure(const std::filesystem::path& path, const std::
             std::size_t length = 0;
             checkNc(nc_inq_dim(srcNcid, dimid, name, &length), "nc_inq_dim");
             const bool isUnlimited = dimid == unlimDimid;
-            const std::size_t effectiveLength = (std::string(name) == resizedDimensionName) ? resizedDimensionNewLength : length;
+            const auto resized = resizedLengthFor(name);
+            const std::size_t effectiveLength = resized.value_or(length);
             int newDimId = -1;
             checkNc(nc_def_dim(dstNcid, name, isUnlimited ? NC_UNLIMITED : effectiveLength, &newDimId), "nc_def_dim " + std::string(name));
             if (newDimId != dimid) throw UserError("NetcdfFile::rebuildStructure: unexpected dimension id mismatch copying " + path.string());
         }
-        // Brand-new dimensions the overrides need.
+        // Brand-new dimensions the overrides need - skipping any that
+        // already existed in the source file and were resized in place
+        // above.
         for (const auto& [name, length] : newDimensions) {
+            if (newDimensionNamesAlreadyInSource.contains(name)) continue;
             int newDimId = -1;
             checkNc(nc_def_dim(dstNcid, name.c_str(), length, &newDimId), "nc_def_dim " + name);
         }
