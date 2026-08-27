@@ -69,6 +69,8 @@ Crs Crs::lonLat() { return Crs("+proj=latlong" + sphereSuffix()); }
 
 Crs Crs::wgs84() { return Crs("+proj=longlat +datum=WGS84 +no_defs"); }
 
+Crs Crs::fromProj4(std::string proj4) { return Crs(std::move(proj4)); }
+
 Crs Crs::fromWkt(const std::string& wkt) {
     OGRSpatialReference srs;
     if (srs.importFromWkt(wkt.c_str()) != OGRERR_NONE) throw UserError("Could not parse coordinate reference system WKT.");

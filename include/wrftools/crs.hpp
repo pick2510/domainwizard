@@ -37,6 +37,12 @@ public:
     // Wraps an externally-supplied CRS (e.g. a file's own projection, read
     // via GDAL) given as WKT, for use as the source of a transformBbox call.
     [[nodiscard]] static Crs fromWkt(const std::string& wkt);
+    // Wraps an arbitrary proj4 string directly - for CRSes with no named
+    // factory here (e.g. the w2w LCZ port's own +proj=eqc WRF-lat-lon
+    // grid CRS, see lcz.cpp's wrfGridInfo - distinct from lonLat()'s
+    // +proj=latlong, which is what the rest of this project uses for a
+    // WRF MAP_PROJ=6 domain).
+    [[nodiscard]] static Crs fromProj4(std::string proj4);
 
     [[nodiscard]] const std::string& proj4() const noexcept { return proj4_; }
     [[nodiscard]] std::string wkt() const;

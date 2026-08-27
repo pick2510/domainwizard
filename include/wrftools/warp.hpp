@@ -25,4 +25,20 @@ struct WarpedRaster {
 [[nodiscard]] WarpedRaster warpToWebMercator(std::span<const float> values, int width, int height,
     const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform);
 
+// Mirrors rasterio.warp.Resampling's two modes w2w actually uses, plus the
+// two this project's own display warp already uses - not the full GDAL set.
+enum class ResampleMethod { Bilinear, Average, Mode, Nearest };
+
+// Reprojects a raster into a CALLER-KNOWN destination grid (CRS +
+// geotransform + size), unlike warpToWebMercator (which only ever targets
+// EPSG:3857 and lets GDAL pick the output size). This is what the w2w LCZ
+// port's per-UCP resamplers need: aggregating an LCZ-derived raster onto
+// the exact WRF grid a geo_em file already defines, matching
+// rasterio.warp.reproject(src, dst, ...)'s "already-shaped destination"
+// semantics. Source NaNs are treated as nodata; destination pixels the
+// source never covers come back NaN too.
+[[nodiscard]] std::vector<float> warpToGrid(std::span<const float> values, int width, int height, const std::string& sourceWkt,
+    const std::array<double, 6>& sourceGeotransform, const std::string& destWkt, const std::array<double, 6>& destGeotransform, int destWidth,
+    int destHeight, ResampleMethod resampling);
+
 }  // namespace wrftools

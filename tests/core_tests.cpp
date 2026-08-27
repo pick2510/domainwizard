@@ -12,6 +12,7 @@
 #include "wrftools/wps_binary_source.hpp"
 #include "wrftools/wrf_source.hpp"
 #include "wrftools/netcdf_file.hpp"
+#include "wrftools/lcz.hpp"
 #include "fast_exit.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1321,6 +1322,56 @@ TEST_CASE("NetcdfFile mutates a variable and a global attribute without disturbi
     CHECK(reopened.getAttribute("LU_INDEX", "description").text == "Dominant category");
 
     std::filesystem::remove(dst);
+}
+
+TEST_CASE("wrfGridInfo matches w2w's own _get_wrf_grid_info for a MAP_PROJ=6 (lat-lon/eqc) domain") {
+    const auto file = NetcdfFile::open("tests/fixtures/lcz/5by5.nc", NetcdfFile::Mode::ReadOnly);
+    const auto info = wrfGridInfo(file);
+
+    CHECK(info.width == 5);
+    CHECK(info.height == 5);
+    // Pinned against `uv run python -c "import w2w.w2w as w; ..."` on
+    // w2w's own add_wrf_version branch (_get_wrf_grid_info is unchanged
+    // there vs. main) against this exact fixture.
+    CHECK(info.geotransform[0] == Catch::Approx(-751560.7950914681));
+    CHECK(info.geotransform[1] == Catch::Approx(1111.7747802734375));
+    CHECK(info.geotransform[2] == Catch::Approx(0.0));
+    CHECK(info.geotransform[3] == Catch::Approx(4631097.686290965));
+    CHECK(info.geotransform[4] == Catch::Approx(0.0));
+    CHECK(info.geotransform[5] == Catch::Approx(1111.7747802734375));  // positive - see WrfGridInfo's doc comment
+}
+
+TEST_CASE("wrfGridInfo matches w2w's own _get_wrf_grid_info for a MAP_PROJ=1 (Lambert) domain") {
+    const auto file = NetcdfFile::open("tests/fixtures/lcz/geo_em.d01_Shanghai_ncl20.nc", NetcdfFile::Mode::ReadOnly);
+    const auto info = wrfGridInfo(file);
+
+    CHECK(info.width == 90);
+    CHECK(info.height == 90);
+    CHECK(info.geotransform[0] == Catch::Approx(-44998.556668209276));
+    CHECK(info.geotransform[1] == Catch::Approx(1000.0));
+    CHECK(info.geotransform[2] == Catch::Approx(0.0));
+    CHECK(info.geotransform[3] == Catch::Approx(-44999.156109511205));
+    CHECK(info.geotransform[4] == Catch::Approx(0.0));
+    CHECK(info.geotransform[5] == Catch::Approx(1000.0));
+}
+
+TEST_CASE("warpToGrid reprojects into a caller-specified destination grid, not just EPSG:3857") {
+    const auto sourceCrs = Crs::fromProj4("+proj=merc +lon_0=0 +x_0=0 +y_0=0 +a=6370000 +b=6370000 +no_defs");
+    const int width = 4, height = 4;
+    std::vector<float> values(static_cast<std::size_t>(width) * height);
+    for (int row = 0; row < height; ++row)
+        for (int col = 0; col < width; ++col) values[static_cast<std::size_t>(row) * width + col] = static_cast<float>(col);
+    const std::array<double, 6> sourceGt{0.0, 100.0, 0.0, 400.0, 0.0, -100.0};  // north-up, dx=100, origin (0,400)
+
+    // Same CRS, same extent, half the resolution: each destination pixel
+    // should average a 2x2 block of the source.
+    const std::array<double, 6> destGt{0.0, 200.0, 0.0, 400.0, 0.0, -200.0};
+    const auto warped = warpToGrid(values, width, height, sourceCrs.wkt(), sourceGt, sourceCrs.wkt(), destGt, 2, 2, ResampleMethod::Average);
+    REQUIRE(warped.size() == 4);
+    CHECK(warped[0] == Catch::Approx(0.5).margin(0.05));  // top-left: source cols {0,1}
+    CHECK(warped[1] == Catch::Approx(2.5).margin(0.05));  // top-right: source cols {2,3}
+    CHECK(warped[2] == Catch::Approx(0.5).margin(0.05));
+    CHECK(warped[3] == Catch::Approx(2.5).margin(0.05));
 }
 
 TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matching w2w's own category-count expansion") {

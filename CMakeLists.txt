@@ -77,6 +77,7 @@ add_library(wrftools_core
     src/wrf_source.cpp
     src/wps_binary_source.cpp
     src/netcdf_file.cpp
+    src/lcz.cpp
 )
 target_include_directories(wrftools_core PUBLIC include)
 target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui convert_geotiff_reader PkgConfig::NETCDF)

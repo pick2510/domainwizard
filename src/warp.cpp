@@ -4,6 +4,7 @@
 #include <gdal_priv.h>
 #include <gdal_utils.h>
 #include <gdal_alg.h>
+#include <gdalwarper.h>
 #include <cpl_string.h>
 #include <ogr_spatialref.h>
 
@@ -116,6 +117,61 @@ WarpedRaster warpToWebMercator(std::span<const float> values, int width, int hei
     const double minX = warpedTransform[0], maxY = warpedTransform[3];
     const double maxX = minX + warpedTransform[1] * warpedWidth, minY = maxY + warpedTransform[5] * warpedHeight;
     return {std::move(warpedValues), warpedWidth, warpedHeight, {minX, minY, maxX, maxY}};
+}
+
+std::vector<float> warpToGrid(std::span<const float> values, int width, int height, const std::string& sourceWkt,
+    const std::array<double, 6>& sourceGeotransform, const std::string& destWkt, const std::array<double, 6>& destGeotransform, int destWidth,
+    int destHeight, ResampleMethod resampling) {
+    GDALAllRegister();
+    auto* memDriver = GetGDALDriverManager()->GetDriverByName("MEM");
+    if (!memDriver) throw UserError("GDAL's MEM driver is unavailable.");
+
+    std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> source(
+        memDriver->Create("", width, height, 1, GDT_Float32, nullptr), [](GDALDataset* d) { if (d) GDALClose(d); });
+    if (!source) throw UserError("Could not create an in-memory source raster for warping.");
+    source->SetProjection(sourceWkt.c_str());
+    source->SetGeoTransform(const_cast<double*>(sourceGeotransform.data()));
+
+    std::vector<float> filled(values.begin(), values.end());
+    for (auto& value : filled) if (!std::isfinite(value)) value = kNodataSentinel;
+    auto* sourceBand = source->GetRasterBand(1);
+    if (sourceBand->RasterIO(GF_Write, 0, 0, width, height, filled.data(), width, height, GDT_Float32, 0, 0) != CE_None)
+        throw UserError("Could not write source raster for warping.");
+    sourceBand->SetNoDataValue(kNodataSentinel);
+
+    std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> dest(
+        memDriver->Create("", destWidth, destHeight, 1, GDT_Float32, nullptr), [](GDALDataset* d) { if (d) GDALClose(d); });
+    if (!dest) throw UserError("Could not create an in-memory destination raster for warping.");
+    dest->SetProjection(destWkt.c_str());
+    dest->SetGeoTransform(const_cast<double*>(destGeotransform.data()));
+    auto* destBand = dest->GetRasterBand(1);
+    destBand->SetNoDataValue(kNodataSentinel);
+    // GDALReprojectImage only ever writes pixels the source actually
+    // covers - pre-fill so any destination pixel outside the source's
+    // extent (or masked as source nodata) reads back as nodata rather
+    // than whatever MEM's default zero-fill would leave it as.
+    if (destBand->Fill(kNodataSentinel) != CE_None) throw UserError("Could not initialize destination raster for warping.");
+
+    const GDALResampleAlg algorithm = [&] {
+        switch (resampling) {
+            case ResampleMethod::Bilinear: return GRA_Bilinear;
+            case ResampleMethod::Average: return GRA_Average;
+            case ResampleMethod::Mode: return GRA_Mode;
+            case ResampleMethod::Nearest: return GRA_NearestNeighbour;
+        }
+        return GRA_NearestNeighbour;
+    }();
+
+    if (GDALReprojectImage(GDALDataset::ToHandle(source.get()), sourceWkt.c_str(), GDALDataset::ToHandle(dest.get()), destWkt.c_str(), algorithm, 0.0,
+            0.0, nullptr, nullptr, nullptr) != CE_None)
+        throw UserError("GDAL reprojection to the destination grid failed.");
+
+    std::vector<float> result(static_cast<std::size_t>(destWidth) * destHeight);
+    if (destBand->RasterIO(GF_Read, 0, 0, destWidth, destHeight, result.data(), destWidth, destHeight, GDT_Float32, 0, 0) != CE_None)
+        throw UserError("Could not read warped raster.");
+    for (auto& value : result)
+        if (std::abs(value - kNodataSentinel) <= 1e-5f * std::max(1.0f, std::abs(kNodataSentinel))) value = std::numeric_limits<float>::quiet_NaN();
+    return result;
 }
 
 }  // namespace wrftools

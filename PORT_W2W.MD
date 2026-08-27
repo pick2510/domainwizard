@@ -159,34 +159,59 @@ attributes, and write a new file with full fidelity.
 
 ## Stage 1 - Geospatial pieces already half-built
 
-- **Generalize `warpToWebMercator`** (`warp.hpp`/`warp.cpp`) into a
-  `warpToGrid(values, width, height, sourceWkt, sourceGeotransform, destWkt,
-  destGeotransform, destWidth, destHeight, resampling)` that takes an
-  explicit destination CRS/transform/shape/resampling method instead of
-  hardcoding EPSG:3857 + bilinear. Keep `warpToWebMercator` as a thin
-  wrapper calling the generalized function with EPSG:3857 + bilinear, so
-  every existing caller (`LayerRenderer`, `WpsBinarySource`) and its tests
-  are untouched. `Resampling` needs `average` and `mode` (`rasterio.warp.
-  Resampling.average`/`.mode` -> `GDALWarpOptions::eResampleAlg =
-  GRA_Average`/`GRA_Mode`, both already valid GDAL enum values, no new
-  dependency).
-- **WRF-grid transform from a geo_em file**, porting `_get_wrf_grid_info`
-  (`w2w.py:581-660`) - this is *not* the same geotransform `WrfFile`
-  already derives from the staggered U/V grids (`wrf_file.cpp`); w2w derives
-  it from `DX`/`DY`/`CEN_LON`/`CEN_LAT`/grid size directly, centered on the
-  domain's projected center point, matching `Affine.translation(x0 - dx/2,
-  y0 - dy/2) * Affine.scale(dx, dy)` exactly. Reuse `Crs::lambert`/
-  `Crs::polar`/`Crs::mercator`/`Crs::lonLat` (already ported, already pinned
-  against Python) for the four `MAP_PROJ` branches - `w2w.py`'s own proj4
-  construction (`a=6370000, b=6370000`, `lat_1/lat_2/lat_0/lon_0` for
-  Lambert, `lat_ts` for Mercator/Polar) already matches `crs.cpp`'s, so this
-  should be a near-transcription, not new projection math.
-- Pin both against the Python reference the same way `core_tests.cpp`
-  already does for `crs.cpp`/`warp.cpp`: run `w2w`'s own
-  `_get_wrf_grid_info`/`reproject` against `testing/5by5.nc` (or one of the
-  `geo_em.d0*_Shanghai*.nc` fixtures) via `uv run python -c ...` (a venv
-  with w2w's dependencies installed, separately from wrftools), compare the
-  6-term transform and a handful of warped-raster sample values.
+**Status: done.**
+
+- **Generalized warp**: `warpToGrid` (`warp.hpp`/`warp.cpp`) takes an
+  explicit destination CRS/geotransform/shape/`ResampleMethod`
+  (`Bilinear`/`Average`/`Mode`/`Nearest`) instead of hardcoding EPSG:3857.
+  Implemented independently of `warpToWebMercator` via `GDALReprojectImage`
+  against two pre-built MEM datasets (source + a destination already sized/
+  geotransformed by the caller) rather than refactoring
+  `warpToWebMercator` into a thin wrapper as originally sketched -
+  `warpToWebMercator` needs to *discover* its output size
+  (`GDALSuggestedWarpOutput` + its `kMaxWarpDimension` cap) before it has a
+  destination to reproject into, which doesn't fit `warpToGrid`'s
+  "destination already known" shape; sharing an implementation would have
+  meant complicating the simpler, already-tested display path for no
+  benefit. `warpToWebMercator` itself is untouched.
+- **`wrfGridInfo`** (`lcz.hpp`/`lcz.cpp`), porting `_get_wrf_grid_info`
+  (`w2w.py:581-660`) - not the same geotransform `WrfFile` derives from the
+  staggered U/V grids. Two real subtleties found while porting, both now
+  documented at length in `lcz.hpp`'s `WrfGridInfo` doc comment:
+  - **Row order is deliberately NOT flipped.** `WrfFile` reads through
+    GDAL's NetCDF driver, which silently presents WRF's on-disk
+    south-increases-with-row-index arrays as north-up. `NetcdfFile` (Stage
+    0) reads raw netCDF-C data, matching exactly what `xr.open_dataset`
+    sees in Python - so the geotransform's row-height term is **positive**
+    (`dy`, not `-dy`), confirmed by comparing against a live
+    `w2w._get_wrf_grid_info()` run's `Affine.e` value. Any array warped
+    through this geotransform must come from `NetcdfFile`, never `WrfFile`.
+  - **`MAP_PROJ=6` is not `Crs::lonLat()`.** The plan's original assumption
+    was wrong: w2w builds `+proj=eqc +lon_0=STAND_LON +a=6370000
+    +b=6370000` for this case (a projected, metric CRS matching `DX`/`DY`
+    in meters), not the plain `+proj=latlong` (degrees) this project's own
+    `Crs::lonLat()`/`buildWrfCrs`'s `case 6` use for map display. Added
+    `Crs::fromProj4()` (a thin public wrapper around the existing private
+    constructor, mirroring `fromWkt()`) so `wrfGridInfo` can build this
+    proj4 string directly without a named `Crs` factory for it. `Crs::
+    lambert`/`Crs::polar`/`Crs::mercator` *are* reused as originally
+    planned for `MAP_PROJ` 1/2/3, since those already matched.
+  - The domain's projected origin (`e, n`) is transformed from the file's
+    own `CEN_LON`/`CEN_LAT` through **real WGS84** (`Crs::wgs84()`), not
+    this project's usual no-datum-shift `Crs::toXy` - matching w2w's own
+    `pyproj.Proj(proj='latlong', datum='WGS84')` source CRS. Implemented by
+    reusing `Crs::transformBbox` with a degenerate (point-sized) bbox
+    rather than adding a new single-point transform primitive.
+- **Pinned against live Python output**, matching this project's existing
+  practice: `tests/fixtures/lcz/5by5.nc` (`MAP_PROJ=6`) and `tests/
+  fixtures/lcz/geo_em.d01_Shanghai_ncl20.nc` (`MAP_PROJ=1`, from w2w's own
+  `testing/`) back two `wrfGridInfo` cases in `core_tests.cpp`, each
+  checked to full double precision against a real `w2w._get_wrf_grid_info()`
+  call (`w2w`'s `main` branch - this specific function is unchanged on
+  `add_wrf_version`, confirmed by diff). `warpToGrid` gets a same-CRS
+  half-resolution averaging sanity check (no Python fixture needed - purely
+  checks the destination-grid/resampling mechanism itself). All 92 CTest
+  entries pass.
 
 ## Stage 2 - `wrf_remove_urban` (`*_NoUrban.nc`)
 
