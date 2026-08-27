@@ -779,6 +779,34 @@ correct metadata exists in this repo to add a third pinned case; the
 Mercator verification against the real Hong Kong domain is documented here
 instead. CTest count 116 -> 117.
 
+**Follow-up: the first-ever CI run of this branch (triggered by merging
+w2w_port into master) failed on all three platforms** - the same bug
+everywhere, not a Windows quirk. Several `core_tests.cpp` helpers (added
+across Stages 0-4) wrote scratch output to a literal `std::filesystem::path
+("build") / "..."`, assuming a directory literally named `build` already
+existed relative to the test process's working directory. That happened to
+be true on every machine this was developed and tested on interactively
+(`cmake -S . -B build`, this project's own everyday local convention) - but
+CI's actual configure step uses `-B build-cpp` (`.github/workflows/cpp.yml`),
+so no such directory ever existed there, and `std::filesystem::copy_file`/
+`NetcdfFile::copyFile` failed with a misleading `"No such file or
+directory"` that reads like a missing SOURCE fixture (it's actually the
+missing destination directory). This bug pre-dates the w2w port work in
+one sense (the `"build"` literal pattern) but this port's own new
+`core_tests.cpp` helpers were the ones that used it without first calling
+`create_directories` - the file's own established convention elsewhere
+(the WPS_GEOG scratch-dir tests, and every non-LCZ path helper) already
+used `std::filesystem::temp_directory_path()` instead, which is guaranteed
+to exist.
+
+Fixed by switching every LCZ-related scratch-output helper
+(`lczFixtureCopy`, the `removeUrban` test outputs, the Stage 3 end-to-end
+pipeline test, `expandLandCatParentsFixture`, `checksAndCleaningFixtureCopy`)
+to `std::filesystem::temp_directory_path()`, matching the rest of the file.
+Confirmed each of the 9 previously-CI-failing tests passes locally after
+the change - CTest count unchanged (117), no new cases, this is a pure bug
+fix in existing test infrastructure.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

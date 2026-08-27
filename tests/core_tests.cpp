@@ -1302,7 +1302,17 @@ TEST_CASE("WrfSourceRegistry opens a WPS_GEOG directory as a WpsBinarySource, no
 
 namespace {
 std::filesystem::path lczFixtureCopy(const std::string& suffix) {
-    const auto dst = std::filesystem::path("build") / ("netcdf_file_test_" + suffix + ".nc");
+    // temp_directory_path(), not a literal "build" - matches this file's
+    // own established convention elsewhere (the WPS_GEOG scratch-dir
+    // tests above) rather than assuming a directory literally named
+    // "build" exists relative to the test process's working directory:
+    // CI's actual CMake binary dir is "build-cpp", not "build" (see
+    // .github/workflows/cpp.yml) - a bare "build" literal here silently
+    // depended on whichever binary dir name a developer happened to use
+    // locally, and failed outright in CI on all three platforms with a
+    // misleading "No such file or directory" (looks like a missing SOURCE
+    // fixture; it's actually the missing DESTINATION directory).
+    const auto dst = std::filesystem::temp_directory_path() / ("wrftools-cpp-netcdf-file-test-" + suffix + ".nc");
     NetcdfFile::copyFile("tests/fixtures/lcz/5by5.nc", dst);
     return dst;
 }
@@ -1482,7 +1492,7 @@ TEST_CASE("warpToGrid reprojects into a caller-specified destination grid, not j
 
 TEST_CASE("removeUrban matches a live w2w.wrf_remove_urban run (add_wrf_version) on a real 5x5 domain") {
     const auto dst = lczFixtureCopy("remove_urban_src");
-    const auto out = std::filesystem::path("build") / "netcdf_file_test_remove_urban_out.nc";
+    const auto out = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-test-remove-urban-out.nc";
     std::filesystem::remove(out);
 
     // Matches `m.wrf_remove_urban(info, NPIX_NLC=3, NPIX_AREA=9)` run
@@ -1571,7 +1581,7 @@ TEST_CASE("removeUrban's add_wrf_version pre-pass collapses an already-LCZ-tagge
         file.writeFloat("LANDUSEF", luf);
     }
 
-    const auto out = std::filesystem::path("build") / "netcdf_file_test_remove_urban_prepass_out.nc";
+    const auto out = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-test-remove-urban-prepass-out.nc";
     removeUrban(dst, out, 3, 9);
 
     const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
@@ -1589,7 +1599,7 @@ TEST_CASE("removeUrban's add_wrf_version pre-pass collapses an already-LCZ-tagge
 
 TEST_CASE("removeUrban rejects an NPIX_AREA larger than the domain") {
     const auto dst = lczFixtureCopy("remove_urban_area_too_big");
-    const auto out = std::filesystem::path("build") / "netcdf_file_test_remove_urban_toobig_out.nc";
+    const auto out = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-test-remove-urban-toobig-out.nc";
     CHECK_THROWS_AS(removeUrban(dst, out, 3, 1000), UserError);
     std::filesystem::remove(dst);
 }
@@ -1709,9 +1719,9 @@ TEST_CASE("checkLczIntegrity rejects an LCZ GeoTIFF that doesn't cover the WRF d
 TEST_CASE("Full LCZ pipeline (checkLczIntegrity -> removeUrban -> createLczParamsFile -> createLczExtentFile) "
     "matches a live add_wrf_version run on the real Zaragoza sample domain") {
     const auto origPath = std::filesystem::path("tests/fixtures/lcz/geo_em.d04.nc");
-    const auto noUrbanPath = std::filesystem::path("build") / "lcz_e2e_NoUrban.nc";
-    const auto paramsPath = std::filesystem::path("build") / "lcz_e2e_LCZ_params.nc";
-    const auto extentPath = std::filesystem::path("build") / "lcz_e2e_LCZ_extent.nc";
+    const auto noUrbanPath = std::filesystem::temp_directory_path() / "wrftools-cpp-lcz-e2e-NoUrban.nc";
+    const auto paramsPath = std::filesystem::temp_directory_path() / "wrftools-cpp-lcz-e2e-LCZ_params.nc";
+    const auto extentPath = std::filesystem::temp_directory_path() / "wrftools-cpp-lcz-e2e-LCZ_extent.nc";
     for (const auto& p : {noUrbanPath, paramsPath, extentPath}) std::filesystem::remove(p);
 
     const auto wrf = NetcdfFile::open(origPath, NetcdfFile::Mode::ReadOnly);
@@ -1915,7 +1925,7 @@ namespace {
 // - expandLandCatParents locates parent domains purely by filename pattern
 // next to `dstFile`, matching w2w.py's own Info.dst_file-relative lookup.
 std::filesystem::path expandLandCatParentsFixture(const std::string& suffix, const std::vector<std::pair<int, std::string>>& domainToFixture) {
-    const auto dir = std::filesystem::path("build") / ("expand_land_cat_parents_" + suffix);
+    const auto dir = std::filesystem::temp_directory_path() / ("wrftools-cpp-expand-land-cat-parents-" + suffix);
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     for (const auto& [domain, fixture] : domainToFixture) {
@@ -1988,7 +1998,7 @@ TEST_CASE("expandLandCatParents grows a mismatched parent domain's LANDUSEF and 
 
 namespace {
 std::filesystem::path checksAndCleaningFixtureCopy(const std::string& fixture, const std::string& suffix) {
-    const auto dst = std::filesystem::path("build") / ("checks_and_cleaning_" + suffix + "_" + fixture);
+    const auto dst = std::filesystem::temp_directory_path() / ("wrftools-cpp-checks-and-cleaning-" + suffix + "-" + fixture);
     std::filesystem::copy_file(std::filesystem::path("tests/fixtures/lcz") / fixture, dst, std::filesystem::copy_options::overwrite_existing);
     return dst;
 }
