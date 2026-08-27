@@ -1374,6 +1374,120 @@ TEST_CASE("warpToGrid reprojects into a caller-specified destination grid, not j
     CHECK(warped[3] == Catch::Approx(2.5).margin(0.05));
 }
 
+TEST_CASE("removeUrban matches a live w2w.wrf_remove_urban run (add_wrf_version) on a real 5x5 domain") {
+    const auto dst = lczFixtureCopy("remove_urban_src");
+    const auto out = std::filesystem::path("build") / "netcdf_file_test_remove_urban_out.nc";
+    std::filesystem::remove(out);
+
+    // Matches `m.wrf_remove_urban(info, NPIX_NLC=3, NPIX_AREA=9)` run
+    // against this exact fixture (tests/fixtures/lcz/5by5.nc, copied from
+    // w2w's own testing/) on the add_wrf_version branch at 7801b3e.
+    removeUrban(dst, out, 3, 9);
+
+    const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
+    CHECK(result.getAttribute("", "NUM_LAND_CAT").numbers[0] == 21);
+
+    const std::vector<float> expectedLu{
+        7, 12, 7, 7, 14,
+        12, 12, 12, 12, 12,
+        12, 12, 12, 12, 12,
+        12, 5, 12, 12, 12,
+        12, 12, 12, 12, 14,
+    };
+    const auto lu = result.readFloat("LU_INDEX");
+    REQUIRE(lu.size() == expectedLu.size());
+    for (std::size_t i = 0; i < lu.size(); ++i) CHECK(lu[i] == expectedLu[i]);
+
+    constexpr std::size_t ny = 5, nx = 5, npix = ny * nx;
+    const auto greenf = result.readFloat("GREENFRAC");
+    const std::vector<float> expectedGreenMonth0{
+        0.32288238f, 0.34568438f, 0.31409433f, 0.30929843f, 0.27927542f,
+        0.35764524f, 0.40199462f, 0.36666667f, 0.28f, 0.25155333f,
+        0.29333332f, 0.3633333f, 0.36111107f, 0.3127196f, 0.29627478f,
+        0.28f, 0.32999998f, 0.35333332f, 0.36188415f, 0.3021261f,
+        0.29270646f, 0.30135322f, 0.31f, 0.3196875f, 0.32455063f,
+    };
+    const std::vector<float> expectedGreenMonth6{
+        0.34078887f, 0.41630322f, 0.38273245f, 0.37449577f, 0.31640434f,
+        0.38326782f, 0.47702634f, 0.45f, 0.29f, 0.20068237f,
+        0.3333333f, 0.5f, 0.49111113f, 0.37584224f, 0.2759695f,
+        0.28666666f, 0.42f, 0.5233333f, 0.56155723f, 0.46738f,
+        0.34370252f, 0.38851792f, 0.4333333f, 0.45120147f, 0.49080566f,
+    };
+    for (std::size_t p = 0; p < npix; ++p) {
+        CHECK(greenf[0 * npix + p] == Catch::Approx(expectedGreenMonth0[p]).margin(1e-4));
+        CHECK(greenf[6 * npix + p] == Catch::Approx(expectedGreenMonth6[p]).margin(1e-4));
+    }
+
+    // LANDUSEF: nonzero (1-indexed category, fraction) pairs per pixel, in
+    // row-major (south_north, west_east) order - deliberately includes
+    // w2w's own real behavior of the per-pixel sum landing below 1.0 at a
+    // handful of pixels (e.g. (2,2)/(2,3) end up with NO nonzero category
+    // at all), not something to "fix" in the port.
+    const std::vector<std::vector<std::pair<int, float>>> expectedLuf{
+        {{7, 0.5f}, {12, 0.5f}}, {{12, 1.0f}}, {{7, 1.0f}}, {{7, 1.0f}}, {{14, 1.0f}},
+        {{12, 0.5f}, {14, 0.5f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}},
+        {{12, 1.0f}}, {{12, 1.0f}}, {}, {}, {{12, 1.0f}},
+        {{12, 1.0f}}, {{5, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}}, {{12, 1.0f}},
+        {{12, 0.75f}}, {{14, 0.5f}}, {{12, 0.5f}, {14, 0.5f}}, {{12, 0.5f}, {14, 0.5f}}, {{14, 1.0f}},
+    };
+    const auto luf = result.readFloat("LANDUSEF");
+    REQUIRE(result.shape("LANDUSEF") == std::vector<std::size_t>{1, 41, ny, nx});
+    for (std::size_t p = 0; p < npix; ++p) {
+        for (std::size_t cat = 0; cat < 41; ++cat) {
+            const auto match = std::find_if(expectedLuf[p].begin(), expectedLuf[p].end(), [&](const auto& kv) { return kv.first == static_cast<int>(cat) + 1; });
+            const float expected = match != expectedLuf[p].end() ? match->second : 0.0f;
+            CAPTURE(p, cat);
+            CHECK(luf[cat * npix + p] == Catch::Approx(expected).margin(1e-4));
+        }
+    }
+
+    std::filesystem::remove(dst);
+    std::filesystem::remove(out);
+}
+
+TEST_CASE("removeUrban's add_wrf_version pre-pass collapses an already-LCZ-tagged pixel before the normal removal loop") {
+    // No shipped fixture already carries LCZ-range LU_INDEX values (the
+    // point of the pre-pass is re-running against w2w's OWN prior output,
+    // which none of these fixtures are), so hand-mutate one pixel of a
+    // real 41-category file into what a prior w2w run would have left
+    // behind: category 35 (an LCZ class, LU_INDEX = 31 + ADD_LCZ_INT-30 =
+    // 35 for a 41-category file) instead of any real land-use category.
+    const auto dst = lczFixtureCopy("remove_urban_prepass");
+    {
+        auto file = NetcdfFile::open(dst, NetcdfFile::Mode::ReadWrite);
+        auto lu = file.readFloat("LU_INDEX");
+        lu[0] = 35.0f;  // pixel (0,0)
+        file.writeFloat("LU_INDEX", lu);
+        auto luf = file.readFloat("LANDUSEF");
+        constexpr std::size_t npix = 25;
+        luf[34 * npix + 0] = 1.0f;  // category 35 (index 34), pixel 0
+        file.writeFloat("LANDUSEF", luf);
+    }
+
+    const auto out = std::filesystem::path("build") / "netcdf_file_test_remove_urban_prepass_out.nc";
+    removeUrban(dst, out, 3, 9);
+
+    const auto result = NetcdfFile::open(out, NetcdfFile::Mode::ReadOnly);
+    const auto lu = result.readFloat("LU_INDEX");
+    const auto luf = result.readFloat("LANDUSEF");
+    constexpr std::size_t npix = 25;
+    CHECK(lu[0] != 35.0f);   // no longer an LCZ class...
+    CHECK(lu[0] != 13.0f);   // ...nor still urban (ISURBAN) - the normal removal loop ran on it
+    CHECK(luf[34 * npix + 0] == 0.0f);  // category 35's fraction was collapsed into ISURBAN, then...
+    CHECK(luf[12 * npix + 0] == 0.0f);  // ...ISURBAN's (index 12) fraction was itself cleared by the normal removal loop
+
+    std::filesystem::remove(dst);
+    std::filesystem::remove(out);
+}
+
+TEST_CASE("removeUrban rejects an NPIX_AREA larger than the domain") {
+    const auto dst = lczFixtureCopy("remove_urban_area_too_big");
+    const auto out = std::filesystem::path("build") / "netcdf_file_test_remove_urban_toobig_out.nc";
+    CHECK_THROWS_AS(removeUrban(dst, out, 3, 1000), UserError);
+    std::filesystem::remove(dst);
+}
+
 TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matching w2w's own category-count expansion") {
     const auto dst = lczFixtureCopy("resize");
 

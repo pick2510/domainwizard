@@ -215,46 +215,68 @@ attributes, and write a new file with full fidelity.
 
 ## Stage 2 - `wrf_remove_urban` (`*_NoUrban.nc`)
 
-Port `wrf_remove_urban` per `add_wrf_version`'s version
-(`w2w.py:456-576` there, not `main`'s) as `include/wrftools/lcz.hpp` /
-`src/lcz.cpp`, `removeUrban(NetcdfFile& dst, const WrfVersionInfo& wrfVersion,
-int npixNlc, std::optional<int> npixArea)`:
+**Status: done.** `removeUrban(srcPath, dstPath, npixNlc, npixArea)` lands
+in `lcz.hpp`/`lcz.cpp`. One correction to the plan's original signature:
+it does **not** take a `WrfVersionInfo` - re-reading `add_wrf_version`'s
+`wrf_remove_urban` confirmed its pre-pass branches on the *source file's
+own* `NUM_LAND_CAT` attribute (self-contained re-processing detection), not
+on a caller-supplied target version; `WrfVersionInfo` is only actually
+needed starting Stage 3, where it genuinely does get threaded in as a
+parameter.
 
-- **Pre-pass: collapse any existing LCZ categories back to urban**, new in
-  `add_wrf_version` (not in `main`): if the input file's `NUM_LAND_CAT` is
-  already 41 or 61 (i.e. this is a re-run against a file `w2w` itself
-  already produced), `LU_INDEX` values in `(30,41)`/`(50,61)` are folded
-  back to `ISURBAN` and their `LANDUSEF` fractions summed into the urban
-  category before the normal removal loop runs, so the tool is idempotent
-  on its own output. Port this as an explicit branch on `wrfVersion.
-  numLandCat` matching `orig_num_land_cat`, mirroring the two `elif`
-  branches added there.
-- The `NoUrban` output's `NUM_LAND_CAT` global attribute is explicitly reset
-  to 21 (`dst_data.attrs['NUM_LAND_CAT'] = np.intc(21)`), new in
-  `add_wrf_version` - `main` leaves whatever the source file already had.
-- **KD-tree**: vendor [nanoflann](https://github.com/jlblancoc/nanoflann)
-  (single header, MIT license, no build-system integration needed beyond
-  adding the header to `include/third_party/` or fetching via CMake
-  `FetchContent`) for the ECEF-chord nearest-neighbor search
-  (`using_kdtree`, `w2w.py:432-453`: `R=6371`, spherical-to-Cartesian, query
-  k nearest). A hand-rolled KD-tree is not worth the risk of a subtle bug
-  here - this is exactly nanoflann's designed use case.
-- Straight port of the per-urban-pixel loop: for each urban pixel, take its
-  `NPIX_AREA` nearest neighbors, filter to natural-land pixels, keep the
-  first `NPIX_NLC`, take the modal `LU_INDEX` among those, and average
-  `GREENFRAC` over pixels sharing that mode. `pandas`' `.mode()` becomes a
-  simple `std::unordered_map<int,int>` tally with first-seen tiebreak
-  (matches pandas' stable-sort mode behavior for the tie case, which the
-  Python test suite doesn't appear to exercise directly but is worth
-  matching for determinism).
-- `LANDUSEF`/`GREENFRAC` reassignment (`w2w.py:558-571`) is direct array
-  arithmetic - no new infrastructure once Stage 0's read/write is in place.
-- Run this on a background thread (see Stage 5) since this is the slowest
-  single step in the pipeline for a real domain.
-- Test against `w2w`'s `testing/5by5.nc`/`testing/5by5_usgs.nc`/
-  `testing/5by5_20cat.nc` fixtures (small enough to assert on every pixel)
-  and pin against `test_wrf_remove_urban` (`tests/w2w_test.py:346-375`)'s
-  expected values.
+- **Pre-pass** (`add_wrf_version`-only, absent from `main`): ported as a
+  branch on the source file's own `NUM_LAND_CAT` (41 or 61), collapsing
+  `LU_INDEX` values in `(30,41)`/`(50,61)` back to `ISURBAN` and summing
+  their `LANDUSEF` fractions into it, before the normal removal loop -
+  including w2w's own slight over-inclusiveness (the `LANDUSEF` slice's
+  upper bound is one past the `LU_INDEX` threshold's, e.g. `luf[30:41]`
+  vs. `(luse>30)&(luse<41)`) rather than "fixing" it into a symmetric
+  range.
+- `NUM_LAND_CAT` is unconditionally reset to 21 in the output, matching
+  `add_wrf_version`.
+- **KD-tree**: vendored `nanoflann.hpp` (BSD, from the real upstream
+  `jlblancoc/nanoflann` tag `v1.6.3`, at `include/third_party/`) - no
+  Debian package was actually installable without sudo, so downloaded
+  directly rather than via `apt`/`FetchContent` as originally sketched.
+  `EcefPointCloud`/`PixelKdTree` in `lcz.cpp` mirror `using_kdtree` (R=6371,
+  spherical-to-ECEF, `k` nearest) exactly, including that the query point
+  set is the dataset itself (so index 0 of every result is always the
+  point itself, at distance 0) - `nanoflann::knnSearch` already returns
+  ascending-distance order, matching `scipy.spatial.KDTree.query`.
+- **`modalValue`** (the port's name for `pandas.Series.mode()[0]`): an
+  `std::map<int,int>` frequency tally, walked in ascending key order with
+  strict `>` so the first (smallest) key reaching the max count wins -
+  matches pandas' own tie-break (`mode()` returns every tied value in
+  ascending order; `[0]` takes the first) exactly, confirmed by the live
+  pin below rather than assumed.
+- The two loops (`w2w.py:530-556`/`562-567` on `add_wrf_version`) and the
+  `luf_natland`/`luf_urb`/`luse_natland`/`luse_urb` boolean masks port
+  directly to per-pixel flat-array loops - no new infrastructure beyond
+  Stage 0's read/write and the KD-tree above.
+- Row/flatten order needed no adjustment: `NetcdfFile::readFloat` already
+  returns raw on-disk (row-major over `Time, land_cat/month, south_north,
+  west_east`) order, identical to what `xr.open_dataset`/`.values.ravel()`
+  produce in Python - the same fact Stage 1 relied on for `wrfGridInfo`'s
+  geotransform.
+- **Pinned against a live `add_wrf_version` run**, not `test_wrf_remove_
+  urban`'s own fixture (that test's `dst_nu_file` isn't checked into the
+  repo, unlike the `*_LCZ_params.nc`/`*_LCZ_extent.nc`/`*_NoUrban.nc`
+  outputs Stage 3/4 can pin against directly): ran `wrf_remove_urban(info,
+  NPIX_NLC=3, NPIX_AREA=9)` from a `git worktree` checkout of
+  `add_wrf_version`'s `7801b3e` (loaded directly via `importlib`, no
+  reinstall needed) against `tests/fixtures/lcz/5by5.nc`, in a throwaway
+  venv built from prebuilt wheels only (source builds against the
+  system's Python 3.14 failed on `pkg_resources`/`setuptools` for
+  `rasterio`, unrelated to this port). Three new `core_tests.cpp` cases:
+  every `LU_INDEX`/`GREENFRAC` (two representative months)/`LANDUSEF`
+  value checked against that run's real output (including its own
+  non-obvious behavior - a couple of pixels end up with **no** nonzero
+  `LANDUSEF` category at all, sum below 1.0, not something to "fix"), an
+  `NPIX_AREA`-too-large rejection case, and - since no shipped fixture
+  already carries LCZ-range `LU_INDEX` values to exercise the pre-pass
+  meaningfully - a hand-mutated-pixel case (one pixel set to LCZ class 35
+  before running) checked structurally rather than against a numeric pin.
+  All 95 CTest entries pass.
 
 ## Stage 3 - `create_lcz_params_file` / `create_lcz_extent_file` (the core UCP pipeline)
 

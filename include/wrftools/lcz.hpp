@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cstddef>
+#include <filesystem>
+#include <optional>
 
 namespace wrftools {
 
@@ -35,5 +37,30 @@ struct WrfGridInfo {
 };
 
 [[nodiscard]] WrfGridInfo wrfGridInfo(const NetcdfFile& file);
+
+// Ports w2w's wrf_remove_urban (w2w.py, add_wrf_version branch - see
+// PORT_W2W.MD Stage 2): replaces every urban LU_INDEX pixel with the
+// dominant land-use category among its nearest natural-land neighbors
+// (great-circle nearest-neighbor search, matching using_kdtree exactly -
+// R=6371 km ECEF projection), moves each pixel's urban LANDUSEF fraction
+// into the resulting category, and averages GREENFRAC over the neighbors
+// sharing that category. Also collapses any LCZ-range LU_INDEX values the
+// SOURCE file may already carry (orig NUM_LAND_CAT 41 or 61) back to
+// ISURBAN first, so re-running this against a file w2w itself already
+// produced is idempotent - new in add_wrf_version, absent from w2w's
+// `main`.
+//
+// `srcPath` is read but never modified; the result (a full copy of
+// `srcPath` with LU_INDEX/LANDUSEF/GREENFRAC replaced and NUM_LAND_CAT set
+// to 21) is written to `dstPath`, overwriting it if present - mirrors
+// wrf_remove_urban always regenerating info.dst_nu_file from info.dst_file
+// each run, not modifying dst_file in place.
+//
+// npixArea defaults to npixNlc*npixNlc when absent, matching
+// args.NPIX_AREA's own default. Throws UserError if npixArea exceeds the
+// domain's pixel count, or if any urban pixel has zero natural-land
+// neighbors within its npixArea-nearest set (both raise-and-exit in
+// Python; this project's convention is to throw instead).
+void removeUrban(const std::filesystem::path& srcPath, const std::filesystem::path& dstPath, int npixNlc, std::optional<int> npixArea = std::nullopt);
 
 }  // namespace wrftools
