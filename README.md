@@ -49,8 +49,8 @@ explicit table, not a general unit-parsing library.
 
 ## Setup
 
-Linux and macOS are both supported (developed on Linux; built and tested
-on macOS too, via CI - see [Packaging](#packaging) below).
+Linux, macOS, and Windows are all supported (developed on Linux; built and
+tested on macOS/Windows too, via CI - see [Packaging](#packaging) below).
 
 On Debian/Ubuntu install the native development dependencies (`libtiff`/
 `libgeotiff` come in as transitive dependencies of `libgdal-dev`, so
@@ -66,6 +66,14 @@ On macOS with Homebrew:
 brew install cmake ninja qt gdal proj catch2
 ```
 
+On Windows, inside an MSYS2 MINGW64 shell:
+
+```
+pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja \
+  mingw-w64-x86_64-qt6-base mingw-w64-x86_64-gdal mingw-w64-x86_64-proj \
+  mingw-w64-x86_64-libtiff mingw-w64-x86_64-libgeotiff mingw-w64-x86_64-catch
+```
+
 ## Run
 
 ```
@@ -78,16 +86,17 @@ ctest --test-dir build-cpp --output-on-failure
 
 ## Packaging
 
-Every push/PR builds, tests, and packages the app on both Linux and macOS
-via GitHub Actions (`.github/workflows/cpp.yml`), and uploads the portable
-`wrftools-linux`/`wrftools-macos` bundles as downloadable workflow
-artifacts - no local build needed just to try it.
+Every push/PR builds, tests, and packages the app on Linux, macOS, and
+Windows via GitHub Actions (`.github/workflows/cpp.yml`), and uploads the
+portable `wrftools-linux`/`wrftools-macos`/`wrftools-windows` bundles as
+downloadable workflow artifacts - no local build needed just to try it.
 
 To build a portable bundle locally instead:
 
 ```
-./build-portable-cpp.sh    # Linux -> dist/wrftools-cpp/
-./build-portable-macos.sh  # macOS -> dist/wrftools.app, dist/wrftools-macos.zip
+./build-portable-cpp.sh      # Linux -> dist/wrftools-cpp/
+./build-portable-macos.sh    # macOS -> dist/wrftools.app, dist/wrftools-macos.zip
+./build-portable-windows.sh  # Windows (MSYS2 MINGW64 shell) -> dist/wrftools-windows/, dist/wrftools-windows.zip
 ```
 
 `build-portable-cpp.sh` (`cmake/bundle_linux.cmake`) builds Release and
@@ -105,6 +114,13 @@ the build machine's. Requires `patchelf` (`apt install patchelf`).
 then copies GDAL/PROJ's data directories into `Contents/share/{gdal,proj}`
 beside the executable so no `GDAL_DATA`/`PROJ_DATA` environment setup is
 needed at run time. Requires `dylibbundler` (`brew install dylibbundler`).
+
+`build-portable-windows.sh` builds Release and bundles the exe via Qt's own
+`windeployqt` (Qt DLLs/plugins/MinGW runtime) followed by a hand-rolled
+`ldd` dependency-closure walk for everything else non-system (GDAL, PROJ,
+libtiff, libgeotiff, and their own transitive deps), then copies GDAL/
+PROJ's data directories into `share/{gdal,proj}` beside `bin/wrftools.exe`.
+Must run inside an MSYS2 MINGW64 shell.
 
 The target Linux machine still needs the base graphics stack essentially
 every Linux desktop already has (`libgl1`/`libegl1` or equivalent) - GL/EGL
