@@ -673,6 +673,21 @@ TEST_CASE("LayerRenderer caches slices/images and matches uncached rendering") {
     CHECK(afterInvalidate.pixels == uncached.pixels);
 }
 
+TEST_CASE("valueAt rejects a latitude beyond Web Mercator's valid range instead of clamping into the raster") {
+    LayerRenderer renderer;
+    static_cast<void>(renderer.openFile({"tests/fixtures/geo_em_small.nc"}));
+    const RasterLayer layer{.variable = "HGT_M"};
+    // geo_em_small.nc's raster covers roughly lon 114.14..114.17, lat
+    // 22.27..22.30 (near Hong Kong) - a normal in-range point right at the
+    // center should resolve to a real value.
+    CHECK(renderer.valueAt("tests/fixtures/geo_em_small.nc", layer, LonLat{114.1554, 22.2865}).has_value());
+    // A cursor parked past the pole (e.g. after panning the map far beyond
+    // its top/bottom edge) must read as "no data", not silently fold back
+    // onto whatever the raster happens to hold at its own +-85.05 edge.
+    CHECK_FALSE(renderer.valueAt("tests/fixtures/geo_em_small.nc", layer, LonLat{114.1554, 89.9}).has_value());
+    CHECK_FALSE(renderer.valueAt("tests/fixtures/geo_em_small.nc", layer, LonLat{114.1554, -89.9}).has_value());
+}
+
 // --- LayerRenderer cache-tier hit/miss stats --------------------------------
 // Ports test_rasterlayer.py's cache-behavior cases against LayerRenderer's
 // stats() counters. Two Python cases have no C++ equivalent by design, not

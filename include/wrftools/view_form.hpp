@@ -35,6 +35,11 @@ struct ViewLayer {
 class ViewForm final : public QWidget {
 public:
     explicit ViewForm(TileMapWidget* map, QWidget* parent = nullptr);
+    // Clears the hover-value handler registered on `map` in the constructor
+    // - map_ is not owned by this form (MainWindow gives every tab the same
+    // shared TileMapWidget) and can outlive it, so a dangling `this` must
+    // not be left behind for a later mouse-move to call into.
+    ~ViewForm() override;
 
     // Opens files/series directly (bypassing the file-picker openFile()
     // uses) - the entry point both openFile() and tests use. Mirrors

@@ -493,32 +493,35 @@ void TileMapWidget::mousePressEvent(QMouseEvent* event) {
     } else { dragging_ = true; dragStart_ = event->position(); }
 }
 void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
-    // Updated unconditionally, ahead of every other branch below (including
-    // the ones that `return` without their own update()) - a hover readout
-    // should track the cursor regardless of what else the mouse happens to
-    // be doing (panning, dragging an overlay/legend/info box, ...).
-    {
+    // Recomputes the hover readout from the *current* longitude_/latitude_/
+    // zoom_ - called once per branch below, always after that branch has
+    // finished mutating those (the panning branch moves the center via
+    // setCenter() before calling this), so the readout never lags a frame
+    // behind a live pan the way computing it up front unconditionally would.
+    auto updateHover = [this, event] {
         const auto here = lonLat(event->position() + viewportTopLeft(), zoom_);
         QString text = QString("%1°, %2°").arg(here.x(), 0, 'f', 4).arg(here.y(), 0, 'f', 4);
         if (hoverValueHandler_) {
             if (const auto value = hoverValueHandler_(LonLat{here.x(), here.y()})) text = *value + "   " + text;
         }
         hoverText_ = text;
-    }
+    };
     if (dragTarget_ == "legend-resize") {
         if (const double baseWidth = legend_.width(); baseWidth > 0) {
             const double rawWidth = event->position().x() - legendResizeOrigin_.x();
             legendScale_ = std::clamp(rawWidth / baseWidth, 0.4, 3.0);
         }
+        updateHover();
         update();
         return;
     }
-    if (dragTarget_ == "legend") { legendPosition_ = event->position() - dragOffset_; update(); return; }
-    if (dragTarget_ == "info") { infoPosition_ = event->position() - dragOffset_; update(); return; }
+    if (dragTarget_ == "legend") { legendPosition_ = event->position() - dragOffset_; updateHover(); update(); return; }
+    if (dragTarget_ == "info") { infoPosition_ = event->position() - dragOffset_; updateHover(); update(); return; }
     if (dragTarget_ == "overlay") {
         // No update() here: the handler is expected to call
         // setVectorOverlayGroup() with the recomputed outlines, which
         // triggers its own repaint.
+        updateHover();
         if (overlayDragMove_) {
             const auto currentLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
             overlayDragMove_(draggedOverlayIndex_, {currentLonLat.x(), currentLonLat.y()});
@@ -526,15 +529,17 @@ void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     if (dragTarget_ == "overlay-resize") {
+        updateHover();
         if (overlayResizeMove_) {
             const auto currentLonLat = lonLat(event->position() + viewportTopLeft(), zoom_);
             overlayResizeMove_(resizedOverlayIndex_, resizedHandleIndex_, {currentLonLat.x(), currentLonLat.y()});
         }
         return;
     }
-    if (!dragging_) { update(); return; }  // idle hover: repaint for the hover-text update above
+    if (!dragging_) { updateHover(); update(); return; }  // idle hover
     const auto delta = event->position() - dragStart_;
     setCenter(lonLat(worldPixel() - delta, zoom_).x(), lonLat(worldPixel() - delta, zoom_).y(), zoom_);
+    updateHover();  // after the center actually moved, so the readout matches the new viewport
     dragStart_ = event->position();
 }
 void TileMapWidget::mouseReleaseEvent(QMouseEvent*) {

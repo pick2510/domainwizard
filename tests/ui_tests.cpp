@@ -818,6 +818,22 @@ TEST_CASE("view form's hover handler samples the topmost visible layer's value, 
     CHECK(withValue.endsWith(withoutValue));
 }
 
+TEST_CASE("destroying the view form clears its hover handler so a later mouse-move over the map is safe") {
+    TileMapWidget map;
+    map.resize(300, 300);
+    {
+        ViewForm form(&map);
+        form.openFiles({"tests/fixtures/geo_em_small.nc"});
+        form.addLayer();
+        form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+        form.zoomToSelectedLayer();
+        move(map, QPointF(150, 150));
+        CHECK_FALSE(map.hoverText().isEmpty());
+    }  // form destroyed here; map (declared first) outlives it, as it does for every real tab in MainWindow.
+    move(map, QPointF(150, 150));
+    CHECK(map.hoverText().contains("°,"));
+}
+
 TEST_CASE("dragging a root domain's outline moves its center point live") {
     TileMapWidget map;
     map.resize(500, 400);

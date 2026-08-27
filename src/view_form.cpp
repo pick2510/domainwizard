@@ -205,6 +205,10 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     updatePanelVisibility();
 }
 
+ViewForm::~ViewForm() {
+    if (map_) map_->setHoverValueHandler({});
+}
+
 void ViewForm::openFile() {
     const auto paths = QFileDialog::getOpenFileNames(this, "Open WRF/WPS NetCDF", {}, "All files (*)");
     if (paths.isEmpty()) return;

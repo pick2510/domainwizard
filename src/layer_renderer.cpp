@@ -14,11 +14,17 @@ std::size_t sliceBytes(const WarpedRaster& raster) { return raster.values.size()
 // produces (and what TileMapWidget's own screen-space math already
 // assumes) - placing a widget mouse-hover lon/lat into a WarpedRaster's
 // bounds3857 space this way needs no OGR transform on every mouse move.
-Coordinate2D lonLatToWebMercator(LonLat point) {
+// nullopt, not a clamped edge value, for a latitude beyond Web Mercator's
+// own valid range (e.g. the cursor sitting in the blank space past the
+// pole after panning off the top/bottom of the map) - clamping would fold
+// such a point back onto a real in-range latitude and could spuriously
+// report that latitude's raster value as if the cursor were actually there.
+std::optional<Coordinate2D> lonLatToWebMercator(LonLat point) {
+    constexpr double kLatitudeLimit = 85.05112878;
+    if (point.lat < -kLatitudeLimit || point.lat > kLatitudeLimit) return std::nullopt;
     constexpr double kRadius = 6378137.0;
     constexpr double pi = 3.14159265358979323846;
-    const double lat = std::clamp(point.lat, -85.05112878, 85.05112878);
-    return {point.lon * kRadius * pi / 180.0, std::log(std::tan((90.0 + lat) * pi / 360.0)) * kRadius};
+    return Coordinate2D{point.lon * kRadius * pi / 180.0, std::log(std::tan((90.0 + point.lat) * pi / 360.0)) * kRadius};
 }
 }
 
@@ -100,10 +106,11 @@ std::optional<double> LayerRenderer::valueAt(const std::string& filePath, const 
     const auto& warped = getSlice(filePath, layer);
     if (warped.width <= 0 || warped.height <= 0) return std::nullopt;
     const auto merc = lonLatToWebMercator(point);
+    if (!merc) return std::nullopt;
     const auto& bounds = warped.bounds3857;
-    if (merc.x < bounds.minX || merc.x > bounds.maxX || merc.y < bounds.minY || merc.y > bounds.maxY) return std::nullopt;
-    const double fracX = (merc.x - bounds.minX) / (bounds.maxX - bounds.minX);
-    const double fracY = (bounds.maxY - merc.y) / (bounds.maxY - bounds.minY);  // top-down rows
+    if (merc->x < bounds.minX || merc->x > bounds.maxX || merc->y < bounds.minY || merc->y > bounds.maxY) return std::nullopt;
+    const double fracX = (merc->x - bounds.minX) / (bounds.maxX - bounds.minX);
+    const double fracY = (bounds.maxY - merc->y) / (bounds.maxY - bounds.minY);  // top-down rows
     const int col = std::clamp(static_cast<int>(fracX * warped.width), 0, warped.width - 1);
     const int row = std::clamp(static_cast<int>(fracY * warped.height), 0, warped.height - 1);
     const float raw = warped.values[static_cast<std::size_t>(row) * static_cast<std::size_t>(warped.width) + static_cast<std::size_t>(col)];
