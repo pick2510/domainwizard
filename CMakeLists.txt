@@ -92,6 +92,11 @@ target_compile_options(wrftools_cpp PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS wrftools_cpp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(APPLE)
     set_target_properties(wrftools_cpp PROPERTIES MACOSX_BUNDLE TRUE)
+elseif(WIN32)
+    # Without this, add_executable() links wrftools.exe as a console-
+    # subsystem app, so Windows always opens a console window behind the
+    # Qt GUI on launch (Linux/macOS have no such distinction).
+    set_target_properties(wrftools_cpp PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
 include(CTest)

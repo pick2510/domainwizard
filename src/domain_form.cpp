@@ -31,11 +31,16 @@ constexpr int kMaxReasonableDimension = 5000;
 // no styling = empty-and-not-required. Mirrors formhelpers.py's
 // update_input_validation_style, applied on every editingFinished.
 void styleValidation(QLineEdit* field, bool required) {
+    // These backgrounds are fixed light pastels in both light and dark
+    // mode (the green/yellow/red validity convention itself doesn't
+    // change), so the text color has to be pinned dark too - otherwise
+    // dark mode's near-white QPalette::Text renders illegibly on top of
+    // them, even though the same stylesheet looks fine in light mode.
     const bool empty = field->text().trimmed().isEmpty();
-    if (empty) { field->setStyleSheet(required ? "QLineEdit { background-color: #fff79a }" : ""); return; }
+    if (empty) { field->setStyleSheet(required ? "QLineEdit { background-color: #fff79a; color: #202020 }" : ""); return; }
     int pos = 0; QString text = field->text();
     const bool valid = field->validator() && field->validator()->validate(text, pos) == QValidator::Acceptable;
-    field->setStyleSheet(valid ? "QLineEdit { background-color: #c4df9b }" : "QLineEdit { background-color: #f6989d }");
+    field->setStyleSheet(valid ? "QLineEdit { background-color: #c4df9b; color: #202020 }" : "QLineEdit { background-color: #f6989d; color: #202020 }");
 }
 
 bool isValid(const QLineEdit* field) {
