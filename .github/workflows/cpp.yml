@@ -153,6 +153,15 @@ jobs:
           }' | Out-File -Encoding ascii probe_combined_noopen.cpp
           & "$mingw\bin\g++.exe" -std=c++20 probe_combined_noopen.cpp -o probe_combined_noopen.exe @qtFlags "-I$mingw\include" "-L$mingw\lib" -lgdal
           Run-Probe "probe_combined_noopen" ".\probe_combined_noopen.exe"
+
+          # Merely linking both is fine (probe_combined_noopen); only
+          # actually opening a real netCDF/HDF5 file with both linked
+          # hangs. HDF5's file locking (LockFileEx on Windows) hanging is a
+          # well-known, well-documented issue class - HDF5_USE_FILE_LOCKING
+          # =FALSE is the standard workaround. Reruns probe_combined's
+          # exact binary with that env var set to test it directly.
+          $env:HDF5_USE_FILE_LOCKING = "FALSE"
+          Run-Probe "probe_combined_nolocking" ".\probe_combined.exe"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
