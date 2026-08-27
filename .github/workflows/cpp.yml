@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     # Backstop for a hang outside ctest's own --timeout (e.g. mid-build, or
     # a package/upload step) - a normal run finishes in well under 10
@@ -68,6 +68,32 @@ jobs:
             mingw-w64-x86_64-libgeotiff
             mingw-w64-x86_64-catch
             zip
+      # Cheap (~seconds, not the ~15 minutes a full project build+run
+      # costs) isolation test for a runner-image-level cause: compiles and
+      # runs a trivial hello-world with the exact same MinGW toolchain,
+      # completely independent of this project's own code. windows-latest
+      # previously resolved to windows-2025-vs2026, a brand-new preview
+      # image, on which even this had "All tests passed" (or here, "hello")
+      # print and then the process never returning control to its caller -
+      # confirmed 3 times over (through ctest, through bash directly,
+      # through plain pwsh directly), ruling out ctest/bash/our own code
+      # (std::_Exit() is an unconditional OS-level kill). Pinning to the
+      # long-stable windows-2022 image above is the fix attempt; if this
+      # step ALSO hangs here, the image pin didn't help and the cause is
+      # something else runner-wide (most likely Defender/EDR on every
+      # freshly-built, unsigned MinGW .exe).
+      - name: Diagnose a minimal MinGW hello-world for a runner-image-level hang (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP\msys64\mingw64\bin;$env:PATH"
+          'int main(){puts("hello");return 0;}' | Out-File -Encoding ascii hello.cpp
+          & "$env:RUNNER_TEMP\msys64\mingw64\bin\g++.exe" hello.cpp -o hello.exe
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          & .\hello.exe
+          $sw.Stop()
+          Write-Host "Elapsed: $($sw.Elapsed)"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -90,30 +116,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: cmake --build build-cpp
-      # Diagnostic only, kept until the Windows hang above is understood.
-      # Two things are already ruled out by earlier runs, confirmed live:
-      # (1) ctest itself - running a test case DIRECTLY via `time` through
-      # this same MSYS2 bash wrapper (bypassing ctest's child-process I/O
-      # entirely) hung identically: "All tests passed" printed, then
-      # nothing, until manually canceled - cmd.exe's own "Terminate batch
-      # job (Y/N)?" prompt on that cancel proved something was still
-      # attached to the console. (2) our own process - std::_Exit() is an
-      # unconditional OS-level kill; nothing in-process can survive it, so
-      # whatever's still attached isn't us either. The one thing common to
-      # every attempt so far is the MSYS2 bash wrapper itself (shell: msys2
-      # {0}, i.e. cmd.exe -> msys2.cmd -> bash). This step isolates that:
-      # runs the exact same .exe through plain pwsh instead, with mingw64's
-      # bin on PATH for its DLLs - no MSYS2/bash involved at all. A Windows
-      # PE binary needs MSYS2 only to be *built*, never to be *run*.
-      - name: Diagnose Windows test binary via pwsh, bypassing MSYS2 bash entirely (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:PATH = "$env:RUNNER_TEMP\msys64\mingw64\bin;$env:PATH"
-          $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          & .\build-cpp\wrftools_core_tests.exe "1D vertical-only variables are excluded and don't break 2D ones"
-          $sw.Stop()
-          Write-Host "Elapsed: $($sw.Elapsed)"
       # --timeout caps each individual test case (locally the slowest, the
       # whole UI suite as ONE ctest entry, takes ~3s) - generous headroom
       # while still turning a genuine hang into a clear failure instead of
