@@ -13,6 +13,15 @@ set(CMAKE_AUTORCC ON)
 find_package(GDAL 3.6 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
 
+# NetCDF-C, linked directly (not through GDAL's netCDF driver) for
+# NetcdfFile (netcdf_file.hpp/.cpp) - the w2w LCZ port's read/write
+# foundation (see PORT_W2W.MD Stage 0). GDAL's raster-dataset abstraction
+# can read WRF NetCDF but cannot round-trip its non-raster dimensions
+# (land_cat, month, num_urb_params) losslessly, which writing a modified
+# geo_em file back out requires.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(NETCDF REQUIRED IMPORTED_TARGET netcdf)
+
 # GeoTIFF <-> WPS geogrid conversion, ported from
 # https://github.com/jbeezley/convert_geotiff (public domain) - its own
 # small, GDAL-free library, kept in its own convert_geotiff/ namespace and
@@ -67,9 +76,10 @@ add_library(wrftools_core
     src/wrf_series.cpp
     src/wrf_source.cpp
     src/wps_binary_source.cpp
+    src/netcdf_file.cpp
 )
 target_include_directories(wrftools_core PUBLIC include)
-target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui convert_geotiff_reader)
+target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui convert_geotiff_reader PkgConfig::NETCDF)
 target_compile_options(wrftools_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_library(wrftools_ui

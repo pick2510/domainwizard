@@ -11,6 +11,7 @@
 #include "wrftools/colorbar.hpp"
 #include "wrftools/wps_binary_source.hpp"
 #include "wrftools/wrf_source.hpp"
+#include "wrftools/netcdf_file.hpp"
 #include "fast_exit.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1242,4 +1243,118 @@ TEST_CASE("WrfSourceRegistry opens a WPS_GEOG directory as a WpsBinarySource, no
     auto& source = registry.open({"tests/fixtures/geotiff_convert/wps_soiltemp_1deg"});
     CHECK(source.variables().size() == 1);
     CHECK(source.displayName() == "wps_soiltemp_1deg");
+}
+
+namespace {
+std::filesystem::path lczFixtureCopy(const std::string& suffix) {
+    const auto dst = std::filesystem::path("build") / ("netcdf_file_test_" + suffix + ".nc");
+    NetcdfFile::copyFile("tests/fixtures/lcz/5by5.nc", dst);
+    return dst;
+}
+}  // namespace
+
+TEST_CASE("NetcdfFile reads dimensions, variables, and attributes from a real geo_em file") {
+    const auto file = NetcdfFile::open("tests/fixtures/lcz/5by5.nc", NetcdfFile::Mode::ReadOnly);
+
+    const auto dims = file.dimensions();
+    const auto southNorth = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "south_north"; });
+    REQUIRE(southNorth != dims.end());
+    CHECK(southNorth->length == 5);
+    CHECK_FALSE(southNorth->isUnlimited);
+
+    const auto time = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "Time"; });
+    REQUIRE(time != dims.end());
+    CHECK(time->isUnlimited);
+
+    REQUIRE(file.hasVariable("LU_INDEX"));
+    CHECK_FALSE(file.hasVariable("NOT_A_REAL_VARIABLE"));
+    const auto luIndex = file.variable("LU_INDEX");
+    CHECK(luIndex.dimensionNames == std::vector<std::string>{"Time", "south_north", "west_east"});
+    CHECK(file.shape("LU_INDEX") == std::vector<std::size_t>{1, 5, 5});
+
+    CHECK(file.hasAttribute("", "NUM_LAND_CAT"));
+    const auto numLandCat = file.getAttribute("", "NUM_LAND_CAT");
+    REQUIRE(numLandCat.numbers.size() == 1);
+    CHECK(numLandCat.numbers[0] == 41);
+
+    CHECK(file.hasAttribute("LU_INDEX", "description"));
+    CHECK(file.getAttribute("LU_INDEX", "description").text == "Dominant category");
+
+    const auto luValues = file.readFloat("LU_INDEX");
+    CHECK(luValues.size() == 25);
+}
+
+TEST_CASE("NetcdfFile::copyFile round-trips a real file byte-for-byte") {
+    const auto dst = lczFixtureCopy("copy");
+    REQUIRE(std::filesystem::exists(dst));
+    CHECK(std::filesystem::file_size(dst) == std::filesystem::file_size("tests/fixtures/lcz/5by5.nc"));
+
+    std::ifstream original("tests/fixtures/lcz/5by5.nc", std::ios::binary);
+    std::ifstream copy(dst, std::ios::binary);
+    const std::vector<char> originalBytes((std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+    const std::vector<char> copyBytes((std::istreambuf_iterator<char>(copy)), std::istreambuf_iterator<char>());
+    CHECK(originalBytes == copyBytes);
+
+    std::filesystem::remove(dst);
+}
+
+TEST_CASE("NetcdfFile mutates a variable and a global attribute without disturbing the rest of the file") {
+    const auto dst = lczFixtureCopy("mutate");
+    {
+        auto file = NetcdfFile::open(dst, NetcdfFile::Mode::ReadWrite);
+        auto luIndex = file.readFloat("LU_INDEX");
+        std::fill(luIndex.begin(), luIndex.end(), 13.0f);
+        file.writeFloat("LU_INDEX", luIndex);
+
+        auto attribute = file.getAttribute("", "NUM_LAND_CAT");
+        attribute.numbers[0] = 21;
+        file.putAttribute("", attribute);
+    }
+
+    const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
+    const auto luIndex = reopened.readFloat("LU_INDEX");
+    CHECK(std::all_of(luIndex.begin(), luIndex.end(), [](float v) { return v == 13.0f; }));
+    CHECK(reopened.getAttribute("", "NUM_LAND_CAT").numbers[0] == 21);
+
+    // Untouched variable/attribute survive the mutation unchanged.
+    CHECK(reopened.readFloat("XLAT_M").size() == 25);
+    CHECK(reopened.getAttribute("LU_INDEX", "description").text == "Dominant category");
+
+    std::filesystem::remove(dst);
+}
+
+TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matching w2w's own category-count expansion") {
+    const auto dst = lczFixtureCopy("resize");
+
+    // This fixture is already a 41-category file; resize to 45 (rather
+    // than a same-size no-op) to genuinely exercise the dimension-growth
+    // path w2w's own 21->41/41->61 expansions rely on.
+    const std::size_t southNorth = 5, westEast = 5, newLandCat = 45;
+    NetcdfFile::resizeDimension(dst, "land_cat", newLandCat, [&](const std::string& variableName) -> std::optional<std::vector<float>> {
+        if (variableName != "LANDUSEF") return std::nullopt;
+        std::vector<float> data(newLandCat * southNorth * westEast, 0.0f);
+        // Category 1 (index 0) covers every pixel - mirrors
+        // w2w._adjust_greenfrac_landusef's zero-then-set-one pattern.
+        for (std::size_t i = 0; i < southNorth * westEast; ++i) data[i] = 1.0f;
+        return data;
+    });
+
+    const auto reopened = NetcdfFile::open(dst, NetcdfFile::Mode::ReadOnly);
+    const auto dims = reopened.dimensions();
+    const auto landCat = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "land_cat"; });
+    REQUIRE(landCat != dims.end());
+    CHECK(landCat->length == newLandCat);
+
+    CHECK(reopened.shape("LANDUSEF") == std::vector<std::size_t>{1, newLandCat, southNorth, westEast});
+    const auto landusef = reopened.readFloat("LANDUSEF");
+    CHECK(landusef.size() == newLandCat * southNorth * westEast);
+    for (std::size_t i = 0; i < southNorth * westEast; ++i) CHECK(landusef[i] == 1.0f);
+    for (std::size_t i = southNorth * westEast; i < landusef.size(); ++i) CHECK(landusef[i] == 0.0f);
+
+    // A variable untouched by the resize (different dimensions entirely)
+    // still round-trips correctly.
+    CHECK(reopened.shape("LU_INDEX") == std::vector<std::size_t>{1, southNorth, westEast});
+    CHECK(reopened.getAttribute("", "MMINLU").text == "MODIFIED_IGBP_MODIS_NOAH");
+
+    std::filesystem::remove(dst);
 }

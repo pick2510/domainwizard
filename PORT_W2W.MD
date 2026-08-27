@@ -26,6 +26,24 @@ internal layout) against the same inputs, wired into a new wrftools tab, with
 w2w's own `testing/` fixtures pinning the port the same way Python fixtures
 already pin the domain/CRS/rendering ports.
 
+**Port target: `origin/add_wrf_version` (`7801b3e`), not `main`.** w2w's
+`main` hardcodes the LCZ-class-to-`LU_INDEX` offset as `+30` and
+`NUM_LAND_CAT` as `41` throughout. As of WRF 4.4.2, WRF's own `LANDUSEF`
+grew from 41 to 61 categories (offset `+50` instead of `+30`) - `main`'s
+output is simply wrong for any WRF version from 4.4.2 onward. The unmerged
+`add_wrf_version` branch (34 commits ahead of `main` as of this writing,
+last touched the same day as `main`'s own HEAD - an open PR, not yet
+merged) is what fixes this: it adds a required `wrf_version` CLI argument,
+a `WRF_VERSIONS_DICT` mapping version string -> `{ADD_LCZ_INT,
+NUM_LAND_CAT}` (`{30, 41}` for v4.3-v4.4.1, `{50, 61}` for v4.4.2-v4.5.2),
+and threads that choice through every function that previously hardcoded
+30/31/41. Porting `main`'s constants would produce a tool that's already
+wrong for current WRF releases; this plan targets `add_wrf_version`
+throughout. Since it's an unmerged, moving-target branch, pin
+implementation and fixture comparisons against commit `7801b3e` specifically
+(re-sync if it merges or moves before this port is finished, rather than
+silently drifting).
+
 ## Why this is a bigger lift than it looks
 
 - **No NetCDF-write path exists at all.** `wrf_file.cpp` only ever opens
@@ -68,6 +86,38 @@ already pin the domain/CRS/rendering ports.
   bolting on a separate CLI binary.
 
 ## Stage 0 - NetCDF read/write foundation
+
+**Status: done.** `include/wrftools/netcdf_file.hpp` / `src/netcdf_file.cpp`
+implement `NetcdfFile` (open/dimensions/variables/attributes/read/write,
+`copyFile`, `resizeDimension`), linked into `wrftools_core` via
+`PkgConfig::NETCDF` (`CMakeLists.txt`). `tests/fixtures/lcz/5by5.nc` (from
+`w2w`'s own `testing/`) backs four new `core_tests.cpp` cases: read
+dimensions/variables/attributes/data from a real file, `copyFile`
+byte-for-byte, mutate-a-variable-and-a-global-attribute without disturbing
+the rest of the file, and `resizeDimension` growing `LANDUSEF`'s `land_cat`
+dimension (41 -> 45, since the fixture is already 41-category) while
+leaving an unrelated variable/attribute untouched. One real bug found and
+fixed along the way: `resizeDimension`'s per-variable data copy initially
+used `nc_get_var_*`/`nc_put_var_*` (whole-array, sized by the *current*
+state of whichever dataset the call targets) - fine for reading the source,
+wrong for writing the destination, since every WRF geo_em file's `Time`
+dimension is unlimited and a freshly `nc_create`d destination starts that
+dimension at 0 records; writing "the whole array" against a 0-record
+unlimited dimension silently writes nothing, so the destination's `Time`
+dimension came back length-0 and a subsequent read crashed on the (empty)
+result. Fixed by switching to explicit-`start`/`count` `nc_*_vara_*` calls
+throughout, sized from the source's actual current record count rather
+than the destination's. All 89 CTest entries (85 prior + 4 new) pass.
+Also where the WRF-version scheme lands: a small
+`struct WrfVersionInfo { int addLczInt; int numLandCat; }` plus a
+`std::map<std::string, WrfVersionInfo>` transcribing `add_wrf_version`'s
+`WRF_VERSIONS_DICT` (`{"v4.3", {30, 41}}` .. `{"v4.4.1", {30, 41}}`,
+`{"v4.4.2", {50, 61}}` .. `{"v4.5.2", {50, 61}}`) belongs in `lcz.hpp`
+alongside the `Info`-equivalent config struct (Stage 5's `LczForm` exposes
+it as a dropdown instead of a required positional CLI arg). Every later
+stage takes a `const WrfVersionInfo&` rather than hardcoding 30/31/41 or
+50/51/61 - threading this through from the start avoids a second pass
+through every function once Stage 2-4 land.
 
 Prerequisite for everything else: nothing downstream can be built (or
 tested) without the ability to open a WRF NetCDF file, mutate its variables/
@@ -140,10 +190,23 @@ attributes, and write a new file with full fidelity.
 
 ## Stage 2 - `wrf_remove_urban` (`*_NoUrban.nc`)
 
-Port `wrf_remove_urban` (`w2w.py:456-576`) as
-`include/wrftools/lcz.hpp` / `src/lcz.cpp`, `removeUrban(NetcdfFile& dst,
+Port `wrf_remove_urban` per `add_wrf_version`'s version
+(`w2w.py:456-576` there, not `main`'s) as `include/wrftools/lcz.hpp` /
+`src/lcz.cpp`, `removeUrban(NetcdfFile& dst, const WrfVersionInfo& wrfVersion,
 int npixNlc, std::optional<int> npixArea)`:
 
+- **Pre-pass: collapse any existing LCZ categories back to urban**, new in
+  `add_wrf_version` (not in `main`): if the input file's `NUM_LAND_CAT` is
+  already 41 or 61 (i.e. this is a re-run against a file `w2w` itself
+  already produced), `LU_INDEX` values in `(30,41)`/`(50,61)` are folded
+  back to `ISURBAN` and their `LANDUSEF` fractions summed into the urban
+  category before the normal removal loop runs, so the tool is idempotent
+  on its own output. Port this as an explicit branch on `wrfVersion.
+  numLandCat` matching `orig_num_land_cat`, mirroring the two `elif`
+  branches added there.
+- The `NoUrban` output's `NUM_LAND_CAT` global attribute is explicitly reset
+  to 21 (`dst_data.attrs['NUM_LAND_CAT'] = np.intc(21)`), new in
+  `add_wrf_version` - `main` leaves whatever the source file already had.
 - **KD-tree**: vendor [nanoflann](https://github.com/jlblancoc/nanoflann)
   (single header, MIT license, no build-system integration needed beyond
   adding the header to `include/third_party/` or fetching via CMake
@@ -200,20 +263,39 @@ function is a near-transcription once Stage 0/1 exist):
   table, direct port.
 - `lczResampler` (`_lcz_resampler`, `w2w.py:1050-1088`): reproject with
   `mode` resampling (majority-class aggregation), LCZ 15 -> 11 rename,
-  `FRC_URB2D`-based masking.
+  `FRC_URB2D`-based masking. The LCZ-class-to-`LU_INDEX` offset
+  (`lcz_2_wrf[0, frc_mask] + 30` in `main`) is `+ wrfVersion.addLczInt` in
+  `add_wrf_version` (30 or 50) - this is the single most consequential
+  version-dependent line in the whole pipeline, since every downstream
+  `LU_INDEX >= 31` / `(30,41)` check elsewhere has a matching `>= 51` /
+  `(50,61)` variant to port alongside it.
 - `adjustGreenfracLandusef` (`_adjust_greenfrac_landusef`,
-  `w2w.py:1091-1160`): the `LANDUSEF` 21/24 -> 41 category dimension growth
-  - this is exactly Stage 0's `resizeDimension` case.
+  `w2w.py:1091-1160`): the `LANDUSEF` 21/24 -> `wrfVersion.numLandCat` (41
+  or 61) category dimension growth - this is exactly Stage 0's
+  `resizeDimension` case. `add_wrf_version` also widens the GREENFRAC-
+  source urban-pixel mask from just `ISURBAN` to `ISURBAN` plus the
+  *original* file's own already-LCZ-tagged categories (`[31..40, ISURBAN]`
+  or `[51..60, ISURBAN]`) when re-running against previously-LCZ-processed
+  input - same idempotency concern as Stage 2's pre-pass, ported alongside
+  it.
 - `addFrcLuIndex2Wrf`/`createLczParamsFile` (`w2w.py:1163-1348`): wires the
   above together, builds `URB_PARAM` (132-entry per-pixel parameter block,
   `_initialize_urb_param`), writes the six/seven UCP fields into their
   documented `URB_PARAM` indices (91-99, 118-132 for `HI_URB2D`'s 15 bins),
-  and sets the global attributes (`NUM_LAND_CAT=41`, `FLAG_URB_PARAM=1`,
-  `NBUI_MAX`).
+  and sets the global attributes (`NUM_LAND_CAT = wrfVersion.numLandCat`,
+  `FLAG_URB_PARAM=1`, `NBUI_MAX`).
 - `createLczExtentFile` (`w2w.py:1351-1397`): derived from the params file's
-  own output - collapse LCZ classes back to a single urban category, drop
-  `FRC_URB2D`/`URB_PARAM`, reset `LANDUSEF` back to the original category
-  count. Direct port, no new infrastructure.
+  own output - collapse LCZ classes back to a single urban category
+  (threshold `>= 31` or `>= 51`, branching on the *params file's own*
+  `NUM_LAND_CAT` attribute rather than the `wrfVersion` argument directly -
+  `add_wrf_version` reads it back off the file it just wrote, which is worth
+  preserving since it's what makes this function correct even if called
+  standalone against an existing params file), drop `FRC_URB2D`/
+  `URB_PARAM`, reset `LANDUSEF` back to the original category count with
+  the LCZ-range slice (`[30:]`/`[50:]`) explicitly zeroed first - new in
+  `add_wrf_version`, guards against stale LCZ fractions surviving the
+  category-count shrink for domains where the original file already had
+  some non-zero values in that slice.
 - **CSV UCP lookup table**: `pd.read_csv` with a named index column becomes
   a small hand-rolled CSV parser (a dozen columns, 17 rows, no quoting/
   escaping complexity in the real file - `w2w`'s own
@@ -235,22 +317,33 @@ floating-point tolerance) rather than re-deriving expected values by hand.
 
 - `expandLandCatParents` (`w2w.py:1400-1465`): loop over parent-domain
   files (`geo_em.d01.nc` .. `geo_em.d0{N-1}.nc` beside the target file),
-  expand `LANDUSEF`'s category dimension to 41 if not already - same
-  `resizeDimension` operation as Stage 3's `LANDUSEF` growth, applied to a
-  different file. Direct port once Stage 0 exists. Ported test fixtures:
+  expand `LANDUSEF`'s category dimension to `wrfVersion.numLandCat` (41 or
+  61, not a hardcoded 41) if not already - same `resizeDimension` operation
+  as Stage 3's `LANDUSEF` growth, applied to a different file; output
+  filename suffix follows the target count too (`_41.nc`/`_61.nc`, not
+  always `_41.nc`). Direct port once Stage 0 exists. Ported test fixtures:
   `testing/geo_em.d01_Shanghai_ncl20.nc`/`_ncl41.nc`/
   `_no_NUM_LAND_CAT.nc`, `testing/geo_em.d02_Shanghai.nc`
   (`test_expand_land_cat_parents_*`, `w2w.py:931-1024`).
 - `checksAndCleaning` (`w2w.py:1468-1678`): nine sanity checks (urban class
   removed, LCZ extent present, UCP ranges sane, `HI_URB2D` sums to 100%,
   extents match across output files) - all pure read-and-compare against
-  the files just written, no new infrastructure. Ports to a
-  `std::vector<CheckResult>` (name, pass/warn, message) that the UI surface
-  (Stage 5) renders as a checklist instead of colored terminal escape
-  codes (`w2w.py`'s `OKGREEN`/`WARNING`/`ERROR` ANSI constants have no
-  native equivalent needed - this project already has a `UserError`
-  exception + `QMessageBox` convention for the failure case, and Qt list/
-  label widgets for informational output).
+  the files just written, no new infrastructure. `add_wrf_version` widens
+  Check 1's "is the source file's urban category list" logic to branch on
+  the *original* file's own `NUM_LAND_CAT` (61 -> urban categories
+  `[51..60, ISURBAN]`, 41 -> `[31..40, ISURBAN]`, 20 or 21 -> `[ISURBAN]`
+  only, anything else -> reject with an error) instead of `main`'s single
+  `ISURBAN in LU_INDEX` check - port the same four-way branch, throwing
+  `UserError` for the unsupported-count case rather than `main`'s bare
+  `ISURBAN`-only assumption (which is simply wrong once a 61-category
+  source file is possible). Checks 3, 8, and 9's urban-pixel-count
+  comparisons follow the same `LCZ_URBAN` list rather than a fixed `>= 31`
+  threshold. Ports to a `std::vector<CheckResult>` (name, pass/warn,
+  message) that the UI surface (Stage 5) renders as a checklist instead of
+  colored terminal escape codes (`w2w.py`'s `OKGREEN`/`WARNING`/`ERROR`
+  ANSI constants have no native equivalent needed - this project already
+  has a `UserError` exception + `QMessageBox` convention for the failure
+  case, and Qt list/label widgets for informational output).
 
 ## Stage 5 - UI integration and threading
 
@@ -258,9 +351,13 @@ floating-point tolerance) rather than re-deriving expected values by hand.
   mirroring `GeotiffConvertForm`'s shape (file pickers, an argument panel,
   a progress area, a background-thread run):
   - Inputs: input directory, LCZ GeoTIFF filename, target `geo_em.dXX.nc`
-    filename (matching w2w's three positional CLI args), plus the optional
-    arguments (`--built-lcz`, `--lcz-band`, `--frc-threshold`, `--npix-nlc`,
-    `--npix-area`, `--lcz-ucp`) as form fields with w2w's own defaults.
+    filename, and a **required WRF version dropdown** (matching
+    `add_wrf_version`'s four positional CLI args, `wrf_version` included -
+    populated from the `WrfVersionInfo` map added in Stage 0, no free-text
+    entry so an unsupported/mistyped version can't silently fall back to
+    the wrong category scheme), plus the optional arguments (`--built-lcz`,
+    `--lcz-band`, `--frc-threshold`, `--npix-nlc`, `--npix-area`,
+    `--lcz-ucp`) as form fields with w2w's own defaults.
   - Run button spawns a `std::thread` running the Stage 2-4 pipeline in
     order (mirroring `main()`'s own sequencing, `w2w.py:152-210`), reporting
     stage-by-stage progress (`GeotiffConvertForm`'s
@@ -285,25 +382,46 @@ Per stage, not just at the end - matching this project's existing practice
 - `cmake --build build -j$(nproc) && ctest --test-dir build --output-on-failure`
   after every stage.
 - **Every stage with numerical output is pinned against a real w2w run**,
-  not hand-derived expected values: `w2w`'s own `testing/`/`sample_data/`
-  fixtures already have Python-produced expected outputs (either as
-  committed `.nc` files, or reproducible by running `w2w`'s own CLI/test
-  suite in its own venv - `cd /home/strebdom/git/w2w && pip install -e .
-  -r requirements-dev.txt && pytest`). Copy the relevant fixtures into
-  `tests/fixtures/lcz/` rather than depending on the sibling repo staying
-  in place.
+  not hand-derived expected values: check out `add_wrf_version` at
+  `7801b3e` in a separate worktree/clone (`main`'s checked-out
+  `/home/strebdom/git/w2w` shouldn't be switched under anyone else using
+  it - `git worktree add ../w2w-add-wrf-version 7801b3e` from that repo is
+  the non-disruptive way to get a second checkout) and run its CLI/test
+  suite in its own venv (`pip install -e . -r requirements-dev.txt &&
+  pytest`) to reproduce or regenerate expected outputs for both the
+  41-category and 61-category paths. Copy the relevant fixtures into
+  `tests/fixtures/lcz/` rather than depending on the sibling checkout
+  staying in place.
+- **Both category schemes need end-to-end coverage, not just one.** Every
+  fixture/pinned-value comparison in Stages 2-4 above should run for at
+  least one `v4.3`-class input (41 categories, `+30` offset) and one
+  `v4.4.2`-class input (61 categories, `+50` offset) - `add_wrf_version`'s
+  own test suite parametrizes `test_create_lcz_extent_file` over
+  `(version, num_land_cat)` for exactly this reason; the C++ tests should
+  mirror that parametrization rather than hardcoding one scheme and
+  treating the other as an afterthought.
 - End-to-end check: run the full pipeline against `w2w`'s own
-  `sample_data/` (Zaragoza, `lcz_zaragoza.tif` + `geo_em.d04.nc`) and diff
-  every variable in the resulting `*_NoUrban.nc`/`*_LCZ_extent.nc`/
-  `*_LCZ_params.nc` against the checked-in `sample_data` outputs referenced
-  by the README's before/after figure.
-- `w2w`'s own `pytest` suite must stay untouched and green throughout (it's
-  the reference, not being modified) - run it once at the start to confirm
-  the sibling checkout itself is in a good state before pinning anything
-  against it.
+  `sample_data/` (Zaragoza, `lcz_zaragoza.tif` + `geo_em.d04.nc`, a
+  41-category domain) and diff every variable in the resulting
+  `*_NoUrban.nc`/`*_LCZ_extent.nc`/`*_LCZ_params.nc` against the checked-in
+  `sample_data` outputs referenced by the README's before/after figure -
+  plus, since no 61-category sample dataset ships in the repo, a second
+  end-to-end run against a synthetic or `testing/`-derived 61-category
+  fixture built specifically to exercise that path.
+- `add_wrf_version`'s own `pytest` suite must stay untouched and green
+  throughout (it's the reference, not being modified) - run it once at the
+  start to confirm the sibling checkout itself is in a good state before
+  pinning anything against it.
 
 ## Risks
 
+- **`add_wrf_version` is an unmerged, moving-target upstream branch.** It
+  could be force-pushed, rebased, or merged (with further changes) into
+  `main` before this port is finished. Since this plan pins to `7801b3e`
+  specifically, periodically re-diff `origin/add_wrf_version` against that
+  SHA (`cd /home/strebdom/git/w2w && git fetch && git log 7801b3e..origin/
+  add_wrf_version`) to catch drift, and re-sync deliberately rather than by
+  accident if it lands on `main`.
 - **NetCDF attribute/dimension fidelity is the highest-risk piece.** A
   wrongly-copied attribute or off-by-one in a resized dimension produces a
   file that looks fine in casual inspection but breaks `real.exe` with an
