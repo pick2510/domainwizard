@@ -1,0 +1,15 @@
+# Binary fixture files must never go through git's line-ending
+# normalization. Without this, a clone with core.autocrlf enabled (the
+# default on Windows/Git for Windows) silently rewrites any LF byte that
+# looks like a text line ending inside these files, corrupting them -
+# NetCDF4/HDF5 files fail to open afterward with a generic
+# "NetCDF: HDF error" (the HDF5 superblock no longer parses), not a more
+# obviously binary-corruption-shaped error.
+*.nc binary
+*.tif binary
+*.tiff binary
+
+# WPS_GEOG-format geogrid tile data files (numeric NNNNN-NNNNN.NNNNN-NNNNN
+# names, e.g. tests/fixtures/geotiff_convert/wps_soiltemp_1deg/*) are raw
+# binary tile data, not text, despite having no distinguishing extension.
+[0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9].[0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9] binary
