@@ -759,6 +759,65 @@ void release(TileMapWidget& map, QPointF pos) {
 }
 }  // namespace
 
+TEST_CASE("north arrow is off by default and toggled by the View tab's checkbox") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    CHECK_FALSE(map.showNorthArrow());
+    form.northArrowCheck()->setChecked(true);
+    CHECK(map.showNorthArrow());
+    form.northArrowCheck()->setChecked(false);
+    CHECK_FALSE(map.showNorthArrow());
+}
+
+TEST_CASE("hovering the bare map widget shows lon/lat with no handler registered, and clears when the mouse leaves") {
+    TileMapWidget map;
+    map.resize(300, 300);
+    CHECK(map.hoverText().isEmpty());
+    move(map, QPointF(150, 150));
+    CHECK(map.hoverText().contains("°,"));
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(&map, &leave);
+    CHECK(map.hoverText().isEmpty());
+}
+
+TEST_CASE("exportImage excludes the hover readout and restores it afterward") {
+    TileMapWidget map;
+    map.resize(300, 300);
+    move(map, QPointF(150, 150));
+    const auto before = map.hoverText();
+    REQUIRE_FALSE(before.isEmpty());
+    QTemporaryDir dir;
+    const auto path = QString::fromStdString((std::filesystem::path(dir.path().toStdString()) / "export.png").string());
+    CHECK(map.exportImage(path));
+    CHECK(map.hoverText() == before);
+}
+
+TEST_CASE("view form's hover handler samples the topmost visible layer's value, falling back to lon/lat once it's hidden") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    map.resize(400, 400);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.zoomToSelectedLayer();
+
+    const QPointF center(map.width() / 2.0, map.height() / 2.0);
+    move(map, center);
+    const auto withValue = map.hoverText();
+    CHECK_FALSE(withValue.isEmpty());
+    CHECK(withValue.contains("°,"));
+
+    form.layerTreeWidget()->topLevelItem(0)->setCheckState(0, Qt::Unchecked);
+    move(map, center);
+    const auto withoutValue = map.hoverText();
+    CHECK(withoutValue.contains("°,"));
+    // The visible layer's raster covers the map center after zoom-to-layer,
+    // so hiding it should drop the sampled-value prefix, shrinking the text
+    // down to just the coordinates.
+    CHECK(withValue != withoutValue);
+    CHECK(withValue.endsWith(withoutValue));
+}
+
 TEST_CASE("dragging a root domain's outline moves its center point live") {
     TileMapWidget map;
     map.resize(500, 400);

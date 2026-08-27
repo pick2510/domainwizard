@@ -1,12 +1,25 @@
 #include "wrftools/layer_renderer.hpp"
 #include "wrftools/error.hpp"
+#include "wrftools/units.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 
 namespace wrftools {
 namespace {
 std::size_t sliceBytes(const WarpedRaster& raster) { return raster.values.size() * sizeof(float); }
+
+// The same spherical Web Mercator formula GDAL's "-t_srs EPSG:3857" warp
+// produces (and what TileMapWidget's own screen-space math already
+// assumes) - placing a widget mouse-hover lon/lat into a WarpedRaster's
+// bounds3857 space this way needs no OGR transform on every mouse move.
+Coordinate2D lonLatToWebMercator(LonLat point) {
+    constexpr double kRadius = 6378137.0;
+    constexpr double pi = 3.14159265358979323846;
+    const double lat = std::clamp(point.lat, -85.05112878, 85.05112878);
+    return {point.lon * kRadius * pi / 180.0, std::log(std::tan((90.0 + lat) * pi / 360.0)) * kRadius};
+}
 }
 
 LayerRenderer::LayerRenderer(std::size_t sliceCacheBytes, std::size_t imageCacheSize)
@@ -81,6 +94,26 @@ RenderedRaster LayerRenderer::render(const std::string& filePath, const RasterLa
     imageCache_.push_back({imageKey, rendered});
     while (imageCache_.size() > imageCacheSize_) imageCache_.erase(imageCache_.begin());
     return rendered;
+}
+
+std::optional<double> LayerRenderer::valueAt(const std::string& filePath, const RasterLayer& layer, LonLat point) {
+    const auto& warped = getSlice(filePath, layer);
+    if (warped.width <= 0 || warped.height <= 0) return std::nullopt;
+    const auto merc = lonLatToWebMercator(point);
+    const auto& bounds = warped.bounds3857;
+    if (merc.x < bounds.minX || merc.x > bounds.maxX || merc.y < bounds.minY || merc.y > bounds.maxY) return std::nullopt;
+    const double fracX = (merc.x - bounds.minX) / (bounds.maxX - bounds.minX);
+    const double fracY = (bounds.maxY - merc.y) / (bounds.maxY - bounds.minY);  // top-down rows
+    const int col = std::clamp(static_cast<int>(fracX * warped.width), 0, warped.width - 1);
+    const int row = std::clamp(static_cast<int>(fracY * warped.height), 0, warped.height - 1);
+    const float raw = warped.values[static_cast<std::size_t>(row) * static_cast<std::size_t>(warped.width) + static_cast<std::size_t>(col)];
+    if (!std::isfinite(raw)) return std::nullopt;
+
+    auto& source = registry_.open({filePath});
+    const auto& variables = source.variables();
+    const auto variable = std::find_if(variables.begin(), variables.end(), [&layer](const WrfVariable& value) { return value.name == layer.variable; });
+    if (variable == variables.end()) return std::nullopt;
+    return convert(static_cast<double>(raw), findUnit(variable->units, layer.unitKey));
 }
 
 }  // namespace wrftools

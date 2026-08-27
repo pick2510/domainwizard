@@ -23,8 +23,13 @@ Colorbar box) shows the selected layer's variable, unit, and current time
 as one label. For a multi-timestep layer, Previous/Next buttons step
 through timesteps one at a time (wrapping at either end), a Play button
 loops through them automatically at a configurable interval, and the info
-overlay's timestamp updates alongside. The whole map view - basemap,
-layers, outlines, legend - can
+overlay's timestamp updates alongside. An optional north arrow ("Show North
+Arrow" in the View box) marks the fixed up-is-north orientation, and hovering
+anywhere over the map shows a small readout of the topmost visible layer's
+pixel value under the cursor alongside its lon/lat (falling back to just the
+coordinates where no raster covers that point) - the hover readout is
+transient UI chrome and is left out of exported images. The whole map view -
+basemap, layers, outlines, legend, north arrow - can
 be exported as a PNG/JPEG via `File > Export Map Image...`. The app
 follows the OS's light/dark theme automatically, with a manual
 `Options > Theme` override.

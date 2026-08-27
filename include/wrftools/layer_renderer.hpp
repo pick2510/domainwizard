@@ -62,6 +62,14 @@ public:
     // next/previous timestep of a series ahead of the user stepping to it.
     void prefetch(const std::string& filePath, const RasterLayer& layer) { static_cast<void>(getSlice(filePath, layer)); }
 
+    // Samples the already-warped (EPSG:3857) slice for `layer` at a lon/lat
+    // point, converted to `layer`'s displayed unit - what a mouse-hover
+    // readout needs. Returns nullopt when the point falls outside the
+    // raster's bounds or lands on a nodata (NaN) pixel. Goes through the
+    // same slice cache render()/prefetch() populate, so a hover over an
+    // already-rendered layer never re-reads or re-warps.
+    [[nodiscard]] std::optional<double> valueAt(const std::string& filePath, const RasterLayer& layer, LonLat point);
+
 private:
     struct SliceKey {
         std::string filePath;

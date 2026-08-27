@@ -96,6 +96,7 @@ public:
     [[nodiscard]] QComboBox* tickFormatCombo() const noexcept { return tickFormat_; }
     [[nodiscard]] QSpinBox* tickDecimalsSpin() const noexcept { return tickDecimals_; }
     [[nodiscard]] QCheckBox* showInfoCheck() const noexcept { return showInfo_; }
+    [[nodiscard]] QCheckBox* northArrowCheck() const noexcept { return northArrow_; }
 
     // Applies the properties-panel widgets' current values to the selected
     // layer and re-renders. Public because the range fields' validation
@@ -122,6 +123,12 @@ private:
     void populatePropertiesPanel();
     void onVariableChanged();
     void onTickSettingsChanged();
+    // Given the lon/lat under the cursor, returns a formatted "value (unit)"
+    // string sampled from the topmost visible layer, or nullopt if no
+    // visible layer covers that point (or its pixel there is nodata) - fed
+    // to TileMapWidget's hover-value handler, registered once in the
+    // constructor.
+    [[nodiscard]] std::optional<QString> hoverValueAt(LonLat point);
 
     void refreshMap();
     void updateColorbar();
@@ -168,6 +175,7 @@ private:
     QComboBox* tickFormat_{};
     QSpinBox* tickDecimals_{};
     QCheckBox* showInfo_{};
+    QCheckBox* northArrow_{};
 
     QLabel* preview_{};
     QLabel* status_{};

@@ -138,6 +138,8 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     auto* zoomLayout = new QVBoxLayout;
     auto* zoomButton = new QPushButton("Zoom to Layer", this);
     zoomLayout->addWidget(zoomButton);
+    northArrow_ = new QCheckBox("Show North Arrow", this);
+    zoomLayout->addWidget(northArrow_);
     zoomGroup_->setLayout(zoomLayout);
     layout->addWidget(zoomGroup_);
 
@@ -197,6 +199,8 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(playInterval_, &QSpinBox::valueChanged, this, [this](int value) { playbackTimer_->setInterval(value); });
     connect(previousStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(-1); });
     connect(nextStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(1); });
+    connect(northArrow_, &QCheckBox::toggled, this, [this](bool checked) { map_->setShowNorthArrow(checked); });
+    map_->setHoverValueHandler([this](LonLat point) { return hoverValueAt(point); });
 
     updatePanelVisibility();
 }
@@ -548,6 +552,27 @@ void ViewForm::updateColorbar() {
             map_->setInfoText(QString::fromStdString(info));
         } else map_->setInfoText({});
     } catch (const std::exception&) { map_->setLegend({}); map_->setInfoText({}); }
+}
+
+std::optional<QString> ViewForm::hoverValueAt(LonLat point) {
+    // Topmost-first: the same draw order refreshMap() builds "view-rasters"
+    // in (bottom-first), reversed - matches what's actually visible under
+    // the cursor when layers overlap.
+    for (auto it = layers_.rbegin(); it != layers_.rend(); ++it) {
+        if (!it->settings.visible) continue;
+        try {
+            auto& source = renderer_.openFile({it->filePath});
+            const auto value = renderer_.valueAt(it->filePath, it->settings, point);
+            if (!value) continue;
+            const auto found = std::find_if(source.variables().begin(), source.variables().end(),
+                [it](const WrfVariable& v) { return v.name == it->settings.variable; });
+            const auto unitLabel = found != source.variables().end() ? findUnit(found->units, it->settings.unitKey).label : std::string{};
+            QString text = QString::number(*value, 'g', 6);
+            if (!unitLabel.empty()) text += " " + QString::fromStdString(unitLabel);
+            return text;
+        } catch (const std::exception&) { continue; }
+    }
+    return std::nullopt;
 }
 
 void ViewForm::stepPlayback(int direction) {

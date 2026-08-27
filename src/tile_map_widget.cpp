@@ -144,6 +144,8 @@ void TileMapWidget::setRasterOverlayGroup(const QString& name, std::vector<Raste
 void TileMapWidget::clearRasterOverlayGroup(const QString& name) { rasterGroups_.remove(name); update(); }
 void TileMapWidget::setLegend(QPixmap legend) { legend_ = std::move(legend); update(); }
 void TileMapWidget::setInfoText(const QString& text) { infoText_ = text; update(); }
+void TileMapWidget::setHoverValueHandler(HoverValueHandler handler) { hoverValueHandler_ = std::move(handler); }
+void TileMapWidget::setShowNorthArrow(bool show) { showNorthArrow_ = show; update(); }
 
 void TileMapWidget::setDraggableVectorOverlayGroup(const QString& groupName) { draggableGroup_ = groupName; }
 void TileMapWidget::setOverlayDragHandlers(OverlayDragStartHandler onStart, OverlayDragMoveHandler onMove, OverlayDragEndHandler onEnd) {
@@ -205,7 +207,13 @@ bool TileMapWidget::exportImage(const QString& path) {
     // by a paint-time flag.
     const bool wasVisible = providerCombo_->isVisible();
     providerCombo_->setVisible(false);
+    // The hover readout is transient, cursor-following UI chrome, not part
+    // of the map itself - blanked for the grab and restored right after, so
+    // an in-progress hover never ends up baked into a saved image.
+    const QString savedHover = hoverText_;
+    hoverText_.clear();
     const auto image = grab();
+    hoverText_ = savedHover;
     providerCombo_->setVisible(wasVisible);
     return image.save(path);
 }
@@ -407,6 +415,50 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
         painter.drawText(infoRect_, Qt::AlignLeft | Qt::AlignVCenter, infoText_);
     } else infoRect_ = {};
 
+    // North arrow - fixed in the bottom-right corner, away from the legend
+    // (top-right), info/hover boxes (left side) and the coordinate readout
+    // (top-left). Straight up always points north here: the basemap is
+    // never rotated.
+    if (showNorthArrow_) {
+        painter.save();
+        constexpr double margin = 14.0, arrowWidth = 16.0, arrowHeight = 30.0, labelHeight = 16.0;
+        const QPointF baseLeft(width() - margin - arrowWidth, height() - margin - labelHeight);
+        const QPointF baseRight(width() - margin, height() - margin - labelHeight);
+        const QPointF baseMid((baseLeft.x() + baseRight.x()) / 2.0, baseLeft.y() - 6.0);
+        const QPointF tip((baseLeft.x() + baseRight.x()) / 2.0, baseLeft.y() - arrowHeight);
+        QPainterPath arrow;
+        arrow.moveTo(tip);
+        arrow.lineTo(baseRight);
+        arrow.lineTo(baseMid);
+        arrow.lineTo(baseLeft);
+        arrow.closeSubpath();
+        painter.setPen(QPen(Qt::black, 1));
+        painter.setBrush(Qt::white);
+        painter.drawPath(arrow);
+        QFont font = painter.font();
+        font.setBold(true);
+        painter.setFont(font);
+        painter.setPen(Qt::black);
+        painter.drawText(QRectF(width() - margin - arrowWidth, height() - margin - labelHeight, arrowWidth, labelHeight), Qt::AlignHCenter | Qt::AlignVCenter, "N");
+        painter.restore();
+    }
+
+    // Mouse-hover readout - bottom-left corner, not movable/draggable
+    // (unlike the legend/info boxes) since it only makes sense right where
+    // the cursor already is. Cleared on exportImage() (see there) and on
+    // leaveEvent, so it never lingers once the mouse leaves the widget.
+    if (!hoverText_.isEmpty()) {
+        constexpr double padding = 6.0;
+        const auto textRect = painter.fontMetrics().boundingRect(hoverText_);
+        const QSizeF boxSize(textRect.width() + 2 * padding, textRect.height() + 2 * padding);
+        const QRectF hoverBox(10.0, height() - boxSize.height() - 10.0, boxSize.width(), boxSize.height());
+        painter.fillRect(hoverBox, QColor(255, 255, 255, 220));
+        painter.setPen(QColor(120, 120, 120));
+        painter.drawRect(hoverBox);
+        painter.setPen(Qt::black);
+        painter.drawText(hoverBox, Qt::AlignCenter, hoverText_);
+    }
+
     painter.fillRect(QRect(0, 0, 155, 26), QColor(255, 255, 255, 190));
     painter.setPen(QColor(30, 41, 59));
     painter.drawText(QRect(6, 3, 145, 20), QString("%1°, %2°  z%3").arg(longitude_, 0, 'f', 3).arg(latitude_, 0, 'f', 3).arg(zoom_));
@@ -441,6 +493,18 @@ void TileMapWidget::mousePressEvent(QMouseEvent* event) {
     } else { dragging_ = true; dragStart_ = event->position(); }
 }
 void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
+    // Updated unconditionally, ahead of every other branch below (including
+    // the ones that `return` without their own update()) - a hover readout
+    // should track the cursor regardless of what else the mouse happens to
+    // be doing (panning, dragging an overlay/legend/info box, ...).
+    {
+        const auto here = lonLat(event->position() + viewportTopLeft(), zoom_);
+        QString text = QString("%1°, %2°").arg(here.x(), 0, 'f', 4).arg(here.y(), 0, 'f', 4);
+        if (hoverValueHandler_) {
+            if (const auto value = hoverValueHandler_(LonLat{here.x(), here.y()})) text = *value + "   " + text;
+        }
+        hoverText_ = text;
+    }
     if (dragTarget_ == "legend-resize") {
         if (const double baseWidth = legend_.width(); baseWidth > 0) {
             const double rawWidth = event->position().x() - legendResizeOrigin_.x();
@@ -468,7 +532,7 @@ void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
         }
         return;
     }
-    if (!dragging_) return;
+    if (!dragging_) { update(); return; }  // idle hover: repaint for the hover-text update above
     const auto delta = event->position() - dragStart_;
     setCenter(lonLat(worldPixel() - delta, zoom_).x(), lonLat(worldPixel() - delta, zoom_).y(), zoom_);
     dragStart_ = event->position();
@@ -478,5 +542,9 @@ void TileMapWidget::mouseReleaseEvent(QMouseEvent*) {
     if (dragTarget_ == "overlay-resize" && overlayResizeEnd_) overlayResizeEnd_();
     dragging_ = false;
     dragTarget_.clear();
+}
+void TileMapWidget::leaveEvent(QEvent*) {
+    hoverText_.clear();
+    update();
 }
 }  // namespace wrftools

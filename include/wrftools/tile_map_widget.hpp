@@ -86,6 +86,25 @@ public:
     void clearRasterOverlayGroup(const QString& name);
     void setLegend(QPixmap legend);
     void setInfoText(const QString& text);
+
+    // Optional per-pixel readout drawn near the bottom-left corner while the
+    // mouse is over the map. Given the lon/lat under the cursor, the
+    // handler returns a formatted "value" string to prefix onto the
+    // coordinates (e.g. "12.3 degC"), or nullopt to fall back to showing
+    // just the coordinates - this widget knows nothing about rasters or
+    // units, it only asks. Called on every mouse-move, so the handler
+    // should be cheap (ViewForm's implementation samples an already-warped,
+    // cached slice - no file I/O). Deliberately excluded from
+    // exportImage()'s output, unlike the legend/info overlays.
+    using HoverValueHandler = std::function<std::optional<QString>(LonLat)>;
+    void setHoverValueHandler(HoverValueHandler handler);
+
+    // Static "N" compass arrow in the bottom-right corner - this widget
+    // never rotates the basemap, so north is always straight up. Off by
+    // default; included in exportImage()'s output, like the legend.
+    void setShowNorthArrow(bool show);
+    [[nodiscard]] bool showNorthArrow() const noexcept { return showNorthArrow_; }
+
     [[nodiscard]] bool exportImage(const QString& path);
 
     // Marks one vector overlay group as drag-enabled (DomainForm uses this
@@ -135,6 +154,7 @@ public:
     [[nodiscard]] const QString& draggableVectorOverlayGroup() const noexcept { return draggableGroup_; }
     [[nodiscard]] double centerLongitude() const noexcept { return longitude_; }
     [[nodiscard]] double centerLatitude() const noexcept { return latitude_; }
+    [[nodiscard]] const QString& hoverText() const noexcept { return hoverText_; }
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -143,6 +163,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     [[nodiscard]] QPointF worldPixel() const;
@@ -212,6 +233,9 @@ private:
     int zoom_{2};
     bool dragging_{false};
     QPointF dragStart_;
+    HoverValueHandler hoverValueHandler_;
+    QString hoverText_;
+    bool showNorthArrow_{false};
 };
 
 }  // namespace wrftools
