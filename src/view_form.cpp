@@ -202,7 +202,7 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
 }
 
 void ViewForm::openFile() {
-    const auto paths = QFileDialog::getOpenFileNames(this, "Open WRF/WPS NetCDF", {}, "NetCDF files (*.nc);;All files (*)");
+    const auto paths = QFileDialog::getOpenFileNames(this, "Open WRF/WPS NetCDF", {}, "All files (*)");
     if (paths.isEmpty()) return;
     std::vector<std::string> given;
     for (const auto& path : paths) given.push_back(path.toStdString());
