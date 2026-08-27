@@ -21,6 +21,18 @@ struct WrfVersionInfo {
     int numLandCat{};
 };
 
+// One entry of add_wrf_version's WRF_VERSIONS_DICT (w2w.py:43-54), in its
+// own declared order - v4.3 through v4.4.1 use the 41-category scheme,
+// v4.4.2 through v4.5.2 use 61. This is the dropdown Stage 5's LczForm
+// populates: a fixed, non-free-text choice, matching the CLI's own
+// `choices=WRF_VERSIONS_DICT.keys()` (an unrecognized/mistyped version
+// string has no way to silently fall back to the wrong category scheme).
+struct WrfVersionOption {
+    std::string name;
+    WrfVersionInfo info;
+};
+[[nodiscard]] const std::vector<WrfVersionOption>& wrfVersionOptions();
+
 // One row of w2w's LCZ_UCP_lookup.csv (or a user-supplied replacement via
 // --lcz-ucp) - the Stewart & Oke-derived urban canopy parameters per LCZ
 // class (1-17).

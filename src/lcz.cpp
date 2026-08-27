@@ -10,6 +10,7 @@
 #include <cpl_conv.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <format>
 #include <fstream>
@@ -819,10 +820,28 @@ void createLczExtentFile(const std::filesystem::path& paramsPath, const std::fil
     // correctness one.
 }
 
+const std::vector<WrfVersionOption>& wrfVersionOptions() {
+    static const std::vector<WrfVersionOption> options = {
+        {"v4.3", {30, 41}},
+        {"v4.3.1", {30, 41}},
+        {"v4.3.2", {30, 41}},
+        {"v4.3.3", {30, 41}},
+        {"v4.4", {30, 41}},
+        {"v4.4.1", {30, 41}},
+        {"v4.4.2", {50, 61}},
+        {"v4.5", {50, 61}},
+        {"v4.5.1", {50, 61}},
+        {"v4.5.2", {50, 61}},
+    };
+    return options;
+}
+
 std::vector<std::string> expandLandCatParents(const std::filesystem::path& dstFile, const WrfVersionInfo& wrfVersion) {
     const std::string full = dstFile.string();
-    if (full.size() < 5) throw UserError("Not a geo_em file path: " + full);
-    const int domainNr = std::stoi(full.substr(full.size() - 5, 2));
+    const std::string domainDigits = full.size() >= 5 ? full.substr(full.size() - 5, 2) : std::string();
+    if (domainDigits.size() != 2 || !std::isdigit(static_cast<unsigned char>(domainDigits[0])) || !std::isdigit(static_cast<unsigned char>(domainDigits[1])))
+        throw UserError("Not a geo_em.dNN.nc file path (expected a two-digit domain number before .nc): " + full);
+    const int domainNr = std::stoi(domainDigits);
     const std::string prefix = full.substr(0, full.size() - 5);
 
     std::vector<std::string> messages;

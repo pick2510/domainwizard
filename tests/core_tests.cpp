@@ -1737,6 +1737,15 @@ std::filesystem::path expandLandCatParentsFixture(const std::string& suffix, con
 }
 }  // namespace
 
+TEST_CASE("expandLandCatParents rejects a filename with no two-digit domain number rather than crashing") {
+    // A raw std::stoi on a non-numeric substring throws std::invalid_argument,
+    // not UserError - this must be caught and converted before it ever
+    // reaches a caller (Stage 5's LczForm lets a user pick an arbitrary
+    // target file), see the isdigit guard in lcz.cpp.
+    CHECK_THROWS_AS(expandLandCatParents("build/not_a_geo_em_file.nc", WrfVersionInfo{30, 41}), UserError);
+    CHECK_THROWS_AS(expandLandCatParents("build/geo_em.dXX.nc", WrfVersionInfo{30, 41}), UserError);
+}
+
 TEST_CASE("expandLandCatParents warns for every missing parent domain file") {
     const auto dir = expandLandCatParentsFixture("missing", {{4, "geo_em.d04.nc"}});
     const auto messages = expandLandCatParents(dir / "geo_em.d04.nc", WrfVersionInfo{30, 41});

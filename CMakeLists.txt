@@ -91,6 +91,7 @@ add_library(wrftools_ui
     src/domain_overlay.cpp
     src/tile_map_widget.cpp
     src/geotiff_convert_form.cpp
+    src/lcz_form.cpp
 )
 target_include_directories(wrftools_ui PUBLIC include)
 target_link_libraries(wrftools_ui PUBLIC wrftools_core convert_geotiff_lib Qt6::Gui Qt6::Widgets Qt6::Network)

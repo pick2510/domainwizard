@@ -536,6 +536,65 @@ cases (4 `expandLandCatParents`, 4 `checksAndCleaning`), CTest count 102 ->
 - Wire a new "LCZ" tab into `MainWindow` (`main_window.hpp`/`.cpp`)
   alongside the existing Domains/View/Convert tabs.
 
+**Status: done**, with two deliberate deviations from this plan's own text,
+both explained where they're implemented rather than silently diverging:
+
+- **No separate "input directory" field.** The plan described mirroring the
+  CLI's `io_dir` + two filenames. Every function in `lcz.hpp` already takes
+  full paths, not `io_dir`-relative ones, so `LczForm` just has "LCZ GeoTIFF
+  file" and "Target geo_em.dXX.nc file" browse fields (full paths); every
+  output path is derived from the target file's own path, matching what
+  `io_dir` + `wrf_file.replace(...)` produces when `io_dir` is that file's
+  parent directory. A real simplification, not a fidelity loss - see the
+  doc comment at the top of `lcz_form.hpp`.
+- **No LCZ Generator auto-detection.** w2w.py's `_get_lcz_band` silently
+  switches to band 1 when the GeoTIFF's `long_name` attribute contains
+  `"lczFilter"`. `LczForm`'s LCZ-band field is a plain, always-honored value
+  (default 0) - a user with an LCZ Generator map sets it to 1 themselves.
+  Left out because it's a convenience heuristic on top of an already-
+  explicit `-l`/`--lcz-band` argument, not something a wrong guess could
+  make silently incorrect - the user still sees and controls the actual
+  value being used.
+
+The `WrfVersionInfo` dropdown is fed by a new `wrfVersionOptions()`
+(`lcz.hpp`/`lcz.cpp`) - the plan assumed this table already existed "from
+Stage 0," but it was never actually added; it's new here, ported directly
+from `WRF_VERSIONS_DICT` (`w2w.py:43-54`) in the same order.
+
+`checkLczIntegrity` runs synchronously on the GUI thread as part of
+`runLcz()`'s validation, before the Run button even disables - not as a
+separate background pre-check step. It's genuinely the pipeline's first
+stage (`main()`'s own sequencing), so this satisfies "surfaced early"
+without needing a second background pass purely to re-check domain
+coverage; the tradeoff (documented in `lcz_form.hpp`) is a brief UI block
+while a large LCZ raster reprojects.
+
+A real robustness gap fixed while wiring this up, in `expandLandCatParents`
+itself (`lcz.cpp`): the domain-number parse used a raw `std::stoi` on a
+filename substring, throwing `std::invalid_argument` - not `UserError` -
+for a non-numeric or too-short filename. Stage 4's own tests never
+exercised this because their fixtures were always well-formed
+`geo_em.dNN.nc` names; Stage 5 makes the function reachable from an
+arbitrary user-picked file, so it now validates both digits first and
+throws `UserError`. Two new `core_tests.cpp` cases pin this.
+
+Since this port has no `checks_and_cleaning`-produced `*_clean.tif` on
+disk (`checkLczIntegrity` keeps its cleaned raster in memory - see its own
+doc in `lcz.hpp`), `LczForm` passes `checksAndCleaning` an empty
+`srcFileClean` path; the cleanup step is then a harmless no-op (matches the
+"no-op" `checksAndCleaning` test case from Stage 4).
+
+7 new `ui_tests.cpp` `LczForm` cases (dropdown population, three
+validation-throws-before-running cases, and one real end-to-end run against
+the Zaragoza sample domain in a `QTemporaryDir`, asserting all three output
+files exist, all nine checks pass, and `nbui_max == 5` - matching Stage 3's
+own pinned value for the same fixture pair and defaults), plus 1 new
+`core_tests.cpp` case for the `expandLandCatParents` filename-validation fix
+above. CTest count 110 -> 111 (the 1 new `core_tests` case is its own CTest
+entry; `wrftools_ui_tests` stays one CTest entry regardless of how many
+Catch2 cases it holds internally - 86 now, 7 more than before this stage),
+all passing.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

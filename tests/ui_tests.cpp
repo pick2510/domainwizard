@@ -7,6 +7,8 @@
 #include "wrftools/domain_overlay.hpp"
 #include "wrftools/error.hpp"
 #include "wrftools/geotiff_convert_form.hpp"
+#include "wrftools/lcz.hpp"
+#include "wrftools/lcz_form.hpp"
 #include "wrftools/main_window.hpp"
 #include "wrftools/theme.hpp"
 #include "wrftools/tile_map_widget.hpp"
@@ -20,10 +22,13 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QMouseEvent>
+#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -69,6 +74,15 @@ namespace {
 // the fixtures used here convert in well under a second.
 void waitWhileRunning(GeotiffConvertForm& form) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+}
+
+// Same as above, for LczForm - the full pipeline (real GDAL warps over the
+// Zaragoza sample domain) takes longer than a GeoTIFF-convert-lib run, so
+// this gets a longer deadline.
+void waitWhileRunning(LczForm& form) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
     QCoreApplication::processEvents();
 }
@@ -1471,4 +1485,85 @@ TEST_CASE("a persisted Dark preference is restored the next time MainWindow is c
     MainWindow window;
     CHECK(window.darkThemeAction()->isChecked());
     CHECK(qApp->palette().color(QPalette::Window) == darkPalette().color(QPalette::Window));
+}
+
+TEST_CASE("LczForm populates the WRF version dropdown from wrfVersionOptions, in order") {
+    LczForm form;
+    REQUIRE(form.wrfVersionCombo()->count() == static_cast<int>(wrfVersionOptions().size()));
+    CHECK(form.wrfVersionCombo()->itemText(0).toStdString() == "v4.3");
+    CHECK(form.wrfVersionCombo()->itemText(6).toStdString() == "v4.4.2");  // first 61-category version
+    CHECK(form.wrfVersionCombo()->currentIndex() == 0);
+}
+
+TEST_CASE("running LCZ processing with no LCZ file throws UserError") {
+    LczForm form;
+    form.setWrfFile("tests/fixtures/lcz/geo_em.d04.nc");
+    CHECK_THROWS_AS(form.runLcz(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("running LCZ processing with no target geo_em file throws UserError") {
+    LczForm form;
+    form.setLczFile("tests/fixtures/lcz/lcz_zaragoza.tif");
+    CHECK_THROWS_AS(form.runLcz(), UserError);
+}
+
+TEST_CASE("a malformed built-lcz field throws UserError before any background work starts") {
+    LczForm form;
+    form.setLczFile("tests/fixtures/lcz/lcz_zaragoza.tif");
+    form.setWrfFile("tests/fixtures/lcz/geo_em.d04.nc");
+    form.builtLczField()->setText("1 2 not-a-number");
+    CHECK_THROWS_AS(form.runLcz(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("an LCZ GeoTIFF that doesn't cover the WRF domain throws UserError synchronously") {
+    // checkLczIntegrity runs on the calling thread before the worker
+    // starts, so this fails immediately, not after waitWhileRunning.
+    LczForm form;
+    form.setLczFile("tests/fixtures/lcz/lcz_too_small.tif");
+    form.setWrfFile("tests/fixtures/lcz/geo_em.d04.nc");
+    CHECK_THROWS_AS(form.runLcz(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("a nonexistent custom UCP table throws UserError") {
+    LczForm form;
+    form.setLczFile("tests/fixtures/lcz/lcz_zaragoza.tif");
+    form.setWrfFile("tests/fixtures/lcz/geo_em.d04.nc");
+    form.setCustomUcpTable("tests/fixtures/lcz/does_not_exist.csv");
+    CHECK_THROWS_AS(form.runLcz(), UserError);
+}
+
+TEST_CASE("a full LCZ run against the real Zaragoza sample domain produces every output file and a passing checklist") {
+    QTemporaryDir workDir;
+    REQUIRE(workDir.isValid());
+    const auto wrfCopy = workDir.filePath("geo_em.d04.nc");
+    REQUIRE(QFile::copy("tests/fixtures/lcz/geo_em.d04.nc", wrfCopy));
+
+    LczForm form;
+    form.setLczFile(QString::fromStdString(std::filesystem::absolute("tests/fixtures/lcz/lcz_zaragoza.tif").string()));
+    form.setWrfFile(wrfCopy);
+    // Defaults (WRF version v4.3 -> 41 categories, built LCZ 1-10, FRC
+    // threshold 0.2, NPIX_NLC 45) match this project's own Stage 3 "Full
+    // LCZ pipeline" core_tests.cpp end-to-end test exactly, including its
+    // pinned nbui_max=5 against a live add_wrf_version run.
+    form.runLcz();
+    waitWhileRunning(form);
+
+    CHECK_FALSE(form.isRunning());
+    CHECK(form.logView()->toPlainText().contains("LCZ processing complete."));
+    CHECK(std::filesystem::exists(workDir.filePath("geo_em.d04_NoUrban.nc").toStdString()));
+    CHECK(std::filesystem::exists(workDir.filePath("geo_em.d04_LCZ_params.nc").toStdString()));
+    CHECK(std::filesystem::exists(workDir.filePath("geo_em.d04_LCZ_extent.nc").toStdString()));
+
+    // No parent domain files sit beside the temp copy, so
+    // expandLandCatParents reports three "not found" warnings rather than
+    // failing the run - matches w2w.py's own tolerant behavior.
+    CHECK(form.logView()->toPlainText().contains("not found"));
+
+    REQUIRE(form.resultsList()->count() == 9);
+    for (int i = 0; i < form.resultsList()->count(); ++i) INFO(form.resultsList()->item(i)->text().toStdString());
+    for (int i = 0; i < form.resultsList()->count(); ++i) CHECK(form.resultsList()->item(i)->foreground().color() == QColor(Qt::darkGreen));
+    CHECK(form.nbuiMaxLabel()->text().contains("Set nbui_max to 5"));
 }
