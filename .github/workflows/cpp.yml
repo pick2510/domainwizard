@@ -54,14 +54,24 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
-      # Shared across all three OSes - MSYS2's own toolchain/cmake/ninja are
-      # only on PATH inside its own shell, so Windows runs these through it
-      # while Linux/macOS keep the runner's default shell.
+      # Linux/macOS share these two (default shell); Windows needs its own
+      # copies with shell: msys2 {0} - the `shell:` field's expression
+      # evaluator does not expose the `runner` context (unlike `if:`), so a
+      # single `shell: ${{ runner.os == ... }}` step is rejected outright as
+      # an invalid workflow file before any job even starts.
       - name: Build
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        if: runner.os != 'Windows'
+        run: cmake --build build-cpp
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
         run: cmake --build build-cpp
       - name: Test
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        if: runner.os != 'Windows'
+        run: ctest --test-dir build-cpp --output-on-failure
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
         run: ctest --test-dir build-cpp --output-on-failure
       # Packaged separately from the Debug build/test above (its own fresh
       # Release, BUILD_TESTING=OFF configure+build) - only reached once
