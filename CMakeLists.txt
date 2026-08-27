@@ -1,6 +1,30 @@
 cmake_minimum_required(VERSION 3.21)
 project(wrftools VERSION 0.1.0 LANGUAGES CXX)
 
+# On Linux, when Homebrew/Linuxbrew is on this machine, prefer
+# system-installed libraries over what it exposes earlier on PATH. CMake's
+# find_package() Config-mode search checks PATH-derived prefixes (e.g.
+# Homebrew's, from its bin/ being on PATH) before the default system
+# prefixes - so without this, Qt6 below can resolve from Homebrew while
+# GDAL resolves from the system package, baking a Homebrew RUNPATH into
+# every binary. At runtime the dynamic loader then prefers that RUNPATH
+# over the system default path, so even a library correctly *linked*
+# against the system copy (netCDF, via the pkg-config guard further down)
+# actually *loads* Homebrew's copy instead - and if that copy's HDF5
+# differs from the one system GDAL links, both HDF5 builds end up loaded
+# in one process and corrupt each other's internal state at runtime (a
+# misleading "NetCDF: HDF error" on perfectly valid files, not a
+# build-time error).
+#
+# Gated on HOMEBREW_PREFIX (set by Homebrew/Linuxbrew's shellenv) rather
+# than applied unconditionally: prepending /usr unconditionally would also
+# jump ahead of a user's own -DCMAKE_PREFIX_PATH (e.g. a conda/mamba
+# environment, or a deliberately custom-built stack), silently overriding
+# their choice instead of just correcting for Homebrew's PATH-hint quirk.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DEFINED ENV{HOMEBREW_PREFIX})
+    list(PREPEND CMAKE_PREFIX_PATH /usr)
+endif()
+
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -19,8 +43,50 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
 # can read WRF NetCDF but cannot round-trip its non-raster dimensions
 # (land_cat, month, num_urb_params) losslessly, which writing a modified
 # geo_em file back out requires.
+#
+# On Linux, when Homebrew/Linuxbrew is on this machine, its own
+# pkg-config landing earlier on PATH than the system one can make
+# pkg_check_modules() below resolve netCDF against a different HDF5 build
+# than the one find_package(GDAL) above already resolved system GDAL
+# against - even with the CMAKE_PREFIX_PATH guard above, since pkg-config
+# has its own separate, PATH-driven executable search. Both HDF5 builds
+# then load into the same process and corrupt each other's internal state
+# at runtime - producing an intermittent, misleading "NetCDF: HDF error"
+# on perfectly valid files, not a build-time error, which makes it easy to
+# mistake for corrupt fixtures or a genuine code bug. Prefer the system
+# pkg-config, which searches system paths first, when one exists.
+#
+# Gated on HOMEBREW_PREFIX rather than applied unconditionally, matching
+# the CMAKE_PREFIX_PATH guard above - forcing the system pkg-config binary
+# has little downside on its own (it still honors PKG_CONFIG_PATH, e.g.
+# from an activated conda environment), but there is no reason to override
+# the PATH-found one on a machine where Homebrew was never the problem.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND DEFINED ENV{HOMEBREW_PREFIX})
+    find_program(PKG_CONFIG_EXECUTABLE NAMES pkg-config PATHS /usr/bin /bin NO_DEFAULT_PATH)
+endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(NETCDF REQUIRED IMPORTED_TARGET netcdf)
+
+# Belt-and-suspenders: if GDAL and netCDF still resolved from different
+# install prefixes (e.g. no system pkg-config exists, or some other
+# toolchain mixing this doesn't account for), warn loudly rather than let
+# the same class of bug resurface as a baffling test-time HDF5 crash.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND GDAL_LIBRARY)
+    get_filename_component(_gdal_prefix "${GDAL_LIBRARY}" DIRECTORY)
+    get_filename_component(_gdal_prefix "${_gdal_prefix}" DIRECTORY)
+    foreach(_netcdf_libdir ${NETCDF_LIBRARY_DIRS})
+        get_filename_component(_netcdf_prefix "${_netcdf_libdir}" DIRECTORY)
+        if(NOT _netcdf_prefix STREQUAL _gdal_prefix)
+            message(WARNING
+                "GDAL is resolving from '${_gdal_prefix}' but netCDF from "
+                "'${_netcdf_prefix}'. If they end up linking different HDF5 builds, "
+                "mixing both in one process can corrupt HDF5's internal state at "
+                "runtime (misleading 'NetCDF: HDF error' on otherwise-valid files). "
+                "Point PKG_CONFIG_PATH/CMAKE_PREFIX_PATH at one consistent set of "
+                "libraries, e.g. -DCMAKE_PREFIX_PATH=/usr on Fedora.")
+        endif()
+    endforeach()
+endif()
 
 # GeoTIFF <-> WPS geogrid conversion, ported from
 # https://github.com/jbeezley/convert_geotiff (public domain) - its own
