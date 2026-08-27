@@ -34,6 +34,7 @@
 #include <QTreeWidget>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -56,7 +57,17 @@ int main(int argc, char* argv[]) {
     // test run never touches a developer's actual persisted preference.
     application.setOrganizationName("WRF Tools Tests");
     application.setApplicationName("wrftools_ui_tests");
-    return Catch::Session().run(argc, argv);
+    const int result = Catch::Session().run(argc, argv);
+    // quick_exit skips static-destructor/atexit teardown (Qt, GDAL/netCDF's
+    // own driver-unregistration hooks, ...) - on Windows CI that teardown
+    // path has been observed to hang indefinitely well after every test has
+    // already run and reported its result (confirmed: "All tests passed"
+    // prints only once ctest's own --timeout kills the process, exactly
+    // 120.01s after the last test finished), turning a passing run into a
+    // timeout failure. The test process's own state doesn't need to survive
+    // past this point, so skipping it is safe here even though it wouldn't
+    // be in the shipped app.
+    std::quick_exit(result);
 }
 
 namespace {

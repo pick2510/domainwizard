@@ -99,7 +99,9 @@ if(BUILD_TESTING)
     find_package(Catch2 3 REQUIRED)
     include(Catch)
     add_executable(wrftools_core_tests tests/core_tests.cpp)
-    target_link_libraries(wrftools_core_tests PRIVATE wrftools_core Catch2::Catch2WithMain)
+    # Catch2::Catch2 (not ...WithMain) - core_tests.cpp provides its own
+    # main() so it can quick_exit() after Catch::Session().run(), see there.
+    target_link_libraries(wrftools_core_tests PRIVATE wrftools_core Catch2::Catch2)
     catch_discover_tests(wrftools_core_tests WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
     # catch_discover_tests runs the test binary at build time (not just at

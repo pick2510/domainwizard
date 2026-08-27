@@ -14,9 +14,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/catch_session.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
@@ -27,6 +29,24 @@
 #include <gdal_priv.h>
 
 using namespace wrftools;
+
+// A custom main (rather than linking Catch2's auto-provided one) purely to
+// call quick_exit below - see its comment. Otherwise identical to what
+// Catch2WithMain itself generates.
+int main(int argc, char* argv[]) {
+    const int result = Catch::Session().run(argc, argv);
+    // quick_exit skips static-destructor/atexit teardown (GDAL/netCDF's own
+    // driver-unregistration hooks among them) - on Windows CI that teardown
+    // path has been observed to hang indefinitely well after every test has
+    // already run and reported its result (confirmed: "All tests passed"
+    // prints only once ctest's own --timeout kills the process, exactly
+    // 120.01s after the last test finished), turning a passing run into a
+    // timeout failure. catch_discover_tests spawns a fresh process per test
+    // case here, so this fires on every single one. The process's own state
+    // doesn't need to survive past this point, so skipping it is safe here
+    // even though it wouldn't be in the shipped app.
+    std::quick_exit(result);
+}
 
 TEST_CASE("WRF series names are parsed and ordered") {
     const auto parsed = parseWrfFilename("wrfout_d03_2025-03-14_00_30_00");

@@ -4,6 +4,7 @@
 #include "wrftools/raster_layer.hpp"
 #include "wrftools/theme.hpp"
 
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <vector>
@@ -22,7 +23,15 @@
 
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
-    return Catch::Session().run(argc, argv);
+    const int result = Catch::Session().run(argc, argv);
+    // quick_exit skips static-destructor/atexit teardown (Qt, GDAL/netCDF's
+    // own driver-unregistration hooks, ...) - on Windows that teardown path
+    // has been observed to hang indefinitely well after every test has
+    // already run and reported its result, turning a passing run into a
+    // ctest --timeout kill. The test process's own state doesn't need to
+    // survive past this point, so skipping it is safe here even though it
+    // wouldn't be in the shipped app.
+    std::quick_exit(result);
 }
 
 namespace {
