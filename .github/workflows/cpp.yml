@@ -36,14 +36,20 @@ jobs:
           Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
           Add-MpPreference -ExclusionPath "D:\a\_temp\msys64"
           Add-MpPreference -ExclusionProcess "c++.exe","cc1plus.exe","ctest.exe","ninja.exe"
+      # libnetcdf-dev/netcdf/mingw-w64-x86_64-netcdf (below): NetcdfFile's
+      # (netcdf_file.hpp/.cpp) direct netCDF-C linkage for the w2w LCZ port
+      # - see CMakeLists.txt's pkg_check_modules(NETCDF ...) and
+      # PORT_W2W.MD Stage 0. Each package also pulls in its own HDF5
+      # dependency automatically via the OS package manager - no separate
+      # HDF5 install step needed on any of the three platforms.
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev catch2 patchelf
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev libnetcdf-dev pkg-config catch2 patchelf
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake ninja qt gdal proj catch2 dylibbundler
+        run: brew install cmake ninja qt gdal proj netcdf pkg-config catch2 dylibbundler
       # MSYS2/MinGW64 rather than MSVC+vcpkg: its package repo already has
-      # prebuilt Qt6/GDAL/PROJ/Catch2 (matching the apt/brew jobs' approach
+      # prebuilt Qt6/GDAL/PROJ/netCDF/Catch2 (matching the apt/brew jobs' approach
       # of using the OS's own package manager instead of building
       # dependencies from source), and its GCC accepts the same
       # -Wall/-Wextra/-Wpedantic flags CMakeLists.txt already sets
@@ -63,6 +69,8 @@ jobs:
             mingw-w64-x86_64-proj
             mingw-w64-x86_64-libtiff
             mingw-w64-x86_64-libgeotiff
+            mingw-w64-x86_64-netcdf
+            mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-catch
             zip
       - name: Configure Linux
