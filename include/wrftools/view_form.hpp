@@ -80,10 +80,17 @@ public:
     [[nodiscard]] QCheckBox* interpolateCheck() const noexcept { return interpolate_; }
     [[nodiscard]] QCheckBox* playCheck() const noexcept { return play_; }
     [[nodiscard]] QTimer* playbackTimer() const noexcept { return playbackTimer_; }
-    // Steps the time combo forward by one, wrapping to the first frame -
-    // what a real playback tick does. Public (not just reachable by waiting
-    // for playbackTimer()'s real interval) so tests can drive it directly,
-    // matching viewform.py's _advance_play().
+    [[nodiscard]] QPushButton* previousStepButton() const noexcept { return previousStepButton_; }
+    [[nodiscard]] QPushButton* nextStepButton() const noexcept { return nextStepButton_; }
+    [[nodiscard]] QSpinBox* playIntervalSpin() const noexcept { return playInterval_; }
+    // Steps the time combo by `direction` (+1/-1), wrapping at either end -
+    // what a real playback tick, or the Previous/Next step buttons, does.
+    // Public (not just reachable by waiting for playbackTimer()'s real
+    // interval, or a real button click) so tests can drive it directly.
+    void stepPlayback(int direction);
+    // Equivalent to stepPlayback(1) - kept as its own method since it's
+    // what playbackTimer()'s timeout signal calls, matching viewform.py's
+    // _advance_play().
     void advancePlayback();
     [[nodiscard]] QSpinBox* tickCountSpin() const noexcept { return tickCount_; }
     [[nodiscard]] QComboBox* tickFormatCombo() const noexcept { return tickFormat_; }
@@ -153,6 +160,9 @@ private:
     QCheckBox* interpolate_{};
     QCheckBox* play_{};
     QTimer* playbackTimer_{};
+    QPushButton* previousStepButton_{};
+    QPushButton* nextStepButton_{};
+    QSpinBox* playInterval_{};
 
     QSpinBox* tickCount_{};
     QComboBox* tickFormat_{};

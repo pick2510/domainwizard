@@ -85,6 +85,9 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     variable_ = new QComboBox(this); colormap_ = new QComboBox(this); units_ = new QComboBox(this); time_ = new QComboBox(this);
     level_ = new QSpinBox(this); level_->setMinimum(1);
     play_ = new QCheckBox("Play", this); playbackTimer_ = new QTimer(this);
+    previousStepButton_ = new QPushButton("◀", this); previousStepButton_->setToolTip("Previous time step");
+    nextStepButton_ = new QPushButton("▶", this); nextStepButton_->setToolTip("Next time step");
+    playInterval_ = new QSpinBox(this); playInterval_->setRange(100, 60000); playInterval_->setSingleStep(100); playInterval_->setValue(600); playInterval_->setSuffix(" ms");
     opacity_ = new QSlider(Qt::Horizontal, this); opacity_->setRange(0, 100); opacity_->setValue(80);
     opacityLabel_ = new QLabel("80%", this);
     autoRange_ = new QCheckBox("Auto range", this); autoRange_->setChecked(true);
@@ -95,7 +98,15 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     colormap_->addItem(kCategoricalColormap);
     levelLabel_ = new QLabel("Vertical level", this);
     form->addRow("Variable", variable_);
-    form->addRow("Time step", time_); form->addRow("", play_);
+    form->addRow("Time step", time_);
+    auto* playRow = new QWidget(this);
+    auto* playRowLayout = new QHBoxLayout(playRow);
+    playRowLayout->setContentsMargins(0, 0, 0, 0);
+    playRowLayout->addWidget(previousStepButton_);
+    playRowLayout->addWidget(play_);
+    playRowLayout->addWidget(nextStepButton_);
+    form->addRow("", playRow);
+    form->addRow("Play interval", playInterval_);
     form->addRow(levelLabel_, level_);
     form->addRow("Colormap", colormap_); form->addRow("Units", units_);
     auto* opacityRow = new QWidget(this);
@@ -178,9 +189,14 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(tickDecimals_, &QSpinBox::valueChanged, this, [this] { onTickSettingsChanged(); });
     connect(showInfo_, &QCheckBox::toggled, this, [this] { updateColorbar(); });
     connect(zoomButton, &QPushButton::clicked, this, [this] { zoomToSelectedLayer(); });
-    playbackTimer_->setInterval(600);
+    playbackTimer_->setInterval(playInterval_->value());
     connect(play_, &QCheckBox::toggled, this, [this](bool enabled) { if (enabled) playbackTimer_->start(); else playbackTimer_->stop(); });
     connect(playbackTimer_, &QTimer::timeout, this, [this] { advancePlayback(); });
+    // Live: changing the interval while already playing takes effect on the
+    // next tick without needing to stop/restart Play.
+    connect(playInterval_, &QSpinBox::valueChanged, this, [this](int value) { playbackTimer_->setInterval(value); });
+    connect(previousStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(-1); });
+    connect(nextStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(1); });
 
     updatePanelVisibility();
 }
@@ -384,6 +400,8 @@ void ViewForm::populatePropertiesPanel() {
         time_->setCurrentIndex(std::clamp(layer->settings.timeIndex, 0, std::max(0, timeCount - 1)));
         time_->blockSignals(timeOld);
         play_->setEnabled(timeCount > 1);
+        previousStepButton_->setEnabled(timeCount > 1);
+        nextStepButton_->setEnabled(timeCount > 1);
 
         levelLabel_->setVisible(found->extraDimension.has_value());
         level_->setVisible(found->extraDimension.has_value());
@@ -532,9 +550,15 @@ void ViewForm::updateColorbar() {
     } catch (const std::exception&) { map_->setLegend({}); map_->setInfoText({}); }
 }
 
-void ViewForm::advancePlayback() {
-    if (time_->count() > 0) time_->setCurrentIndex((time_->currentIndex() + 1) % time_->count());
+void ViewForm::stepPlayback(int direction) {
+    // direction is always +-1 (Previous/Next buttons, or one playback
+    // tick); a single "+ count" is enough to keep the result non-negative
+    // before wrapping.
+    const int count = time_->count();
+    if (count > 0) time_->setCurrentIndex((time_->currentIndex() + direction + count) % count);
 }
+
+void ViewForm::advancePlayback() { stepPlayback(1); }
 
 void ViewForm::zoomToSelectedLayer() {
     auto* layer = selectedLayer();

@@ -615,6 +615,56 @@ TEST_CASE("play wraps back to the first frame after the last") {
     CHECK(form.timeCombo()->currentIndex() == 0);
 }
 
+TEST_CASE("previous/next step buttons are disabled for a single-timestep file, enabled for a series") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    CHECK_FALSE(form.previousStepButton()->isEnabled());
+    CHECK_FALSE(form.nextStepButton()->isEnabled());
+}
+
+TEST_CASE("next/previous step buttons move the time combo and wrap at either end") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    CHECK(form.nextStepButton()->isEnabled());
+    CHECK(form.previousStepButton()->isEnabled());
+
+    form.stepPlayback(1);
+    CHECK(form.timeCombo()->currentIndex() == 1);
+    form.stepPlayback(1);
+    CHECK(form.timeCombo()->currentIndex() == 2);
+    form.stepPlayback(1);
+    CHECK(form.timeCombo()->currentIndex() == 0);  // wraps forward past the last frame
+
+    form.stepPlayback(-1);
+    CHECK(form.timeCombo()->currentIndex() == 2);  // wraps backward past the first frame
+}
+
+TEST_CASE("the play interval spin box defaults to 600ms and drives the timer, live even while playing") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    CHECK(form.playIntervalSpin()->value() == 600);
+    CHECK(form.playbackTimer()->interval() == 600);
+
+    form.openFiles({
+        "tests/fixtures/wrfout_d01_2020-01-01_00_00_00.nc", "tests/fixtures/wrfout_d01_2020-01-01_00_30_00.nc",
+        "tests/fixtures/wrfout_d01_2020-01-01_01_00_00.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.playCheck()->setChecked(true);
+
+    form.playIntervalSpin()->setValue(150);
+    CHECK(form.playbackTimer()->interval() == 150);
+    CHECK(form.playbackTimer()->isActive());
+}
+
 TEST_CASE("unchecking play stops the timer") {
     TileMapWidget map;
     ViewForm form(&map);

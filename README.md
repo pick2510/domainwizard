@@ -20,9 +20,11 @@ discrete swatch-per-class legend instead of a gradient, using the file's
 own WRF `LANDUSE.TBL`/`MODIFIED_IGBP_MODIS_NOAH` colors where available. An
 optional, independently movable info overlay ("Show Info Overlay" in the
 Colorbar box) shows the selected layer's variable, unit, and current time
-as one label. For a multi-timestep layer, a Play button next to the time
-step steps through every timestep automatically, looping back to the start
-at the end. The whole map view - basemap, layers, outlines, legend - can
+as one label. For a multi-timestep layer, Previous/Next buttons step
+through timesteps one at a time (wrapping at either end), a Play button
+loops through them automatically at a configurable interval, and the info
+overlay's timestamp updates alongside. The whole map view - basemap,
+layers, outlines, legend - can
 be exported as a PNG/JPEG via `File > Export Map Image...`. The app
 follows the OS's light/dark theme automatically, with a manual
 `Options > Theme` override.
