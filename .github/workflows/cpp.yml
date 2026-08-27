@@ -20,6 +20,25 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # Every single test hangs for exactly --timeout's duration even after
+      # switching the test binaries to std::_Exit() (an immediate,
+      # unconditional OS-level process kill - no atexit/static-destructor
+      # teardown can run), which rules out an in-process hang entirely: the
+      # process is gone, but ctest is still blocked waiting for something.
+      # The classic cause on GitHub-hosted Windows runners is Windows
+      # Defender's real-time scanner duplicating/holding a handle on a
+      # freshly-built, unsigned .exe (or its stdout pipe) during its scan,
+      # which keeps the pipe ctest reads from open until the scan clears -
+      # exclude the workspace and MSYS2's own install dir up front so newly
+      # compiled binaries are never queued for scanning in the first place.
+      - name: Exclude workspace from Windows Defender (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+          Add-MpPreference -ExclusionPath "D:\a\_temp\msys64"
+          Add-MpPreference -ExclusionProcess "c++.exe","cc1plus.exe","ctest.exe","ninja.exe"
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev catch2 patchelf
@@ -71,6 +90,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: cmake --build build-cpp
+      # Diagnostic only, kept until the Windows hang above is understood:
+      # runs one test case DIRECTLY (bypassing ctest's own child-process
+      # I/O entirely) with `time`, to tell whether the hang is specific to
+      # how ctest talks to its child processes on Windows (this finishes
+      # in well under a second) or something that reproduces even without
+      # ctest in the picture (this also hangs).
+      - name: Diagnose Windows test binary directly, bypassing ctest (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: time ./build-cpp/wrftools_core_tests.exe "1D vertical-only variables are excluded and don't break 2D ones"
       # --timeout caps each individual test case (locally the slowest, the
       # whole UI suite as ONE ctest entry, takes ~3s) - generous headroom
       # while still turning a genuine hang into a clear failure instead of
