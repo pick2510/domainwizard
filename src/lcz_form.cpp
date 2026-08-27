@@ -5,7 +5,6 @@
 #include "wrftools/netcdf_file.hpp"
 
 #include <QColor>
-#include <QCoreApplication>
 #include <QComboBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -32,20 +31,6 @@
 
 namespace wrftools {
 namespace {
-
-// resources/lcz_ucp_lookup.csv resolves from the process's current
-// directory in this project's existing test convention (repo root); a
-// packaged build ships it beside the executable instead, mirroring
-// main.cpp's own configureGdalData() "../share/X" fallback pattern. Neither
-// location is guaranteed to exist - loadUcpTable itself throws UserError if
-// the resolved path is unreadable, so no existence check is needed here.
-std::filesystem::path defaultUcpTablePath() {
-    const std::filesystem::path relative = "resources/lcz_ucp_lookup.csv";
-    if (std::filesystem::exists(relative)) return relative;
-    const auto bundled = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString()) / "../share/wrftools/lcz_ucp_lookup.csv";
-    if (std::filesystem::exists(bundled)) return bundled;
-    return relative;
-}
 
 // Parses w2w's own --built-lcz syntax: whitespace-separated integers
 // (argparse's nargs='+' with type=int). Throws UserError on anything else,
@@ -245,8 +230,7 @@ void LczForm::runLcz() {
     const auto wrfVersion = wrfVersionOptions()[static_cast<std::size_t>(versionIndex)].info;
 
     const bool usingCustomUcpTable = !customUcpTable_->text().isEmpty();
-    const auto ucpTablePath = usingCustomUcpTable ? std::filesystem::path(customUcpTable_->text().toStdString()) : defaultUcpTablePath();
-    const auto ucpTable = loadUcpTable(ucpTablePath);
+    const auto ucpTable = usingCustomUcpTable ? loadUcpTable(customUcpTable_->text().toStdString()) : defaultUcpTable();
     if (usingCustomUcpTable) checkCustomUcpTableIntegrity(ucpTable);
 
     // check_lcz_integrity runs synchronously here, on the GUI thread,

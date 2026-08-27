@@ -595,6 +595,28 @@ entry; `wrftools_ui_tests` stays one CTest entry regardless of how many
 Catch2 cases it holds internally - 86 now, 7 more than before this stage),
 all passing.
 
+**Follow-up: the default UCP table is now hardwired, not resolved as a
+runtime file path.** `LczForm` originally located
+`resources/lcz_ucp_lookup.csv` via a `defaultUcpTablePath()` helper (try a
+path relative to the process's current directory, then one relative to the
+executable) when no `--lcz-ucp`-equivalent custom table was given - a real
+packaging/install-location problem this project has no general answer for
+yet (see main.cpp's own GDAL/PROJ-data and font-directory fallbacks, which
+face the same issue for other data). Replaced with `defaultUcpTable()`
+(`lcz.hpp`/`lcz.cpp`): the bundled CSV's content, embedded as a string
+literal (`kDefaultUcpTableCsv`) and parsed once into a function-local
+static, so a packaged build never needs to find the file at all. `loadUcpTable`
+was refactored to share its parsing (now `parseUcpTable(std::istream&, ...)`)
+with a new `loadUcpTableFromString(csvContent)`, which `defaultUcpTable()`
+calls. `resources/lcz_ucp_lookup.csv` itself is kept (existing
+`loadUcpTable`-from-path tests still pin against it, and it's the readable
+reference for anyone diffing the embedded copy) - a new core_tests.cpp case,
+"defaultUcpTable's hardwired content matches the bundled
+resources/lcz_ucp_lookup.csv file byte-for-byte", pins the embedded string
+against the file so the two can't silently drift apart. CTest count 111 ->
+113 (2 new core_tests.cpp cases: the drift-pin above and one for
+`loadUcpTableFromString` directly).
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

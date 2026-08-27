@@ -287,12 +287,10 @@ std::vector<std::string> splitCsvLine(const std::string& line) {
 }
 }  // namespace
 
-std::map<int, UcpRow> loadUcpTable(const std::filesystem::path& csvPath) {
-    std::ifstream input(csvPath);
-    if (!input) throw UserError("Could not open UCP lookup table: " + csvPath.string());
-
+namespace {
+std::map<int, UcpRow> parseUcpTable(std::istream& input, const std::string& sourceDescription) {
     std::string headerLine;
-    if (!std::getline(input, headerLine)) throw UserError("UCP lookup table is empty: " + csvPath.string());
+    if (!std::getline(input, headerLine)) throw UserError("UCP lookup table is empty: " + sourceDescription);
     const auto header = splitCsvLine(headerLine);
     std::map<std::string, std::size_t> columnIndex;
     for (std::size_t i = 1; i < header.size(); ++i) columnIndex[header[i]] = i;  // column 0 is the (unnamed) LCZ class index
@@ -316,6 +314,47 @@ std::map<int, UcpRow> loadUcpTable(const std::filesystem::path& csvPath) {
         table[lczClass] = {std::stod(fields[frcCol]), std::stod(fields[minCol]), std::stod(fields[mhCol]), std::stod(fields[maxCol]),
             std::stod(fields[bldfrCol]), std::stod(fields[h2wCol])};
     }
+    return table;
+}
+
+// w2w's own resources/LCZ_UCP_lookup.csv, byte-for-byte (see
+// defaultUcpTable()'s doc comment in lcz.hpp) - keep in sync with
+// resources/lcz_ucp_lookup.csv; the "defaultUcpTable() matches the bundled
+// CSV file" core_tests.cpp case catches drift between the two.
+constexpr const char* kDefaultUcpTableCsv =
+    ",FRC_URB2D,MH_URB2D_MIN,MH_URB2D,MH_URB2D_MAX,BLDFR_URB2D,H2W\n"
+    "1,0.95,25,50,75,0.5,2.5\n"
+    "2,0.9,10,17.5,25,0.55,1.25\n"
+    "3,0.85,3,6.5,10,0.55,1.25\n"
+    "4,0.65,25,50,75,0.3,1\n"
+    "5,0.7,10,17.5,25,0.3,0.5\n"
+    "6,0.6,3,6.5,10,0.3,0.5\n"
+    "7,0.85,4,5,6,0.75,1.5\n"
+    "8,0.85,3,6.5,10,0.4,0.2\n"
+    "9,0.3,3,6.5,10,0.15,0.15\n"
+    "10,0.55,5,10,15,0.25,0.35\n"
+    "11,0,0,0,0,0,0\n"
+    "12,0,0,0,0,0,0\n"
+    "13,0,0,0,0,0,0\n"
+    "14,0,0,0,0,0,0\n"
+    "15,0.95,0,0,0,0.05,0\n"
+    "16,0,0,0,0,0,0\n"
+    "17,0,0,0,0,0,0\n";
+}  // namespace
+
+std::map<int, UcpRow> loadUcpTable(const std::filesystem::path& csvPath) {
+    std::ifstream input(csvPath);
+    if (!input) throw UserError("Could not open UCP lookup table: " + csvPath.string());
+    return parseUcpTable(input, csvPath.string());
+}
+
+std::map<int, UcpRow> loadUcpTableFromString(const std::string& csvContent) {
+    std::istringstream input(csvContent);
+    return parseUcpTable(input, "<in-memory UCP table>");
+}
+
+const std::map<int, UcpRow>& defaultUcpTable() {
+    static const std::map<int, UcpRow> table = loadUcpTableFromString(kDefaultUcpTableCsv);
     return table;
 }
 

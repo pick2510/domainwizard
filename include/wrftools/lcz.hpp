@@ -54,6 +54,23 @@ struct UcpRow {
 // Throws UserError on a malformed file.
 [[nodiscard]] std::map<int, UcpRow> loadUcpTable(const std::filesystem::path& csvPath);
 
+// Same parsing as loadUcpTable, from an already-in-memory CSV string rather
+// than a file path - what defaultUcpTable() (below) uses to parse its
+// hardwired content, and available directly for anything else that has the
+// content in memory already.
+[[nodiscard]] std::map<int, UcpRow> loadUcpTableFromString(const std::string& csvContent);
+
+// w2w's own bundled resources/LCZ_UCP_lookup.csv, hardwired into the
+// binary (parsed once from a string literal matching
+// resources/lcz_ucp_lookup.csv byte-for-byte - see the
+// "defaultUcpTable() matches..." core_tests.cpp case that pins the two
+// together) rather than resolved as a runtime file path relative to the
+// process's current directory or the executable. Used whenever no custom
+// --lcz-ucp table is supplied - avoids a packaging/install-location problem
+// this project doesn't otherwise have a general answer for (see
+// PORT_W2W.MD Stage 5's original defaultUcpTablePath(), now removed).
+[[nodiscard]] const std::map<int, UcpRow>& defaultUcpTable();
+
 // Ports check_custom_ucp_table_integrity: MH_URB2D_MIN must be < MH_URB2D
 // must be < MH_URB2D_MAX for every BUILT LCZ class (1-10 - w2w.py only
 // ever checks these, not the full 1-17 table, since 11-17 are non-BUILT

@@ -30,6 +30,7 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <sstream>
 
 #include <gdal_priv.h>
 
@@ -1503,6 +1504,36 @@ TEST_CASE("loadUcpTable parses w2w's own default lookup table") {
     const auto& lcz17 = table.at(17);
     CHECK(lcz17.frcUrb2d == Catch::Approx(0.0));
     checkCustomUcpTableIntegrity(table);  // shouldn't throw
+}
+
+TEST_CASE("defaultUcpTable's hardwired content matches the bundled resources/lcz_ucp_lookup.csv file byte-for-byte") {
+    // defaultUcpTable() embeds its own copy of this CSV as a string literal
+    // (see kDefaultUcpTableCsv in lcz.cpp) so LczForm never depends on
+    // resolving a runtime file path - this pins the two against each
+    // other so the embedded copy can't silently drift from the file a
+    // packager or a --lcz-ucp-curious developer would actually look at.
+    const auto fromFile = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    const auto& hardwired = defaultUcpTable();
+    REQUIRE(hardwired.size() == fromFile.size());
+    for (const auto& [lczClass, row] : fromFile) {
+        REQUIRE(hardwired.contains(lczClass));
+        const auto& h = hardwired.at(lczClass);
+        CHECK(h.frcUrb2d == Catch::Approx(row.frcUrb2d));
+        CHECK(h.mhUrb2dMin == Catch::Approx(row.mhUrb2dMin));
+        CHECK(h.mhUrb2d == Catch::Approx(row.mhUrb2d));
+        CHECK(h.mhUrb2dMax == Catch::Approx(row.mhUrb2dMax));
+        CHECK(h.bldfrUrb2d == Catch::Approx(row.bldfrUrb2d));
+        CHECK(h.h2w == Catch::Approx(row.h2w));
+    }
+}
+
+TEST_CASE("loadUcpTableFromString parses the same content as loadUcpTable from a file") {
+    const std::ifstream fileStream("resources/lcz_ucp_lookup.csv");
+    std::ostringstream contents;
+    contents << fileStream.rdbuf();
+    const auto table = loadUcpTableFromString(contents.str());
+    REQUIRE(table.size() == 17);
+    CHECK(table.at(1).frcUrb2d == Catch::Approx(0.95));
 }
 
 TEST_CASE("loadUcpTable tolerates whitespace in headers and values") {
