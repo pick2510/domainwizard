@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <numeric>
 #include <set>
 #include <sstream>
 
@@ -816,6 +817,294 @@ void createLczExtentFile(const std::filesystem::path& paramsPath, const std::fil
     // replicate (NetcdfFile has no variable-removal primitive); leaving
     // them present but unused is a size-only difference, not a
     // correctness one.
+}
+
+std::vector<std::string> expandLandCatParents(const std::filesystem::path& dstFile, const WrfVersionInfo& wrfVersion) {
+    const std::string full = dstFile.string();
+    if (full.size() < 5) throw UserError("Not a geo_em file path: " + full);
+    const int domainNr = std::stoi(full.substr(full.size() - 5, 2));
+    const std::string prefix = full.substr(0, full.size() - 5);
+
+    std::vector<std::string> messages;
+    for (int i = 1; i < domainNr; ++i) {
+        const std::string ifile = std::format("{}{:02d}.nc", prefix, i);
+        if (!std::filesystem::exists(ifile)) {
+            messages.push_back(std::format(
+                "WARNING: Parent domain {} not found. Please make sure the parent domain files are present. "
+                "Without this information, you will not be able to produce the boundary conditions with real.exe.",
+                ifile));
+            continue;
+        }
+
+        auto src = NetcdfFile::open(ifile, NetcdfFile::Mode::ReadOnly);
+        if (!src.hasAttribute("", "NUM_LAND_CAT") || !src.hasVariable("LANDUSEF")) {
+            messages.push_back("Cannot read NUM_LAND_CAT and LANDUSEF dimensions for " + ifile);
+            continue;
+        }
+
+        const int origNumLandCat = static_cast<int>(globalAttr(src, "NUM_LAND_CAT"));
+        if (origNumLandCat == wrfVersion.numLandCat) {
+            messages.push_back(std::format("Parent domain {} already contains {} LC classes", ifile, wrfVersion.numLandCat));
+            continue;
+        }
+
+        const auto shape = src.shape("LANDUSEF");  // Time, land_cat, south_north, west_east
+        const std::size_t ny = shape[2];
+        const std::size_t nx = shape[3];
+        const std::size_t npix = ny * nx;
+        const auto landusef = src.readFloat("LANDUSEF");
+        std::vector<float> landusefNew(static_cast<std::size_t>(wrfVersion.numLandCat) * npix, 0.0f);
+        const std::size_t copyCats = std::min(static_cast<std::size_t>(origNumLandCat), shape[1]);
+        for (std::size_t cat = 0; cat < copyCats; ++cat)
+            for (std::size_t p = 0; p < npix; ++p) landusefNew[cat * npix + p] = landusef[cat * npix + p];
+
+        const std::string description = origNumLandCat < 24
+            ? std::format("Noah-modified {}-category IGBP-MODIS landuse", wrfVersion.numLandCat)
+            : std::format("modified {}-category USGS landuse", wrfVersion.numLandCat);
+
+        const std::string ofile = ifile.substr(0, ifile.size() - 3) + std::format("_{}.nc", wrfVersion.numLandCat);
+        NetcdfFile::copyFile(ifile, ofile);
+        NetcdfFile::resizeDimension(ofile, "land_cat", static_cast<std::size_t>(wrfVersion.numLandCat),
+            [&](const std::string& variableName) -> std::optional<std::vector<float>> {
+                return variableName == "LANDUSEF" ? std::optional(landusefNew) : std::nullopt;
+            });
+
+        auto dst = NetcdfFile::open(ofile, NetcdfFile::Mode::ReadWrite);
+        NetcdfFile::Attribute descAttr;
+        descAttr.name = "description";
+        descAttr.type = NC_CHAR;
+        descAttr.text = description;
+        dst.putAttribute("LANDUSEF", descAttr);
+        NetcdfFile::Attribute numCatAttr;
+        numCatAttr.name = "NUM_LAND_CAT";
+        numCatAttr.type = NC_INT;
+        numCatAttr.numbers = {static_cast<double>(wrfVersion.numLandCat)};
+        dst.putAttribute("", numCatAttr);
+
+        messages.push_back(std::format("Parent domain {} expanded to {} LC classes -> {}", ifile, wrfVersion.numLandCat, ofile));
+    }
+    return messages;
+}
+
+namespace {
+
+// pandas Series.std() default (ddof=1, sample standard deviation).
+double sampleStd(const std::vector<double>& values) {
+    if (values.size() < 2) return 0.0;
+    const double mean = std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size());
+    double sumSq = 0.0;
+    for (double v : values) sumSq += (v - mean) * (v - mean);
+    return std::sqrt(sumSq / static_cast<double>(values.size() - 1));
+}
+
+// _check_range: fails (returns false) if any value in `darr` falls outside
+// [lo, hi] inclusive.
+bool valuesWithinRange(const std::vector<float>& darr, double lo, double hi) {
+    for (float v : darr)
+        if (v < lo || v > hi) return false;
+    return true;
+}
+
+}  // namespace
+
+std::vector<CheckResult> checksAndCleaning(const ChecksAndCleaningInputs& inputs, const std::map<int, UcpRow>& ucpTable) {
+    auto dstDataOrig = NetcdfFile::open(inputs.dstFile, NetcdfFile::Mode::ReadOnly);
+    const int origNumLandCat = static_cast<int>(globalAttr(dstDataOrig, "NUM_LAND_CAT"));
+    const int urbanCat = static_cast<int>(globalAttr(dstDataOrig, "ISURBAN"));
+
+    std::vector<int> lczUrban;
+    std::vector<int> urbanCatList;
+    if (origNumLandCat == 61) {
+        lczUrban = {51, 52, 53, 54, 55, 56, 57, 58, 59, 60};
+        urbanCatList = lczUrban;
+        urbanCatList.push_back(urbanCat);
+    } else if (origNumLandCat == 41) {
+        lczUrban = {31, 32, 33, 34, 35, 36, 37, 38, 39, 40};
+        urbanCatList = lczUrban;
+        urbanCatList.push_back(urbanCat);
+    } else if (origNumLandCat == 21 || origNumLandCat == 20) {
+        lczUrban = {};
+        urbanCatList = {urbanCat};
+    } else {
+        throw UserError("Number of land categories " + std::to_string(origNumLandCat) + " in original file not supported. Only 21 (20), 41 or 61 are supported.");
+    }
+
+    std::vector<CheckResult> results;
+    const auto containsAny = [](const std::vector<float>& values, const std::vector<int>& set) {
+        for (float v : values)
+            if (std::find(set.begin(), set.end(), static_cast<int>(std::lround(v))) != set.end()) return true;
+        return false;
+    };
+
+    // Check 1
+    {
+        auto da = NetcdfFile::open(inputs.dstNuFile, NetcdfFile::Mode::ReadOnly);
+        const bool stillUrban = containsAny(da.readFloat("LU_INDEX"), urbanCatList);
+        results.push_back({"Check 1: Urban class removed from " + inputs.dstNuFile.filename().string() + "?",
+            stillUrban ? CheckStatus::Warning : CheckStatus::Ok, stillUrban ? "Urban land use still present" : "OK"});
+    }
+
+    // Check 2
+    {
+        auto da = NetcdfFile::open(inputs.dstLczExtentFile, NetcdfFile::Mode::ReadOnly);
+        const bool present = containsAny(da.readFloat("LU_INDEX"), {urbanCat});
+        results.push_back({"Check 2: LCZ Urban extent present in " + inputs.dstLczExtentFile.filename().string() + "?",
+            present ? CheckStatus::Ok : CheckStatus::Warning, present ? "OK" : "LCZ-based urban extent missing"});
+    }
+
+    // Check 3
+    bool paramsUrbanStillPresent = false;
+    {
+        auto da = NetcdfFile::open(inputs.dstLczParamsFile, NetcdfFile::Mode::ReadOnly);
+        const auto luIndex = da.readFloat("LU_INDEX");
+        paramsUrbanStillPresent = containsAny(luIndex, {urbanCat});
+        if (paramsUrbanStillPresent) {
+            results.push_back({"Check 3: Urban LCZ classes exists in " + inputs.dstLczParamsFile.filename().string() + "?", CheckStatus::Warning,
+                std::format("Urban extent still defined via LU_INDEX = {}?", urbanCat)});
+        } else {
+            std::set<int> uniqueValues;
+            for (float v : luIndex) uniqueValues.insert(static_cast<int>(std::lround(v)));
+            std::vector<int> presentLczs;
+            for (int cls : lczUrban)
+                if (uniqueValues.contains(cls)) presentLczs.push_back(cls);
+            std::string list;
+            for (std::size_t i = 0; i < presentLczs.size(); ++i) list += (i ? ", " : "") + std::to_string(presentLczs[i]);
+            results.push_back({"Check 3: Urban LCZ classes exists in " + inputs.dstLczParamsFile.filename().string() + "?", CheckStatus::Ok,
+                std::format("OK: LCZ Classes ({}) present", list)});
+        }
+    }
+
+    // Check 4
+    bool frcUrb2dPresent = false;
+    {
+        auto da = NetcdfFile::open(inputs.dstLczParamsFile, NetcdfFile::Mode::ReadOnly);
+        frcUrb2dPresent = da.hasVariable("FRC_URB2D");
+        if (frcUrb2dPresent) {
+            const auto frc = da.readFloat("FRC_URB2D");
+            const auto [minIt, maxIt] = std::minmax_element(frc.begin(), frc.end());
+            results.push_back({"Check 4: FRC_URB2D present in " + inputs.dstLczParamsFile.filename().string() + "?", CheckStatus::Ok,
+                std::format("OK: FRC_URB2D values range between {:.2f} and {:.2f}", *minIt, *maxIt)});
+        } else {
+            results.push_back({"Check 4: FRC_URB2D present in " + inputs.dstLczParamsFile.filename().string() + "?", CheckStatus::Warning,
+                "FRC_URB2D not present"});
+        }
+    }
+
+    // Check 5
+    bool urbParamPresent = false;
+    {
+        auto da = NetcdfFile::open(inputs.dstLczParamsFile, NetcdfFile::Mode::ReadOnly);
+        urbParamPresent = da.hasVariable("URB_PARAM");
+        results.push_back({"Check 5: URB_PARAMS matrix present in file " + inputs.dstLczParamsFile.filename().string() + "?",
+            urbParamPresent ? CheckStatus::Ok : CheckStatus::Warning, urbParamPresent ? "OK" : "URB_PARAM matrix not present"});
+    }
+
+    if (urbParamPresent) {
+        auto da = NetcdfFile::open(inputs.dstLczParamsFile, NetcdfFile::Mode::ReadOnly);
+        const auto urbParam = da.readFloat("URB_PARAM");
+        const auto shape = da.shape("URB_PARAM");  // Time, num_urb_params, south_north, west_east
+        const std::size_t npix = shape[2] * shape[3];
+        const auto slice = [&](int zeroIndexedSlot) {
+            return std::vector<float>(urbParam.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(zeroIndexedSlot) * npix),
+                urbParam.begin() + static_cast<std::ptrdiff_t>((static_cast<std::size_t>(zeroIndexedSlot) + 1) * npix));
+        };
+
+        std::vector<double> mhUrb2dCol, mhUrb2dMaxCol;
+        for (const auto& [cls, row] : ucpTable) {
+            mhUrb2dCol.push_back(row.mhUrb2d);
+            mhUrb2dMaxCol.push_back(row.mhUrb2dMax);
+        }
+        const double mhMax = *std::max_element(mhUrb2dCol.begin(), mhUrb2dCol.end());
+        const double mhStd = sampleStd(mhUrb2dCol);
+        const double mhMaxMax = *std::max_element(mhUrb2dMaxCol.begin(), mhUrb2dMaxCol.end());
+
+        // Check 6 - URB PAR indices per NUDAPT_44 documentation (1-based in
+        // the doc, zero-based slot here): LP=90, MH=91, STDH=92, HGT=93,
+        // LB=94, LF=95. STDH_URB2D and HGT_URB2D's ranges both reuse
+        // MH_URB2D-derived bounds rather than their own column - ported
+        // as-is from w2w.py, not "fixed".
+        struct UcpCheck {
+            std::string key;
+            int slot;
+            double lo, hi;
+        };
+        const std::vector<UcpCheck> ucpChecks = {
+            {"LP_URB2D", 90, 0.0, 1.0},
+            {"MH_URB2D", 91, 0.0, mhMax + mhStd},
+            {"STDH_URB2D", 92, 0.0, mhMaxMax + mhStd},
+            {"HGT_URB2D", 93, 0.0, mhMax + mhStd},
+            {"LB_URB2D", 94, 0.0, 5.0},
+            {"LF_URB2D", 95, 0.0, 5.0},
+        };
+        bool check6Ok = true;
+        std::string check6Message;
+        for (const auto& c : ucpChecks) {
+            const bool ok = valuesWithinRange(slice(c.slot), c.lo, c.hi);
+            if (!ok) check6Ok = false;
+            check6Message += (check6Message.empty() ? "" : "; ") + c.key + (ok ? ": OK" : ": exceeds expected value range");
+        }
+        results.push_back({"Check 6: Do URB_PARAM variable values follow expected range in " + inputs.dstLczParamsFile.filename().string() + "?",
+            check6Ok ? CheckStatus::Ok : CheckStatus::Warning, check6Message});
+
+        // Check 7 - HI_URB2D (slots 117..131) must sum to 100% at every
+        // pixel that has any nonzero bin.
+        double maxAbsDeviation = 0.0;
+        bool anyUrbanPixel = false;
+        for (std::size_t p = 0; p < npix; ++p) {
+            double sum = 0.0;
+            for (int b = 0; b < 15; ++b) sum += urbParam[static_cast<std::size_t>(117 + b) * npix + p];
+            if (sum == 0.0) continue;
+            anyUrbanPixel = true;
+            maxAbsDeviation = std::max(maxAbsDeviation, std::abs(100.0 - sum));
+        }
+        const bool check7Ok = !anyUrbanPixel || maxAbsDeviation <= 0.1;
+        results.push_back({"Check 7: Does HI_URB2D sum to 100% for urban pixels in " + inputs.dstLczParamsFile.filename().string() + "?",
+            check7Ok ? CheckStatus::Ok : CheckStatus::Warning, check7Ok ? "OK" : "Not all pixels have sum HI_URB2D == 100%"});
+    }
+
+    if (frcUrb2dPresent) {
+        auto da = NetcdfFile::open(inputs.dstLczParamsFile, NetcdfFile::Mode::ReadOnly);
+        const auto frcUrb2d = da.readFloat("FRC_URB2D");
+        const auto luIndex = da.readFloat("LU_INDEX");
+        // Hardcoded >= 31 regardless of orig_num_land_cat - a real w2w.py
+        // quirk (checks_and_cleaning does NOT gate this one on the
+        // LCZ_URBAN list, unlike checks 3 and 9), ported as-is.
+        long diff = 0;
+        for (std::size_t p = 0; p < frcUrb2d.size(); ++p) {
+            const int frcRes = frcUrb2d[p] != 0.0f ? 1 : 0;
+            const int luRes = static_cast<int>(std::lround(luIndex[p])) >= 31 ? 1 : 0;
+            diff += frcRes - luRes;
+        }
+        const bool check8Ok = diff == 0;
+        results.push_back({"Check 8: Do FRC_URB and LCZs (from LU_INDEX) cover same extent in " + inputs.dstLczParamsFile.filename().string() + "?",
+            check8Ok ? CheckStatus::Ok : CheckStatus::Warning, check8Ok ? "OK" : "FRC_URB and LCZs in LU_INDEX do not cover same extent"});
+    }
+
+    // Check 9
+    {
+        auto daE = NetcdfFile::open(inputs.dstLczExtentFile, NetcdfFile::Mode::ReadOnly);
+        auto daP = NetcdfFile::open(inputs.dstLczParamsFile, NetcdfFile::Mode::ReadOnly);
+        const auto luE = daE.readFloat("LU_INDEX");
+        const auto luP = daP.readFloat("LU_INDEX");
+        long sumE = 0, sumP = 0, diff = 0;
+        for (std::size_t p = 0; p < luE.size(); ++p) {
+            const int eRes = static_cast<int>(std::lround(luE[p])) == urbanCat ? 1 : 0;
+            const bool inLczUrban = std::find(lczUrban.begin(), lczUrban.end(), static_cast<int>(std::lround(luP[p]))) != lczUrban.end();
+            const int pRes = inLczUrban ? 1 : 0;
+            sumE += eRes;
+            sumP += pRes;
+            diff += pRes - eRes;
+        }
+        const bool check9Ok = diff == 0;
+        results.push_back({"Check 9: Extent and # urban pixels same for *_extent.nc and *_params.nc output file?",
+            check9Ok ? CheckStatus::Ok : CheckStatus::Warning,
+            check9Ok ? std::format("OK, urban extent the same ({})", sumP)
+                     : std::format("Different # urban pixels (or extent) according to LU_INDEX: extent: {}, params: {}", sumE, sumP)});
+    }
+
+    if (std::filesystem::exists(inputs.srcFileClean)) std::filesystem::remove(inputs.srcFileClean);
+
+    return results;
 }
 
 }  // namespace wrftools

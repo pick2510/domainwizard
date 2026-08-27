@@ -15,6 +15,8 @@
 #include "wrftools/lcz.hpp"
 #include "fast_exit.hpp"
 
+#include <netcdf.h>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_session.hpp>
@@ -1715,5 +1717,161 @@ TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matc
     CHECK(reopened.shape("LU_INDEX") == std::vector<std::size_t>{1, southNorth, westEast});
     CHECK(reopened.getAttribute("", "MMINLU").text == "MODIFIED_IGBP_MODIS_NOAH");
 
+    std::filesystem::remove(dst);
+}
+
+namespace {
+// Lays out a fresh temp directory with canonically-named geo_em.dNN.nc
+// files copied from the given fixture paths (index-1 = filenames[0], etc.)
+// - expandLandCatParents locates parent domains purely by filename pattern
+// next to `dstFile`, matching w2w.py's own Info.dst_file-relative lookup.
+std::filesystem::path expandLandCatParentsFixture(const std::string& suffix, const std::vector<std::pair<int, std::string>>& domainToFixture) {
+    const auto dir = std::filesystem::path("build") / ("expand_land_cat_parents_" + suffix);
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    for (const auto& [domain, fixture] : domainToFixture) {
+        const auto dst = dir / std::format("geo_em.d{:02d}.nc", domain);
+        std::filesystem::copy_file(std::filesystem::path("tests/fixtures/lcz") / fixture, dst);
+    }
+    return dir;
+}
+}  // namespace
+
+TEST_CASE("expandLandCatParents warns for every missing parent domain file") {
+    const auto dir = expandLandCatParentsFixture("missing", {{4, "geo_em.d04.nc"}});
+    const auto messages = expandLandCatParents(dir / "geo_em.d04.nc", WrfVersionInfo{30, 41});
+
+    REQUIRE(messages.size() == 3);
+    for (const auto& m : messages) CHECK(m.find("not found") != std::string::npos);
+}
+
+TEST_CASE("expandLandCatParents reports an unreadable parent domain rather than throwing") {
+    const auto dir = expandLandCatParentsFixture(
+        "unreadable", {{1, "geo_em.d01_Shanghai_no_NUM_LAND_CAT.nc"}, {2, "geo_em.d02_Shanghai.nc"}});
+    const auto messages = expandLandCatParents(dir / "geo_em.d02.nc", WrfVersionInfo{30, 41});
+
+    REQUIRE(messages.size() == 1);
+    CHECK(messages[0].find("Cannot read NUM_LAND_CAT") != std::string::npos);
+}
+
+TEST_CASE("expandLandCatParents leaves an already-correct parent domain untouched") {
+    const auto dir = expandLandCatParentsFixture("already41", {{1, "geo_em.d01_Shanghai_ncl41.nc"}, {2, "geo_em.d02_Shanghai.nc"}});
+    const auto messages = expandLandCatParents(dir / "geo_em.d02.nc", WrfVersionInfo{30, 41});
+
+    REQUIRE(messages.size() == 1);
+    CHECK(messages[0].find("already contains 41 LC classes") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(dir / "geo_em.d01_41.nc"));
+}
+
+TEST_CASE("expandLandCatParents grows a mismatched parent domain's LANDUSEF and writes a suffixed file") {
+    const auto dir = expandLandCatParentsFixture("mismatch", {{1, "geo_em.d01_Shanghai_ncl20.nc"}, {2, "geo_em.d02_Shanghai.nc"}});
+    const auto messages = expandLandCatParents(dir / "geo_em.d02.nc", WrfVersionInfo{30, 41});
+
+    REQUIRE(messages.size() == 1);
+    CHECK(messages[0].find("expanded to 41 LC classes") != std::string::npos);
+
+    const auto ofile = dir / "geo_em.d01_41.nc";
+    REQUIRE(std::filesystem::exists(ofile));
+    const auto grown = NetcdfFile::open(ofile, NetcdfFile::Mode::ReadOnly);
+    CHECK(grown.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
+    const auto shape = grown.shape("LANDUSEF");
+    CHECK(shape[1] == 41);
+    // The original file's own 20 categories are preserved verbatim; the
+    // newly-added ones are zero-filled.
+    const auto original = NetcdfFile::open(dir / "geo_em.d01.nc", NetcdfFile::Mode::ReadOnly);
+    const auto origLanduseF = original.readFloat("LANDUSEF");
+    const auto grownLanduseF = grown.readFloat("LANDUSEF");
+    const std::size_t npix = shape[2] * shape[3];
+    for (std::size_t p = 0; p < npix; ++p) CHECK(grownLanduseF[p] == origLanduseF[p]);
+    for (std::size_t cat = 20; cat < 41; ++cat)
+        for (std::size_t p = 0; p < npix; ++p) CHECK(grownLanduseF[cat * npix + p] == 0.0f);
+    CHECK(grown.getAttribute("LANDUSEF", "description").text == "Noah-modified 41-category IGBP-MODIS landuse");
+}
+
+namespace {
+std::filesystem::path checksAndCleaningFixtureCopy(const std::string& fixture, const std::string& suffix) {
+    const auto dst = std::filesystem::path("build") / ("checks_and_cleaning_" + suffix + "_" + fixture);
+    std::filesystem::copy_file(std::filesystem::path("tests/fixtures/lcz") / fixture, dst, std::filesystem::copy_options::overwrite_existing);
+    return dst;
+}
+}  // namespace
+
+TEST_CASE("checksAndCleaning passes every check against the real add_wrf_version pipeline output and deletes the clean LCZ tif") {
+    const auto srcClean = checksAndCleaningFixtureCopy("lcz_zaragoza.tif", "ok");  // stand-in for the *_clean.tif this function deletes
+    REQUIRE(std::filesystem::exists(srcClean));
+
+    const ChecksAndCleaningInputs inputs{
+        srcClean,
+        "tests/fixtures/lcz/geo_em.d04.nc",
+        "tests/fixtures/lcz/geo_em.d04_NoUrban.nc",
+        "tests/fixtures/lcz/geo_em.d04_LCZ_extent.nc",
+        "tests/fixtures/lcz/geo_em.d04_LCZ_params.nc",
+    };
+    const auto ucpTable = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    const auto results = checksAndCleaning(inputs, ucpTable);
+
+    REQUIRE(results.size() == 9);
+    for (const auto& r : results) CHECK(r.status == CheckStatus::Ok);
+    CHECK_FALSE(std::filesystem::exists(srcClean));
+}
+
+TEST_CASE("checksAndCleaning warns on checks 1-5 against dummy pipeline output missing the LCZ params content") {
+    const ChecksAndCleaningInputs inputs{
+        "tests/fixtures/lcz/does_not_exist_clean.tif",  // nonexistent - cleanup step is a no-op
+        "tests/fixtures/lcz/geo_em.d04.nc",
+        "tests/fixtures/lcz/geo_em.d04_NoUrban_dummy.nc",
+        "tests/fixtures/lcz/geo_em.d04_LCZ_extent_dummy.nc",
+        "tests/fixtures/lcz/geo_em.d04_LCZ_params_dummy.nc",
+    };
+    const auto ucpTable = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    const auto results = checksAndCleaning(inputs, ucpTable);
+
+    // The dummy params file carries neither FRC_URB2D nor URB_PARAM, so
+    // checks 6/7/8 are skipped entirely (gated the same way w2w.py's own
+    // checks_and_cleaning gates them) - only checks 1, 2, 3, 4, 5, 9 run.
+    REQUIRE(results.size() == 6);
+    for (std::size_t i = 0; i < 5; ++i) {
+        INFO(results[i].name);
+        CHECK(results[i].status == CheckStatus::Warning);
+    }
+}
+
+TEST_CASE("checksAndCleaning warns on checks 6-9 against a dummy LCZ params file with out-of-range URB_PARAM values") {
+    const ChecksAndCleaningInputs inputs{
+        "tests/fixtures/lcz/does_not_exist_clean.tif",
+        "tests/fixtures/lcz/geo_em.d04.nc",
+        "tests/fixtures/lcz/geo_em.d04_NoUrban_dummy.nc",
+        "tests/fixtures/lcz/geo_em.d04_LCZ_extent_dummy.nc",
+        "tests/fixtures/lcz/geo_em.d04_LCZ_params_with_ucp_dummy.nc",
+    };
+    const auto ucpTable = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    const auto results = checksAndCleaning(inputs, ucpTable);
+
+    REQUIRE(results.size() == 9);
+    const auto find = [&](const std::string& prefix) -> const CheckResult& {
+        for (const auto& r : results)
+            if (r.name.starts_with(prefix)) return r;
+        FAIL("no check result named " << prefix);
+        throw std::logic_error("unreachable");
+    };
+    CHECK(find("Check 6").status == CheckStatus::Warning);
+    CHECK(find("Check 7").status == CheckStatus::Warning);
+    CHECK(find("Check 8").status == CheckStatus::Warning);
+    CHECK(find("Check 9").status == CheckStatus::Warning);
+}
+
+TEST_CASE("checksAndCleaning rejects an unsupported original NUM_LAND_CAT") {
+    const auto dst = lczFixtureCopy("checks_unsupported_num_land_cat");
+    {
+        auto file = NetcdfFile::open(dst, NetcdfFile::Mode::ReadWrite);
+        NetcdfFile::Attribute a;
+        a.name = "NUM_LAND_CAT";
+        a.type = NC_INT;
+        a.numbers = {24.0};
+        file.putAttribute("", a);
+    }
+    const ChecksAndCleaningInputs inputs{"tests/fixtures/lcz/does_not_exist_clean.tif", dst, dst, dst, dst};
+    const auto ucpTable = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    CHECK_THROWS_AS(checksAndCleaning(inputs, ucpTable), UserError);
     std::filesystem::remove(dst);
 }

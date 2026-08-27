@@ -460,6 +460,54 @@ floating-point tolerance) rather than re-deriving expected values by hand.
   has a `UserError` exception + `QMessageBox` convention for the failure
   case, and Qt list/label widgets for informational output).
 
+**Status: done.** `expandLandCatParents` and `checksAndCleaning` are
+implemented in `lcz.hpp`/`lcz.cpp`, both against a live read of
+`add_wrf_version` @ `7801b3e`'s actual source (not the line numbers this
+plan originally cited, which had drifted - the real functions sit at
+`w2w.py:1476` and `w2w.py:1556`):
+
+- `expandLandCatParents(dstFile, wrfVersion) -> vector<string>` finds the
+  target's own two-digit domain number from its filename, loops parent
+  domains 1..N-1, and returns one status line per parent (missing file /
+  unreadable NUM_LAND_CAT-or-LANDUSEF / already correct / rewritten) -
+  matching w2w.py's print statements' content without adopting a
+  print-to-stdout convention this project doesn't otherwise use. A
+  mismatched parent is rebuilt via `NetcdfFile::resizeDimension` (the same
+  primitive Stage 3 uses for LANDUSEF growth) and written alongside the
+  original as `..._{N}.nc`; the parent file itself is never modified.
+- `checksAndCleaning(inputs, ucpTable) -> vector<CheckResult>` runs the nine
+  sanity checks and returns each as `{name, status, message}` for a UI
+  checklist, then deletes `inputs.srcFileClean` if present. `nbuiMax` is
+  NOT one of the nine checks (confirmed by re-reading the source: it's only
+  used in the CLI's final "Set nbui_max to N" print, unconnected to any
+  check) - dropped from the function's parameters entirely; Stage 5 surfaces
+  it separately from `createLczParamsFile`'s own return value.
+
+**A real correction to this plan's own text, found by re-reading the source
+rather than trusting the earlier summary:** the plan claimed "Checks 3, 8,
+and 9's urban-pixel-count comparisons follow the same LCZ_URBAN list rather
+than a fixed `>= 31` threshold." This is only true for checks 3 and 9. Check
+8 (`w2w.py:1745`, `lu_index_res = xr.where(lu_index >= 31, 1, 0)`) does NOT
+consult the per-source-file LCZ_URBAN list at all - it always compares
+against a hardcoded `>= 31`, even when the original file was a 61-category
+source (whose LCZ range is 51-60, not 31-40). This is a latent quirk in
+`add_wrf_version` itself, not something introduced by porting. Ported
+faithfully as-is (see the doc comment on `checksAndCleaning` and the
+`// Hardcoded >= 31...` comment at its Check 8 site in `lcz.cpp`) rather
+than "fixed" to use the per-source list, since the goal is matching w2w's
+actual behavior.
+
+Test fixtures added to `tests/fixtures/lcz/`: `geo_em.d01_Shanghai_ncl41.nc`,
+`geo_em.d01_Shanghai_no_NUM_LAND_CAT.nc`, `geo_em.d04_NoUrban.nc`,
+`geo_em.d04_LCZ_extent.nc`, `geo_em.d04_LCZ_params.nc` (real
+`add_wrf_version` pipeline outputs for the Zaragoza sample domain - an
+"all OK" checksAndCleaning fixture), `geo_em.d04_NoUrban_dummy.nc`,
+`geo_em.d04_LCZ_extent_dummy.nc`, `geo_em.d04_LCZ_params_dummy.nc`,
+`geo_em.d04_LCZ_params_with_ucp_dummy.nc` (w2w's own dummy fixtures
+engineered to trip each check's WARNING branch). 8 new `core_tests.cpp`
+cases (4 `expandLandCatParents`, 4 `checksAndCleaning`), CTest count 102 ->
+110, all passing including the pre-existing 102.
+
 ## Stage 5 - UI integration and threading
 
 - New `LczForm` (`include/wrftools/lcz_form.hpp`/`src/lcz_form.cpp`),

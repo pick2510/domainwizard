@@ -214,4 +214,55 @@ int createLczParamsFile(const LczParamsInputs& inputs, const std::filesystem::pa
 // category count.
 void createLczExtentFile(const std::filesystem::path& paramsPath, const std::filesystem::path& origPath, const std::filesystem::path& outPath);
 
+// Ports expand_land_cat_parents (w2w.py, add_wrf_version): for each parent
+// domain file (geo_em.d01.nc .. geo_em.d0{N-1}.nc, sitting beside `dstFile`
+// - N is `dstFile`'s own two-digit domain number, read from its filename)
+// whose NUM_LAND_CAT doesn't already match `wrfVersion.numLandCat`, grows
+// its LANDUSEF to that many categories (the same zero-padding
+// resizeDimension operation Stage 3 uses for LANDUSEF growth) and writes
+// the result alongside the original with a `_{numLandCat}.nc` suffix -
+// never modifies the parent file itself, and a domain already at the right
+// count is left untouched (no file written). Returns one human-readable
+// status line per parent domain number 1..N-1 (missing file / unreadable
+// NUM_LAND_CAT-and-LANDUSEF / already correct / rewritten), for a UI to
+// render as a checklist - this project has no print-to-stdout convention
+// to port w2w.py's own colored print statements into.
+[[nodiscard]] std::vector<std::string> expandLandCatParents(const std::filesystem::path& dstFile, const WrfVersionInfo& wrfVersion);
+
+enum class CheckStatus { Ok, Warning };
+
+struct CheckResult {
+    std::string name;  // e.g. "Check 1: Urban class removed from geo_em.d04_NoUrban.nc?"
+    CheckStatus status{};
+    std::string message;
+};
+
+// The five file paths checksAndCleaning needs - a subset of w2w.py's own
+// Info NamedTuple, by the point in the pipeline where checks run.
+struct ChecksAndCleaningInputs {
+    std::filesystem::path srcFileClean;      // *_clean.tif from checkLczIntegrity - removed as a final cleanup step
+    std::filesystem::path dstFile;           // the ORIGINAL, unmodified geo_em file
+    std::filesystem::path dstNuFile;         // *_NoUrban.nc
+    std::filesystem::path dstLczExtentFile;  // *_LCZ_extent.nc
+    std::filesystem::path dstLczParamsFile;  // *_LCZ_params.nc
+};
+
+// Ports checks_and_cleaning (w2w.py, add_wrf_version): nine sanity checks
+// against the files the pipeline just produced, then deletes
+// `inputs.srcFileClean` if present. `inputs.dstFile`'s own NUM_LAND_CAT
+// selects which LU_INDEX values count as "urban" for checks 1, 3, and 9 (61
+// -> [51..60, ISURBAN]; 41 -> [31..40, ISURBAN]; 20 or 21 -> [ISURBAN] only;
+// anything else throws UserError) - matching add_wrf_version's four-way
+// branch, since `main`'s bare-ISURBAN assumption is wrong once a
+// 61-category source is possible. Check 8 is a real w2w.py quirk kept
+// as-is: unlike checks 3/9, it does NOT use that branch's urban-class list -
+// it always compares FRC_URB2D against a hardcoded `LU_INDEX >= 31`, even
+// for a 61-category source (see PORT_W2W.MD Stage 4 for the read of the
+// upstream source confirming this). `nbuiMax` (createLczParamsFile's
+// return value) is NOT one of the nine checks - w2w's own CLI reports it
+// separately as user-facing advice ("Set nbui_max to N during
+// compilation"), which a UI surfaces directly rather than through this
+// checklist.
+[[nodiscard]] std::vector<CheckResult> checksAndCleaning(const ChecksAndCleaningInputs& inputs, const std::map<int, UcpRow>& ucpTable);
+
 }  // namespace wrftools
