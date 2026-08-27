@@ -162,6 +162,17 @@ jobs:
           # exact binary with that env var set to test it directly.
           $env:HDF5_USE_FILE_LOCKING = "FALSE"
           Run-Probe "probe_combined_nolocking" ".\probe_combined.exe"
+          Remove-Item Env:\HDF5_USE_FILE_LOCKING
+
+          # That wasn't it either. Rather than keep guessing blindly: GDAL's
+          # own CPL_DEBUG trace prints live (stdout, via -NoNewWindow) up to
+          # the exact point it freezes - showing directly which driver/
+          # plugin-loading step (e.g. a lazy LoadLibrary for a netCDF/HDF5
+          # plugin DLL racing something Qt set up - a classic Windows
+          # loader-lock deadlock shape) is actually stuck, instead of
+          # another round of trial-and-error env vars.
+          $env:CPL_DEBUG = "ON"
+          Run-Probe "probe_combined_debug" ".\probe_combined.exe"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
