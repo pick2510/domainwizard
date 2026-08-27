@@ -6,9 +6,48 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <map>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace wrftools {
+
+// add_wrf_version's WRF_VERSIONS_DICT: which LU_INDEX offset and target
+// land-category count a given WRF release expects for LCZ classes
+// (v4.3-v4.4.1: +30/41 categories; v4.4.2-v4.5.2: +50/61 categories).
+struct WrfVersionInfo {
+    int addLczInt{};
+    int numLandCat{};
+};
+
+// One row of w2w's LCZ_UCP_lookup.csv (or a user-supplied replacement via
+// --lcz-ucp) - the Stewart & Oke-derived urban canopy parameters per LCZ
+// class (1-17).
+struct UcpRow {
+    double frcUrb2d{};
+    double mhUrb2dMin{};
+    double mhUrb2d{};
+    double mhUrb2dMax{};
+    double bldfrUrb2d{};
+    double h2w{};
+};
+
+// Parses a UCP lookup CSV (w2w's own format: an unnamed index column of
+// LCZ class numbers 1-17, then FRC_URB2D/MH_URB2D_MIN/MH_URB2D/
+// MH_URB2D_MAX/BLDFR_URB2D/H2W columns, in any order - column names are
+// matched by name, not position, and both header and value fields are
+// whitespace-trimmed, matching w2w's own `.rename(columns=lambda x:
+// x.strip())` and pandas' own numeric-parsing whitespace tolerance).
+// Throws UserError on a malformed file.
+[[nodiscard]] std::map<int, UcpRow> loadUcpTable(const std::filesystem::path& csvPath);
+
+// Ports check_custom_ucp_table_integrity: MH_URB2D_MIN must be < MH_URB2D
+// must be < MH_URB2D_MAX for every BUILT LCZ class (1-10 - w2w.py only
+// ever checks these, not the full 1-17 table, since 11-17 are non-BUILT
+// classes with all-zero UCP rows by convention). Throws UserError,
+// matching this project's convention (w2w.py exits the process).
+void checkCustomUcpTableIntegrity(const std::map<int, UcpRow>& ucpTable);
 
 // The WRF grid a geo_em file defines, as a CRS + a GDAL-style 6-term
 // geotransform - ported from w2w's own _get_wrf_grid_info
@@ -82,5 +121,97 @@ struct LczRaster {
 // sys.exit(1) via this project's own convention. `lczBand` is 0-indexed,
 // matching w2w's own `-l`/`--lcz-band` argument.
 [[nodiscard]] LczRaster checkLczIntegrity(const std::filesystem::path& lczPath, int lczBand, const NetcdfFile& wrfFile);
+
+// The six UCP fields resampled through _ucp_resampler in
+// create_lcz_params_file's loop (w2w.py, add_wrf_version) - an enum
+// instead of a string key, since these are the only ucp_key values ever
+// actually passed (HGT_URB2D and HI_URB2D go through their own dedicated
+// resamplers below, not this one).
+enum class UcpKey { FrcUrb2d, MhUrb2d, StdhUrb2d, LbUrb2d, LfUrb2d, LpUrb2d };
+
+// Ports _ucp_resampler: builds a per-pixel lookup value from `ucpTable`
+// for each class in `builtLcz` (LB/LF/LP_URB2D use the Zonato et al. 2020
+// lambda formulas via getStreetWidth/getBuildingWidth below; STDH_URB2D is
+// (MAX-MIN)/4; everything else is a direct column lookup), masks every
+// other class to 0, and reprojects onto the WRF grid with AVERAGE
+// resampling. `frcThreshold`, when set, zeroes any resampled value at or
+// below it (only ever passed for `FrcUrb2d`). NaN (nothing covered a
+// destination pixel) becomes 0.
+[[nodiscard]] std::vector<float> ucpResample(const LczRaster& clean, const WrfGridInfo& grid, const std::vector<int>& builtLcz,
+    const std::map<int, UcpRow>& ucpTable, UcpKey key, std::optional<double> frcThreshold = std::nullopt);
+
+// Street Width / Building Width per LCZ class (_get_SW_BW): SW = MH_URB2D
+// / H2W; BW = BLDFR_URB2D / (FRC_URB2D - BLDFR_URB2D) * SW.
+[[nodiscard]] double streetWidth(const UcpRow& row);
+[[nodiscard]] double buildingWidth(const UcpRow& row);
+
+// Ports _hgt_resampler: HGT_URB2D (area-weighted mean building height) -
+// separately resamples a BW^2*MH_URB2D "nominator" and a BW^2
+// "denominator" raster (both AVERAGE-resampled), then divides. NaN/0-by-0
+// becomes 0.
+[[nodiscard]] std::vector<float> hgtResample(const LczRaster& clean, const WrfGridInfo& grid, const std::vector<int>& builtLcz,
+    const std::map<int, UcpRow>& ucpTable);
+
+// Ports _lcz_resampler: majority-resamples the LCZ class raster (MODE
+// resampling; non-built classes are excluded from the vote entirely, via
+// NaN masking, NOT zero-masking like ucpResample - a zero would itself be
+// counted as a losing "class 0" candidate) onto the WRF grid, renames LCZ
+// 15 (paved) to 11 if built, and adds `addLczInt` (30 or 50, from
+// WrfVersionInfo). Returns the full grid; the caller applies the
+// FRC_URB2D-derived mask when writing into LU_INDEX, matching
+// create_lcz_params_file's own `LU_INDEX.values[0, frc_mask] =
+// lcz_resampled` - values at unmasked pixels (including any stray NaN the
+// warp may have left) are never read.
+[[nodiscard]] std::vector<float> lczResample(const LczRaster& clean, const WrfGridInfo& grid, const std::vector<int>& builtLcz, int addLczInt);
+
+// Ports _compute_hi_distribution + _hi_resampler's aggregation:
+// HI_URB2D's building-height-interval distribution (15 five-meter bins,
+// 0-75m) per WRF grid pixel, plus NBUI_MAX (the largest number of nonzero
+// bins at any one pixel - the value w2w's CLI reports as "Set nbui_max to
+// N during compilation").
+//
+// Deliberately analytic, not Monte Carlo: w2w.py draws SAMPLE_SIZE=100000
+// samples from scipy.stats.truncnorm and bins them - a real Monte Carlo
+// estimate with no fixed seed anywhere in w2w's own code, so its own
+// output isn't bit-reproducible run-to-run either. This computes the same
+// truncated-normal distribution's bin probabilities directly via the
+// standard normal CDF (std::erf) instead - the exact value w2w's own
+// sampling is estimating, with zero sampling noise, not a different
+// calculation. Pin against a live w2w run with a tolerance that accounts
+// for ITS sampling noise, not this function's (which has none).
+struct HiResampleResult {
+    std::vector<float> hiUrb2d;  // 15 * ny * nx, percent (0-100) per height bin, row-major top-down per bin
+    int nbuiMax{};
+};
+[[nodiscard]] HiResampleResult hiResample(const LczRaster& clean, const WrfGridInfo& grid, const std::vector<int>& builtLcz,
+    const std::map<int, UcpRow>& ucpTable);
+
+// Inputs to createLczParamsFile, grouped since it needs most of what the
+// pipeline has produced so far.
+struct LczParamsInputs {
+    std::filesystem::path noUrbanPath;  // *_NoUrban.nc, already produced by removeUrban
+    std::filesystem::path origPath;     // the ORIGINAL, unmodified geo_em file (info.dst_file)
+    LczRaster clean;
+    std::vector<int> builtLcz;
+    std::map<int, UcpRow> ucpTable;
+    WrfVersionInfo wrfVersion;
+    double frcThreshold{};
+};
+
+// Ports create_lcz_params_file (w2w.py:1239-1348, add_wrf_version):
+// resamples FRC_URB2D and the LCZ class raster onto the WRF grid, folds
+// the six UCP fields plus HGT_URB2D and HI_URB2D into a 132-entry
+// URB_PARAM block at their documented indices, grows LANDUSEF to
+// `inputs.wrfVersion.numLandCat` categories (adjustGreenfracLandusef,
+// below), and sets NUM_LAND_CAT/FLAG_URB_PARAM/NBUI_MAX. Writes the result
+// to `outPath` (overwriting it if present) and returns NBUI_MAX.
+int createLczParamsFile(const LczParamsInputs& inputs, const std::filesystem::path& outPath);
+
+// Ports create_lcz_extent_file (w2w.py:1351-1397, add_wrf_version):
+// derived from a file `createLczParamsFile` already produced - collapses
+// its LCZ classes back to a single ISURBAN category, drops FRC_URB2D/
+// URB_PARAM, and shrinks LANDUSEF back to `origPath`'s own original
+// category count.
+void createLczExtentFile(const std::filesystem::path& paramsPath, const std::filesystem::path& origPath, const std::filesystem::path& outPath);
 
 }  // namespace wrftools

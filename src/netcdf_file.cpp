@@ -261,6 +261,31 @@ void NetcdfFile::putAttribute(const std::string& variableName, const Attribute& 
     checkNc(nc_enddef(ncid_), "nc_enddef");
 }
 
+void NetcdfFile::defineDimension(const std::string& name, std::size_t length) {
+    if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::defineDimension: file was not opened read-write: " + path_.string());
+    const int redefStatus = nc_redef(ncid_);
+    if (redefStatus != NC_NOERR && redefStatus != NC_EINDEFINE) checkNc(redefStatus, "nc_redef");
+    int dimid = -1;
+    checkNc(nc_def_dim(ncid_, name.c_str(), length, &dimid), "nc_def_dim " + name);
+    checkNc(nc_enddef(ncid_), "nc_enddef");
+}
+
+void NetcdfFile::defineVariable(const std::string& name, NcType type, const std::vector<std::string>& dimensionNames) {
+    if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::defineVariable: file was not opened read-write: " + path_.string());
+    std::vector<int> dimids;
+    dimids.reserve(dimensionNames.size());
+    for (const auto& dimName : dimensionNames) {
+        int dimid = -1;
+        checkNc(nc_inq_dimid(ncid_, dimName.c_str(), &dimid), "nc_inq_dimid " + dimName);
+        dimids.push_back(dimid);
+    }
+    const int redefStatus = nc_redef(ncid_);
+    if (redefStatus != NC_NOERR && redefStatus != NC_EINDEFINE) checkNc(redefStatus, "nc_redef");
+    int varid = -1;
+    checkNc(nc_def_var(ncid_, name.c_str(), type, static_cast<int>(dimids.size()), dimids.data(), &varid), "nc_def_var " + name);
+    checkNc(nc_enddef(ncid_), "nc_enddef");
+}
+
 std::vector<float> NetcdfFile::readFloat(const std::string& variableName) const {
     int varid = -1;
     checkNc(nc_inq_varid(ncid_, variableName.c_str(), &varid), "nc_inq_varid " + variableName);
@@ -453,6 +478,192 @@ void NetcdfFile::resizeDimension(const std::filesystem::path& path, const std::s
     std::filesystem::remove(path, error);  // ignore: path may legitimately not exist as a leftover, rename below is what must succeed
     std::filesystem::rename(tmpPath, path, error);
     if (error) throw UserError("Could not replace " + path.string() + " with resized version: " + error.message());
+}
+
+void NetcdfFile::rebuildStructure(const std::filesystem::path& path, const std::string& resizedDimensionName, std::size_t resizedDimensionNewLength,
+    const std::function<std::optional<std::vector<float>>(const std::string& variableName)>& resizedDimensionNewData,
+    const std::vector<std::pair<std::string, std::size_t>>& newDimensions, const std::vector<VariableOverride>& variableOverrides) {
+    int srcNcid = -1;
+    checkNc(nc_open(path.string().c_str(), NC_NOWRITE, &srcNcid), "nc_open " + path.string());
+
+    int format = 0;
+    checkNc(nc_inq_format(srcNcid, &format), "nc_inq_format");
+    int createMode = NC_CLOBBER;
+    switch (format) {
+        case NC_FORMAT_NETCDF4: createMode |= NC_NETCDF4; break;
+        case NC_FORMAT_NETCDF4_CLASSIC: createMode |= NC_NETCDF4 | NC_CLASSIC_MODEL; break;
+        case NC_FORMAT_64BIT_OFFSET: createMode |= NC_64BIT_OFFSET; break;
+        case NC_FORMAT_64BIT_DATA: createMode |= NC_64BIT_DATA; break;
+        default: break;  // classic
+    }
+
+    const auto tmpPath = path.string() + ".rebuild_tmp";
+    int dstNcid = -1;
+    checkNc(nc_create(tmpPath.c_str(), createMode, &dstNcid), "nc_create " + tmpPath);
+
+    auto overrideFor = [&](const std::string& name) -> const VariableOverride* {
+        for (const auto& override : variableOverrides)
+            if (override.name == name) return &override;
+        return nullptr;
+    };
+
+    try {
+        for (const auto& name : attributeNames(srcNcid, NC_GLOBAL)) copyAttribute(srcNcid, NC_GLOBAL, name, dstNcid, NC_GLOBAL);
+
+        // Existing dimensions - ids assigned in definition order on both
+        // sides, as in resizeDimension.
+        int ndims = 0;
+        checkNc(nc_inq_ndims(srcNcid, &ndims), "nc_inq_ndims");
+        int unlimDimid = -1;
+        checkNc(nc_inq_unlimdim(srcNcid, &unlimDimid), "nc_inq_unlimdim");
+        for (int dimid = 0; dimid < ndims; ++dimid) {
+            char name[NC_MAX_NAME + 1] = {};
+            std::size_t length = 0;
+            checkNc(nc_inq_dim(srcNcid, dimid, name, &length), "nc_inq_dim");
+            const bool isUnlimited = dimid == unlimDimid;
+            const std::size_t effectiveLength = (std::string(name) == resizedDimensionName) ? resizedDimensionNewLength : length;
+            int newDimId = -1;
+            checkNc(nc_def_dim(dstNcid, name, isUnlimited ? NC_UNLIMITED : effectiveLength, &newDimId), "nc_def_dim " + std::string(name));
+            if (newDimId != dimid) throw UserError("NetcdfFile::rebuildStructure: unexpected dimension id mismatch copying " + path.string());
+        }
+        // Brand-new dimensions the overrides need.
+        for (const auto& [name, length] : newDimensions) {
+            int newDimId = -1;
+            checkNc(nc_def_dim(dstNcid, name.c_str(), length, &newDimId), "nc_def_dim " + name);
+        }
+
+        // Variables: an overridden name is defined fresh (its own type/
+        // dims, no attributes copied - callers add whatever attributes
+        // they need afterward via putAttribute); everything else is
+        // copied unchanged, exactly as resizeDimension does.
+        int nvars = 0;
+        checkNc(nc_inq_nvars(srcNcid, &nvars), "nc_inq_nvars");
+        std::vector<bool> isOverridden(static_cast<std::size_t>(nvars), false);
+        for (int varid = 0; varid < nvars; ++varid) {
+            char name[NC_MAX_NAME + 1] = {};
+            NcType type = 0;
+            int varNdims = 0;
+            checkNc(nc_inq_var(srcNcid, varid, name, &type, &varNdims, nullptr, nullptr), "nc_inq_var");
+
+            if (const auto* override = overrideFor(name)) {
+                isOverridden[static_cast<std::size_t>(varid)] = true;
+                std::vector<int> newDimids;
+                newDimids.reserve(override->dimensionNames.size());
+                for (const auto& dimName : override->dimensionNames) {
+                    int dimid = -1;
+                    checkNc(nc_inq_dimid(dstNcid, dimName.c_str(), &dimid), "nc_inq_dimid " + dimName);
+                    newDimids.push_back(dimid);
+                }
+                int newVarId = -1;
+                checkNc(nc_def_var(dstNcid, name, override->type, static_cast<int>(newDimids.size()), newDimids.data(), &newVarId),
+                    "nc_def_var (override) " + std::string(name));
+                if (newVarId != varid) throw UserError("NetcdfFile::rebuildStructure: unexpected variable id mismatch copying " + path.string());
+                continue;
+            }
+
+            std::vector<int> dimids(static_cast<std::size_t>(varNdims));
+            checkNc(nc_inq_vardimid(srcNcid, varid, dimids.data()), "nc_inq_vardimid");
+            int newVarId = -1;
+            checkNc(nc_def_var(dstNcid, name, type, varNdims, dimids.data(), &newVarId), "nc_def_var " + std::string(name));
+            if (newVarId != varid) throw UserError("NetcdfFile::rebuildStructure: unexpected variable id mismatch copying " + path.string());
+            for (const auto& attrName : attributeNames(srcNcid, varid)) copyAttribute(srcNcid, varid, attrName, dstNcid, newVarId);
+        }
+
+        checkNc(nc_enddef(dstNcid), "nc_enddef");
+
+        for (int varid = 0; varid < nvars; ++varid) {
+            char name[NC_MAX_NAME + 1] = {};
+            NcType type = 0;
+            int varNdims = 0;
+            checkNc(nc_inq_var(srcNcid, varid, name, &type, &varNdims, nullptr, nullptr), "nc_inq_var");
+
+            if (isOverridden[static_cast<std::size_t>(varid)]) {
+                // nc_put_var (whole-array) writes according to the
+                // destination's CURRENT unlimited-dimension record count,
+                // which for a variable's Time dimension may still be 0 at
+                // this point regardless of write order elsewhere in this
+                // loop (nothing guarantees another variable already
+                // extended it first) - see copyVariableData's comment for
+                // the same hazard. Use explicit vara with count=1 for
+                // Time instead, matching every other writer in this file.
+                const auto* override = overrideFor(name);
+                int unlimDimidDst = -1;
+                checkNc(nc_inq_unlimdim(dstNcid, &unlimDimidDst), "nc_inq_unlimdim");
+                std::vector<int> newDimids;
+                newDimids.reserve(override->dimensionNames.size());
+                for (const auto& dimName : override->dimensionNames) {
+                    int dimid = -1;
+                    checkNc(nc_inq_dimid(dstNcid, dimName.c_str(), &dimid), "nc_inq_dimid " + dimName);
+                    newDimids.push_back(dimid);
+                }
+                std::vector<std::size_t> counts(newDimids.size());
+                for (std::size_t i = 0; i < newDimids.size(); ++i) {
+                    if (newDimids[i] == unlimDimidDst) {
+                        counts[i] = 1;
+                    } else {
+                        std::size_t length = 0;
+                        checkNc(nc_inq_dimlen(dstNcid, newDimids[i], &length), "nc_inq_dimlen");
+                        counts[i] = length;
+                    }
+                }
+                const std::vector<std::size_t> start(newDimids.size(), 0);
+                checkNc(nc_put_vara_float(dstNcid, varid, start.data(), counts.data(), override->data.data()), "nc_put_vara_float (override) " + std::string(name));
+                continue;
+            }
+
+            std::vector<int> dimids(static_cast<std::size_t>(varNdims));
+            checkNc(nc_inq_vardimid(srcNcid, varid, dimids.data()), "nc_inq_vardimid");
+
+            bool usesResizedDimension = false;
+            for (int dimid : dimids) {
+                char dimName[NC_MAX_NAME + 1] = {};
+                checkNc(nc_inq_dimname(srcNcid, dimid, dimName), "nc_inq_dimname");
+                if (std::string(dimName) == resizedDimensionName) {
+                    usesResizedDimension = true;
+                    break;
+                }
+            }
+
+            std::vector<std::size_t> counts;
+            counts.reserve(dimids.size());
+            for (int dimid : dimids) {
+                std::size_t length = 0;
+                checkNc(nc_inq_dimlen(srcNcid, dimid, &length), "nc_inq_dimlen");
+                counts.push_back(length);
+            }
+            const std::vector<std::size_t> start(dimids.size(), 0);
+
+            if (!usesResizedDimension) {
+                copyVariableData(srcNcid, varid, type, start, counts, dstNcid, varid);
+                continue;
+            }
+
+            if (const auto replacement = resizedDimensionNewData(name)) {
+                std::vector<std::size_t> newCounts = counts;
+                for (std::size_t i = 0; i < dimids.size(); ++i) {
+                    char dimName[NC_MAX_NAME + 1] = {};
+                    checkNc(nc_inq_dimname(srcNcid, dimids[i], dimName), "nc_inq_dimname");
+                    if (std::string(dimName) == resizedDimensionName) newCounts[i] = resizedDimensionNewLength;
+                }
+                checkNc(
+                    nc_put_vara_float(dstNcid, varid, start.data(), newCounts.data(), replacement->data()), "nc_put_vara_float " + std::string(name));
+            }
+        }
+    } catch (...) {
+        nc_close(srcNcid);
+        nc_close(dstNcid);
+        std::error_code ignored;
+        std::filesystem::remove(tmpPath, ignored);
+        throw;
+    }
+
+    checkNc(nc_close(srcNcid), "nc_close src");
+    checkNc(nc_close(dstNcid), "nc_close dst");
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    std::filesystem::rename(tmpPath, path, error);
+    if (error) throw UserError("Could not replace " + path.string() + " with rebuilt version: " + error.message());
 }
 
 }  // namespace wrftools

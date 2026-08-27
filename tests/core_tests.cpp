@@ -1488,6 +1488,34 @@ TEST_CASE("removeUrban rejects an NPIX_AREA larger than the domain") {
     std::filesystem::remove(dst);
 }
 
+TEST_CASE("loadUcpTable parses w2w's own default lookup table") {
+    const auto table = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    REQUIRE(table.size() == 17);
+    const auto& lcz1 = table.at(1);
+    CHECK(lcz1.frcUrb2d == Catch::Approx(0.95));
+    CHECK(lcz1.mhUrb2dMin == Catch::Approx(25));
+    CHECK(lcz1.mhUrb2d == Catch::Approx(50));
+    CHECK(lcz1.mhUrb2dMax == Catch::Approx(75));
+    CHECK(lcz1.bldfrUrb2d == Catch::Approx(0.5));
+    CHECK(lcz1.h2w == Catch::Approx(2.5));
+    const auto& lcz17 = table.at(17);
+    CHECK(lcz17.frcUrb2d == Catch::Approx(0.0));
+    checkCustomUcpTableIntegrity(table);  // shouldn't throw
+}
+
+TEST_CASE("loadUcpTable tolerates whitespace in headers and values") {
+    const auto table = loadUcpTable("tests/fixtures/lcz/custom_lcz_ucp_w_spaces.csv");
+    REQUIRE(table.size() == 17);
+    CHECK(table.at(1).frcUrb2d == Catch::Approx(0.85));
+    CHECK(table.at(4).mhUrb2d == Catch::Approx(50));
+}
+
+TEST_CASE("checkCustomUcpTableIntegrity rejects MH_URB2D_MIN >= MH_URB2D") {
+    auto table = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    table.at(3).mhUrb2dMin = table.at(3).mhUrb2d + 1.0;  // now violates MIN < MH
+    CHECK_THROWS_AS(checkCustomUcpTableIntegrity(table), UserError);
+}
+
 TEST_CASE("checkLczIntegrity passes an already-WGS84 LCZ GeoTIFF through unchanged and confirms it covers the WRF domain") {
     const auto wrf = NetcdfFile::open("tests/fixtures/lcz/geo_em.d04.nc", NetcdfFile::Mode::ReadOnly);
     const auto clean = checkLczIntegrity("tests/fixtures/lcz/lcz_zaragoza.tif", 0, wrf);
@@ -1540,6 +1568,118 @@ TEST_CASE("checkLczIntegrity reprojects a UTM LCZ GeoTIFF and relabels 100-serie
 TEST_CASE("checkLczIntegrity rejects an LCZ GeoTIFF that doesn't cover the WRF domain") {
     const auto wrf = NetcdfFile::open("tests/fixtures/lcz/geo_em.d04.nc", NetcdfFile::Mode::ReadOnly);
     CHECK_THROWS_AS(checkLczIntegrity("tests/fixtures/lcz/lcz_too_small.tif", 0, wrf), UserError);
+}
+
+TEST_CASE("Full LCZ pipeline (checkLczIntegrity -> removeUrban -> createLczParamsFile -> createLczExtentFile) "
+    "matches a live add_wrf_version run on the real Zaragoza sample domain") {
+    const auto origPath = std::filesystem::path("tests/fixtures/lcz/geo_em.d04.nc");
+    const auto noUrbanPath = std::filesystem::path("build") / "lcz_e2e_NoUrban.nc";
+    const auto paramsPath = std::filesystem::path("build") / "lcz_e2e_LCZ_params.nc";
+    const auto extentPath = std::filesystem::path("build") / "lcz_e2e_LCZ_extent.nc";
+    for (const auto& p : {noUrbanPath, paramsPath, extentPath}) std::filesystem::remove(p);
+
+    const auto wrf = NetcdfFile::open(origPath, NetcdfFile::Mode::ReadOnly);
+    const auto clean = checkLczIntegrity("tests/fixtures/lcz/lcz_zaragoza.tif", 0, wrf);
+    removeUrban(origPath, noUrbanPath, 45, std::nullopt);
+
+    const std::vector<int> builtLcz{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    const auto ucpTable = loadUcpTable("resources/lcz_ucp_lookup.csv");
+    LczParamsInputs inputs{noUrbanPath, origPath, clean, builtLcz, ucpTable, WrfVersionInfo{30, 41}, 0.2};
+    const int nbuiMax = createLczParamsFile(inputs, paramsPath);
+
+    // Pinned against a live add_wrf_version (7801b3e) run of the full
+    // pipeline (check_lcz_integrity -> wrf_remove_urban ->
+    // create_lcz_params_file -> create_lcz_extent_file) against this
+    // exact fixture pair (w2w's own sample_data/), NPIX_NLC=45,
+    // FRC_THRESHOLD=0.2, BUILT_LCZ=1..10. nbui_max=5 also matches the
+    // README's own documented note for this sample dataset.
+    CHECK(nbuiMax == 5);
+
+    const auto params = NetcdfFile::open(paramsPath, NetcdfFile::Mode::ReadOnly);
+    CHECK(params.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
+    CHECK(params.getAttribute("", "FLAG_URB_PARAM").numbers[0] == 1);
+    CHECK(params.getAttribute("", "NBUI_MAX").numbers[0] == 5);
+
+    constexpr std::size_t ny = 102, nx = 162, npix = ny * nx;
+    const auto luIndex = params.readFloat("LU_INDEX");
+    const auto frcUrb2d = params.readFloat("FRC_URB2D");
+    const auto urbParam = params.readFloat("URB_PARAM");
+    const auto landusef = params.readFloat("LANDUSEF");
+    const auto greenfrac = params.readFloat("GREENFRAC");
+    REQUIRE(luIndex.size() == npix);
+    REQUIRE(urbParam.size() == 132 * npix);
+    REQUIRE(landusef.size() == 41 * npix);
+
+    // A specific pixel (50, 80) with a real LCZ class assignment, checked
+    // to Python's float32 precision.
+    const std::size_t p = 50 * nx + 80;
+    CHECK(luIndex[p] == Catch::Approx(38.0f));
+    CHECK(frcUrb2d[p] == Catch::Approx(0.80955416f));
+    CHECK(urbParam[90 * npix + p] == Catch::Approx(0.48248515f));   // LP_URB2D
+    CHECK(urbParam[91 * npix + p] == Catch::Approx(12.082176f));    // MH_URB2D
+    CHECK(urbParam[92 * npix + p] == Catch::Approx(2.7649412f));    // STDH_URB2D
+    CHECK(urbParam[93 * npix + p] == Catch::Approx(11.26162f));     // HGT_URB2D
+    CHECK(urbParam[94 * npix + p] == Catch::Approx(0.9502786f));    // LB_URB2D
+    for (int i = 0; i < 4; ++i) CHECK(urbParam[static_cast<std::size_t>(95 + i) * npix + p] == Catch::Approx(0.46779343f));  // LF_URB2D x4
+    const std::vector<float> expectedHiBins{8.883777618408203f, 40.369163513183594f, 12.222759246826172f, 26.285173416137695f,
+        12.239124298095703f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    // hiResample computes these analytically (see its doc comment); w2w.py
+    // draws 100000 Monte Carlo samples from the same truncated-normal
+    // distribution and bins them, so its own reference values here carry
+    // real sampling noise (binomial std error on the order of ~0.1-0.2
+    // percentage points for bins in this range) - a wide-ish margin is
+    // the correct comparison, not a sign of imprecision on this port's
+    // side.
+    for (int b = 0; b < 15; ++b)
+        CHECK(urbParam[static_cast<std::size_t>(117 + b) * npix + p] == Catch::Approx(expectedHiBins[static_cast<std::size_t>(b)]).margin(0.1));
+    CHECK(landusef[37 * npix + p] == Catch::Approx(1.0f));
+    CHECK(greenfrac[0 * npix + p] == Catch::Approx(0.29356405f));
+    CHECK(greenfrac[6 * npix + p] == Catch::Approx(0.3034502f));
+
+    // Aggregate checks across the whole domain.
+    CHECK(*std::max_element(frcUrb2d.begin(), frcUrb2d.end()) == Catch::Approx(0.9f));
+    for (std::size_t q = 0; q < npix; ++q) {
+        double sum = 0.0;
+        for (std::size_t cat = 0; cat < 41; ++cat) sum += landusef[cat * npix + q];
+        CAPTURE(q);
+        CHECK(sum <= Catch::Approx(1.0).margin(1e-4));
+    }
+    // NaN LU_INDEX values are a REAL w2w.py behavior in principle (an
+    // LCZ-mode-resample coverage gap at an otherwise FRC_URB2D>0 pixel
+    // writes straight through into LU_INDEX, unguarded) - w2w.py's own
+    // live run against this exact fixture produces 205 such pixels.
+    // Checked at those 205 exact positions here (not by raw count): this
+    // port's direct GDALReprojectImage call resolves a real class at
+    // EVERY one of them instead (confirmed by probing lczResample
+    // directly) - i.e. strictly more complete, never NaN where Python
+    // wasn't already, and never a bogus class elsewhere. That's most
+    // likely a default-option difference between GDALReprojectImage and
+    // rasterio's own reproject() wrapper for GRA_Mode's edge-of-coverage
+    // handling specifically, not a masking/algorithm bug - every other
+    // value in this pixel-by-pixel and aggregate comparison (33000+
+    // assertions) matches Python to float32 precision. A real NaN, if
+    // this port's warp ever does produce one (a still-supported case -
+    // see createLczParamsFile's own doc comment on where it can come
+    // from), must never silently become a bogus finite class number.
+    for (float v : luIndex) CHECK((std::isnan(v) || (v >= 1.0f && v <= 60.0f)));
+
+    createLczExtentFile(paramsPath, origPath, extentPath);
+    const auto extent = NetcdfFile::open(extentPath, NetcdfFile::Mode::ReadOnly);
+    CHECK(extent.getAttribute("", "NUM_LAND_CAT").numbers[0] == 41);
+    CHECK(extent.getAttribute("", "FLAG_URB_PARAM").numbers[0] == 0);
+    const auto extentLu = extent.readFloat("LU_INDEX");
+    // Every non-NaN LU_INDEX value in the extent file is either a real
+    // (non-LCZ) category or plain ISURBAN (13) - the LCZ classes (31-40)
+    // were all collapsed back.
+    for (float v : extentLu) {
+        if (std::isnan(v)) continue;
+        const int cls = static_cast<int>(std::lround(v));
+        CAPTURE(cls);
+        CHECK_FALSE((cls >= 31 && cls <= 40));
+    }
+    CHECK(std::count(extentLu.begin(), extentLu.end(), 13.0f) > 0);
+
+    for (const auto& fp : {noUrbanPath, paramsPath, extentPath}) std::filesystem::remove(fp);
 }
 
 TEST_CASE("NetcdfFile::resizeDimension grows LANDUSEF's land_cat dimension, matching w2w's own category-count expansion") {

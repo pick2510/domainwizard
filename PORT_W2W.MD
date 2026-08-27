@@ -280,8 +280,76 @@ parameter.
 
 ## Stage 3 - `create_lcz_params_file` / `create_lcz_extent_file` (the core UCP pipeline)
 
-The largest single piece. Port, in `lcz.cpp`, roughly in this order (each
-function is a near-transcription once Stage 0/1 exist):
+**Status: done**, including `checkLczIntegrity` (moved here from its own
+earlier commit - see git history). All of `ucpResample`/`hgtResample`/
+`lczResample`/`hiResample`/`createLczParamsFile`/`createLczExtentFile` are
+implemented and verified end-to-end against a live `add_wrf_version`
+(`7801b3e`) run of the FULL pipeline (`check_lcz_integrity` ->
+`wrf_remove_urban` -> `create_lcz_params_file` -> `create_lcz_extent_file`)
+on the real Zaragoza sample domain (`sample_data/lcz_zaragoza.tif` +
+`geo_em.d04.nc`, 102x162 = 16524 pixels) - one `core_tests.cpp` case checks
+every `LU_INDEX`/`FRC_URB2D`/`URB_PARAM`/`LANDUSEF`/`GREENFRAC` value at a
+representative pixel plus domain-wide aggregate checks (LANDUSEF sums never
+exceed 1, FRC_URB2D max matches, every LU_INDEX value is NaN or a plausible
+class), 49612 assertions total, matching Python to float32 precision.
+`NBUI_MAX=5` also matches the number the project's own README documents for
+this exact sample dataset - a nice independent confirmation the port is
+computing the right thing, not just self-consistent.
+
+Corrections to the plan found while implementing (each detailed as a code
+comment at the relevant spot, summarized here):
+
+- **`removeUrban` doesn't take a `WrfVersionInfo`** (already corrected in
+  Stage 2's own status note - repeated here since Stage 3 is where
+  `WrfVersionInfo` actually gets threaded through for the first time,
+  exactly as anticipated).
+- **The truncated-normal sampler needs no `erfinv`, vendored or
+  otherwise**, and needs no random sampling at all. `hiResample` computes
+  each HI_URB2D bin's probability analytically via the standard normal
+  CDF (`std::erf`, real C++ standard library, no vendoring) - the exact
+  value w2w.py's own `SAMPLE_SIZE=100000` Monte Carlo draw is estimating,
+  with zero sampling noise. w2w.py has no fixed random seed anywhere, so
+  its own output isn't bit-reproducible run-to-run either; the live-run
+  pin above uses a `margin(0.1)` (percentage points) to absorb Python's
+  own binomial sampling noise, not this port's imprecision (it has none).
+- **A real-world geo_em file can already carry `FRC_URB2D`/`URB_PARAM`**
+  from geogrid's own default (non-LCZ) urban parameterization - confirmed
+  against `sample_data/geo_em.d04.nc` itself, which already has both,
+  `URB_PARAM`'s param-count dimension sized 18, not this pipeline's 132.
+  xarray's own `Dataset.__setitem__` handles reassigning an existing
+  variable to a different shape transparently; raw netCDF-C's `nc_def_var`
+  errors outright if the name already exists. `NetcdfFile::resizeDimension`
+  was generalized into `NetcdfFile::rebuildStructure` (same "rebuild
+  everything unchanged except..." shape, extended to also (re)define named
+  variables from scratch, with their own possibly-brand-new dimensions,
+  instead of copying them from source) - this is also what let
+  `createLczParamsFile` fold the `land_cat` resize and the `FRC_URB2D`/
+  `URB_PARAM` additions into ONE rebuild pass instead of three.
+- **`GDALReprojectImage`'s `GRA_Mode` resampling is slightly MORE complete
+  at coverage-boundary pixels than `rasterio.warp.reproject`'s own
+  wrapper** for the identical inputs - found via the live pin: Python's
+  real run leaves 205 `LU_INDEX` pixels as NaN (an `FRC_URB2D>0` pixel
+  whose LCZ-class majority vote found literally no coverage, written
+  through unguarded - `dst_data['LU_INDEX'].values[0, frc_mask] =
+  lcz_resampled` has no NaN check at all), while this port's direct
+  `GDALReprojectImage` call resolves a real class at every one of those
+  same 205 positions (confirmed by probing `lczResample` in isolation) -
+  never NaN where Python wasn't already, never a bogus class elsewhere.
+  Most likely a default warp-option difference between the two GDAL entry
+  points for `GRA_Mode`'s edge-of-coverage handling specifically, not a
+  masking bug - every other one of the pin's 49612 assertions matches.
+  `createLczParamsFile`/`lczResample` still faithfully preserve the
+  *capability* to produce a NaN `LU_INDEX` value (unguarded, exactly like
+  Python) for whichever inputs do trigger a genuine zero-coverage gap
+  under this port's own warp path; the test asserts "NaN or a plausible
+  class," not "never NaN."
+
+The rest of this section is kept as originally planned, describing what
+each ported piece does - useful background even though every listed item
+is now done.
+
+Port, in `lcz.cpp`, roughly in this order (each function is a near-
+transcription once Stage 0/1 exist):
 
 - `checkLczIntegrity` (`check_lcz_integrity`, `w2w.py:360-429`): LCZ class
   relabeling (100-series -> 1-17, `_replace_lcz_number`), reproject to

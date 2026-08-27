@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wrftools {
@@ -85,6 +86,17 @@ public:
     void writeDouble(const std::string& variableName, const std::vector<double>& data);
     void writeInt(const std::string& variableName, const std::vector<std::int32_t>& data);
 
+    // ---- Structural additions to an already-open, already-existing file.
+    // Unlike resizeDimension (which changes an EXISTING dimension's size,
+    // something netCDF classic genuinely cannot do without rebuilding the
+    // file), netCDF-C supports adding a brand-new dimension/variable to an
+    // existing file in place via nc_redef/nc_enddef - no rebuild needed.
+    // Each call pays its own redef/enddef round-trip; fine for the small,
+    // fixed number of new variables the LCZ pipeline adds (FRC_URB2D,
+    // URB_PARAM) rather than a hot path. ----
+    void defineDimension(const std::string& name, std::size_t length);
+    void defineVariable(const std::string& name, NcType type, const std::vector<std::string>& dimensionNames);
+
     void close();  // idempotent; also called by the destructor
 
     // ---- Whole-file operations ----
@@ -109,6 +121,42 @@ public:
     // legitimately not care about a given such variable's contents.
     static void resizeDimension(const std::filesystem::path& path, const std::string& dimensionName, std::size_t newLength,
         const std::function<std::optional<std::vector<float>>(const std::string& variableName)>& newData);
+
+    // A variable to be (re)defined from scratch during rebuildStructure,
+    // rather than copied unchanged from the source file.
+    struct VariableOverride {
+        std::string name;
+        NcType type{};
+        std::vector<std::string> dimensionNames;  // may include a brand-new dimension being added
+        std::vector<float> data;
+    };
+
+    // Generalizes resizeDimension for the case where a real-world file
+    // already has its OWN differently-shaped definition of a variable
+    // this port needs to (re)create - e.g. some geo_em files already
+    // carry FRC_URB2D/URB_PARAM from geogrid's own default (non-LCZ)
+    // urban parameterization, with URB_PARAM's parameter-count dimension
+    // sized for that scheme, not this one's 132. xarray's own Dataset
+    // model handles this transparently (assigning a `(new_dims,
+    // new_data)` tuple to an existing variable name just redefines it);
+    // netCDF-C's nc_def_var errors outright if the name is already
+    // defined, so this rebuilds the file instead - same "copy everything
+    // unchanged except..." shape as resizeDimension, except here the
+    // exceptions are `variableOverrides` (defined fresh with their own
+    // possibly-new dimensions, instead of copied from source) on top of
+    // one optionally-resized existing dimension. A dimension left with no
+    // remaining variable referencing it afterward (e.g. a legacy
+    // FRC_URB2D/URB_PARAM scheme's own now-unused dimension) is copied
+    // over unchanged anyway rather than pruned - harmless (an unused
+    // dimension is valid NetCDF) and simpler than detecting orphans, at
+    // the cost of a cosmetic difference from xarray's own output (which
+    // does prune it).
+    // `newDimensions` are brand-new dimensions (name, length) the
+    // overrides need (e.g. {"num_urb_params", 132}) - defined once, after
+    // the normal (possibly-resized) dimension set.
+    static void rebuildStructure(const std::filesystem::path& path, const std::string& resizedDimensionName, std::size_t resizedDimensionNewLength,
+        const std::function<std::optional<std::vector<float>>(const std::string& variableName)>& resizedDimensionNewData,
+        const std::vector<std::pair<std::string, std::size_t>>& newDimensions, const std::vector<VariableOverride>& variableOverrides);
 
 private:
     NetcdfFile(int ncid, std::filesystem::path path, Mode mode);
