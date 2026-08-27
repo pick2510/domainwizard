@@ -7,6 +7,7 @@
 
 #include <QActionGroup>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QFileDialog>
 #include <QLabel>
 #include <QMenuBar>
@@ -68,7 +69,7 @@ MainWindow::MainWindow() {
         const auto path = QFileDialog::getSaveFileName(this, "Export map image as", "map.png", "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg)");
         if (!path.isEmpty()) static_cast<void>(map_->exportImage(path));
     });
-    connect(close, &QAction::triggered, this,&QCoreApplication::quit);
+    connect(close, &QAction::triggered, this, &QCoreApplication::quit);
 
     // Options > Theme: System follows the OS light/dark setting (see
     // theme.hpp's resolveColorScheme/applyColorScheme - GNOME's own
