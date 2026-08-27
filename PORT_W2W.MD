@@ -694,6 +694,53 @@ Hong Kong `geo_em.d03.nc` + `HK.tif` (outside the repo, not committed -
 privacy/size), which completed successfully (`nbui_max=11`) after the fix,
 having failed at this exact point before it. CTest count 113 -> 114.
 
+**Follow-up: the View tab now recognizes LCZ classes in an LCZ-processed
+file's `LU_INDEX`, instead of showing them as generic "Category N" (or,
+worse, USGS/MODIFIED_IGBP_MODIS_NOAH's own real-but-wrong meaning for the
+same numbers - both schemes genuinely define 31-33 themselves, "Low/High
+Intensity Residential"/"Industrial or Commercial", which is not what those
+numbers mean in an LCZ file).** A user asked for this directly after
+seeing their Hong Kong domain's `*_LCZ_params.nc` render with meaningless
+category labels in the View tab.
+
+`WrfFile` (`wrf_file.cpp`) now derives `LU_INDEX`/`IVGTYP`'s
+`categoryScheme` via a new `lczAwareCategoryScheme()`, not a bare `MMINLU`
+read. It only switches away from the plain base scheme name (to
+`"<MMINLU>+LCZ41"`/`"<MMINLU>+LCZ61"`) when THREE signals agree: the file's
+`DESCRIPTION` global attribute contains createLczParamsFile's own marker
+text (verbatim from w2w.py, see `lcz.cpp`), `NUM_LAND_CAT` is 41 or 61 (for
+which offset), AND `FLAG_URB_PARAM` is `1`. All three are needed, not just
+`NUM_LAND_CAT`: some real geo_em files already carry `NUM_LAND_CAT=41` from
+geogrid's own default (non-LCZ) urban physics (Stage 3's own
+`sample_data/geo_em.d04.nc`) - and that exact fixture also happens to make
+`createLczExtentFile`'s own output keep `NUM_LAND_CAT=41` too (it resets to
+the ORIGINAL file's count, which here already was 41) even though that
+file's `LU_INDEX` has zero LCZ classes left (collapsed back to `ISURBAN`).
+`FLAG_URB_PARAM` is the one signal that reliably excludes it:
+`createLczExtentFile` always resets it to `0`, only `createLczParamsFile`'s
+own output ever has it `1`.
+
+`colormaps.cpp` gained `lczLabels()` (WUDAPT's standard LCZ 1-17
+palette, the same colors the LCZ Generator itself uses - Stewart & Oke
+2012) and `augmentedLanduseTables()`, which overlays that palette onto
+each existing base scheme's own table at +30/+50, registered under the
+`"<scheme>+LCZ41"`/`"<scheme>+LCZ61"` keys `categoricalLut` now looks up
+via (replacing its direct `landuseTables()` lookup). The overlay wins over
+a coincidentally-numbered base-scheme entry at the same value (the
+USGS/MODIFIED_IGBP_MODIS_NOAH 31-33 collision above) - it's applied on top
+of a copy, not merged the other way around. Only LCZ classes 1-10 (the
+"built" types) can ever actually appear in an LCZ-processed file's
+`LU_INDEX` (this pipeline's own `lczResample` only ever resamples
+`BUILT_LCZ` classes onto the grid), but all 17 are included in
+`lczLabels()` for completeness.
+
+Verified against the real fixtures: `geo_em.d04_LCZ_params.nc` (the only
+one whose `LU_INDEX` genuinely has LCZ numbers) now reports
+`"MODIFIED_IGBP_MODIS_NOAH+LCZ41"`; `geo_em.d04_LCZ_extent.nc` and the
+plain `geo_em.d04.nc` both correctly stay at the bare `MMINLU` scheme
+despite the `NUM_LAND_CAT=41` coincidence for the extent file. 2 new
+`core_tests.cpp` cases. CTest count 114 -> 116.
+
 ## Verification
 
 Per stage, not just at the end - matching this project's existing practice

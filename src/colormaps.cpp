@@ -116,11 +116,77 @@ const std::map<std::string, std::map<int, std::pair<std::string, Rgb>>>& landuse
     };
     return value;
 }
+// WUDAPT's standard Local Climate Zone palette (Stewart & Oke 2012), keyed
+// by LCZ class 1-17 - the same colors the LCZ Generator (lcz-generator.rub.de)
+// itself uses, so a file opened here matches what it looked like as a raw
+// LCZ map. Only classes 1-10 (the "built" types) can actually appear in an
+// LCZ-processed geo_em file's LU_INDEX - w2w/this port's own pipeline never
+// writes a "natural" class (11-17) into LU_INDEX, since lczResample only
+// ever resamples BUILT_LCZ classes onto the grid - but the full 17 are
+// included for completeness/robustness rather than only what's currently
+// reachable.
+const std::map<int, std::pair<std::string, Rgb>>& lczLabels() {
+    static const std::map<int, std::pair<std::string, Rgb>> value{
+        {1, {"LCZ 1: Compact high-rise", {0x91, 0x06, 0x13}}},
+        {2, {"LCZ 2: Compact midrise", {0xD9, 0x08, 0x1C}}},
+        {3, {"LCZ 3: Compact low-rise", {0xFF, 0x0A, 0x22}}},
+        {4, {"LCZ 4: Open high-rise", {0xC5, 0x4F, 0x1E}}},
+        {5, {"LCZ 5: Open midrise", {0xFF, 0x66, 0x28}}},
+        {6, {"LCZ 6: Open low-rise", {0xFF, 0x98, 0x5E}}},
+        {7, {"LCZ 7: Lightweight low-rise", {0xFD, 0xED, 0x3F}}},
+        {8, {"LCZ 8: Large low-rise", {0xBB, 0xBB, 0xBB}}},
+        {9, {"LCZ 9: Sparsely built", {0xFF, 0xCB, 0xAB}}},
+        {10, {"LCZ 10: Heavy industry", {0x56, 0x56, 0x56}}},
+        {11, {"LCZ A: Dense trees", {0x00, 0x6A, 0x18}}},
+        {12, {"LCZ B: Scattered trees", {0x00, 0xA9, 0x26}}},
+        {13, {"LCZ C: Bush, scrub", {0x62, 0x84, 0x32}}},
+        {14, {"LCZ D: Low plants", {0xB5, 0xDA, 0x7F}}},
+        {15, {"LCZ E: Bare rock or paved", {0x00, 0x00, 0x00}}},
+        {16, {"LCZ F: Bare soil or sand", {0xFC, 0xF7, 0xB1}}},
+        {17, {"LCZ G: Water", {0x65, 0x6B, 0xFA}}},
+    };
+    return value;
+}
+
+// A base scheme's own table, plus WUDAPT's LCZ 1-17 palette overlaid at
+// `addLczInt` (30 for a 41-category w2w target, 50 for 61) - matching
+// exactly where w2w's own pipeline writes LCZ classes into LU_INDEX (see
+// lcz.hpp's lczResample). Overlaid, not merged in place, so an LCZ entry
+// always wins over a coincidentally-numbered base-scheme entry at the same
+// value (USGS genuinely has its own "Low/High Intensity Residential"/
+// "Industrial or Commercial" at 31-33, which would otherwise shadow LCZ 1-3
+// - wrong for an LCZ-processed file, see lczAwareCategoryScheme's own doc
+// comment in wrf_file.cpp for why that distinction matters).
+std::map<int, std::pair<std::string, Rgb>> withLczOverlay(const std::map<int, std::pair<std::string, Rgb>>& base, int addLczInt) {
+    auto result = base;
+    for (const auto& [lczClass, entry] : lczLabels()) result[addLczInt + lczClass] = entry;
+    return result;
+}
+
+// landuseTables() plus, for every base scheme it defines, a "<scheme>
+// +LCZ41"/"<scheme>+LCZ61" variant with the LCZ overlay applied - the
+// scheme names lczAwareCategoryScheme (wrf_file.cpp) produces for a real
+// *_LCZ_params.nc file. A lookup miss (any scheme this function doesn't
+// recognize, LCZ-suffixed or not) still falls through to categoricalLut's
+// own generic fallback below - this never needs its own "unknown scheme"
+// handling.
+const std::map<std::string, std::map<int, std::pair<std::string, Rgb>>>& augmentedLanduseTables() {
+    static const std::map<std::string, std::map<int, std::pair<std::string, Rgb>>> value = [] {
+        auto result = landuseTables();
+        for (const auto& [scheme, table] : landuseTables()) {
+            result[scheme + "+LCZ41"] = withLczOverlay(table, 30);
+            result[scheme + "+LCZ61"] = withLczOverlay(table, 50);
+        }
+        return result;
+    }();
+    return value;
+}
+
 }  // namespace
 
 CategoricalLegend categoricalLut(const std::string& scheme, int categoryMin, int categoryMax) {
     CategoricalLegend result{};
-    const auto tables = landuseTables();
+    const auto& tables = augmentedLanduseTables();
     const auto known = tables.find(scheme);
     const auto* table = known != tables.end() ? &known->second : nullptr;
     for (int value = std::max(0, categoryMin); value <= std::min(255, categoryMax); ++value) {

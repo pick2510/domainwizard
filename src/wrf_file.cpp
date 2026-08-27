@@ -38,6 +38,47 @@ std::string globalValue(CSLConstList metadata, const char* key) {
     return prefixed.empty() ? metadataValue(metadata, key) : prefixed;
 }
 
+// LU_INDEX's meaning for a *_LCZ_params.nc file (produced by the LCZ tab,
+// or by w2w.py's own create_lcz_params_file) isn't captured by MMINLU
+// alone: the base scheme's categories still apply to every non-urban
+// pixel, but every urban pixel now carries a WUDAPT LCZ class number
+// (31-40 for a 41-category target, 51-60 for 61) instead of the base
+// scheme's own urban class - meaningless to look up in USGS/
+// MODIFIED_IGBP_MODIS_NOAH's own table (USGS even has real entries at
+// 31-33 of its own, "Low/High Intensity Residential"/"Industrial or
+// Commercial", which a plain MMINLU lookup would show instead, actively
+// wrong for an LCZ file).
+//
+// Detecting this from NUM_LAND_CAT alone isn't reliable: some real geo_em
+// files already carry NUM_LAND_CAT=41 (and FLAG_URB_PARAM=1) from
+// geogrid's own default (non-LCZ) urban physics scheme, with no LCZ
+// classes in LU_INDEX at all (confirmed against w2w's own sample_data/
+// geo_em.d04.nc, see PORT_W2W.MD Stage 3 - which is also why
+// createLczExtentFile's OWN output for that exact fixture still carries
+// NUM_LAND_CAT=41: create_lcz_extent_file sets it back to the ORIGINAL
+// file's count, and that original file's own count already happened to be
+// 41 before w2w ever touched it). Instead, key off THREE signals together:
+// createLczParamsFile's own DESCRIPTION attribute (verbatim from w2w.py,
+// see lcz.cpp) as the "produced by this pipeline" marker,
+// NUM_LAND_CAT in {41, 61} for which offset to use, AND
+// FLAG_URB_PARAM=1 - createLczExtentFile's own output copies DESCRIPTION
+// forward (create_lcz_extent_file's dst_extent = dst_params.copy()) but
+// always resets FLAG_URB_PARAM to 0 (it collapsed LCZ classes back to
+// plain ISURBAN, so LU_INDEX genuinely has none left) - the one signal
+// that reliably excludes it even in the NUM_LAND_CAT-coincidentally-
+// already-41 case above. Only the actual *_LCZ_params.nc file passes all
+// three checks.
+std::string lczAwareCategoryScheme(CSLConstList metadata) {
+    const auto scheme = globalValue(metadata, "MMINLU");
+    const auto description = globalValue(metadata, "DESCRIPTION");
+    if (description.find("W2W.py tool used to create geo_em") == std::string::npos) return scheme;
+    if (globalValue(metadata, "FLAG_URB_PARAM") != "1") return scheme;
+    const auto numLandCat = globalValue(metadata, "NUM_LAND_CAT");
+    if (numLandCat == "41") return scheme + "+LCZ41";
+    if (numLandCat == "61") return scheme + "+LCZ61";
+    return scheme;
+}
+
 // Projection ids follow wrf-python/gis4wrf.core.constants.ProjectionTypes:
 // 1=Lambert Conformal, 2=Polar Stereographic, 3=Mercator, 6=lat/lon.
 Crs buildWrfCrs(CSLConstList metadata) {
@@ -151,7 +192,7 @@ WrfFile::WrfFile(std::filesystem::path path)
         }
         variable.timeCount = std::max(1, dimensionValueCount(metadataValue(field->GetMetadata(), "NETCDF_DIM_Time_VALUES")));
         variable.levelCount = variable.extraDimension ? std::max(1, field->GetRasterCount() / variable.timeCount) : 1;
-        if (name == "LU_INDEX" || name == "IVGTYP") variable.categoryScheme = metadataValue(dataset_->GetMetadata(), "NC_GLOBAL#MMINLU");
+        if (name == "LU_INDEX" || name == "IVGTYP") variable.categoryScheme = lczAwareCategoryScheme(dataset_->GetMetadata());
         else if (name == "ISLTYP" || name == "SCT_DOM" || name == "SCB_DOM" || variable.units == "category") variable.categoryScheme = "";
         variables_.push_back(std::move(variable));
     }

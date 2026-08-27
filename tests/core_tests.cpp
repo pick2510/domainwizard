@@ -294,6 +294,32 @@ TEST_CASE("WrfFile reads a NetCDF4/HDF5-backed file identically to its classic-f
     CHECK(nc4.read("T2", 1, 0) == classic.read("T2", 1, 0));
 }
 
+TEST_CASE("WrfFile tags LU_INDEX with an LCZ-aware category scheme only for an actual *_LCZ_params.nc file") {
+    const auto luIndexScheme = [](const std::string& path) {
+        WrfFile file(path);
+        for (const auto& variable : file.variables())
+            if (variable.name == "LU_INDEX") return variable.categoryScheme.value_or("<none>");
+        FAIL("no LU_INDEX variable in " << path);
+        return std::string();
+    };
+
+    // The real *_LCZ_params.nc file - the only one whose LU_INDEX actually
+    // carries WUDAPT LCZ class numbers - gets the combined scheme name.
+    CHECK(luIndexScheme("tests/fixtures/lcz/geo_em.d04_LCZ_params.nc") == "MODIFIED_IGBP_MODIS_NOAH+LCZ41");
+
+    // *_LCZ_extent.nc copies createLczParamsFile's own DESCRIPTION marker
+    // forward AND (for this specific fixture pair) coincidentally still
+    // has NUM_LAND_CAT=41 too (the original geo_em.d04.nc already had 41
+    // categories from geogrid's own default urban physics, before w2w
+    // ever touched it - see PORT_W2W.MD Stage 3) - FLAG_URB_PARAM=0 is
+    // what correctly excludes it despite both other signals matching.
+    CHECK(luIndexScheme("tests/fixtures/lcz/geo_em.d04_LCZ_extent.nc") == "MODIFIED_IGBP_MODIS_NOAH");
+
+    // A plain geo_em file w2w never touched (no DESCRIPTION marker at
+    // all) is unaffected - the pre-existing, unchanged behavior.
+    CHECK(luIndexScheme("tests/fixtures/lcz/geo_em.d04.nc") == "MODIFIED_IGBP_MODIS_NOAH");
+}
+
 TEST_CASE("level index selects distinct data") {
     WrfFile file("tests/fixtures/wrfout_multitime.nc");
     std::set<long> roundedMeans;
@@ -600,6 +626,31 @@ TEST_CASE("categorical LANDUSE table matches the Python reference for known valu
     // back to a generated label/color rather than failing.
     const auto soil = categoricalLut("", 5, 5);
     CHECK(soil.labels.at(5) == "Category 5");
+}
+
+TEST_CASE("categoricalLut overlays WUDAPT's LCZ palette at the right offset for a <scheme>+LCZ41/61 name") {
+    const auto lcz41 = categoricalLut("MODIFIED_IGBP_MODIS_NOAH+LCZ41", 1, 40);
+    // Base-scheme categories below the LCZ offset are untouched.
+    CHECK(lcz41.labels.at(1) == "Evergreen Needleleaf Forest");
+    CHECK(lcz41.labels.at(13) == "Urban and Built-Up");
+    // LCZ 1 (built) lands at 30 + 1 = 31, with WUDAPT's own label/color -
+    // NOT USGS/MODIFIED_IGBP_MODIS_NOAH's own (different!) meaning for 31.
+    CHECK(lcz41.labels.at(31) == "LCZ 1: Compact high-rise");
+    CHECK(lcz41.lut[31] == Rgb{0x91, 0x06, 0x13});
+    CHECK(lcz41.labels.at(40) == "LCZ 10: Heavy industry");
+
+    const auto lcz61 = categoricalLut("USGS+LCZ61", 1, 60);
+    CHECK(lcz61.labels.at(51) == "LCZ 1: Compact high-rise");
+    CHECK(lcz61.labels.at(60) == "LCZ 10: Heavy industry");
+    // USGS genuinely defines its own 31-33 ("Low/High Intensity
+    // Residential"/"Industrial or Commercial") - the +LCZ61 overlay only
+    // applies at 51-67, so those stay USGS's own meaning, unshadowed.
+    CHECK(lcz61.labels.at(31) == "Low Intensity Residential");
+
+    // A scheme name this table doesn't recognize at all (LCZ-suffixed or
+    // not) still falls back cleanly, matching the plain-scheme case.
+    const auto unknown = categoricalLut("SOMETHING+LCZ41", 5, 5);
+    CHECK(unknown.labels.at(5) == "Category 5");
 }
 
 // Pinned against `wrftools.rasterlayer._warp_to_web_mercator` run on the
