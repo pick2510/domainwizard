@@ -20,17 +20,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      # Every single test hangs for exactly --timeout's duration even after
-      # switching the test binaries to std::_Exit() (an immediate,
-      # unconditional OS-level process kill - no atexit/static-destructor
-      # teardown can run), which rules out an in-process hang entirely: the
-      # process is gone, but ctest is still blocked waiting for something.
-      # The classic cause on GitHub-hosted Windows runners is Windows
-      # Defender's real-time scanner duplicating/holding a handle on a
-      # freshly-built, unsigned .exe (or its stdout pipe) during its scan,
-      # which keeps the pipe ctest reads from open until the scan clears -
-      # exclude the workspace and MSYS2's own install dir up front so newly
-      # compiled binaries are never queued for scanning in the first place.
+      # Not the fix for the DLL_PROCESS_DETACH deadlock below (fastExit()
+      # in tests/fast_exit.hpp is) - kept anyway as cheap, harmless
+      # insurance against unrelated Defender-induced slowness on freshly-
+      # built, unsigned .exe's.
       - name: Exclude workspace from Windows Defender (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -68,111 +61,6 @@ jobs:
             mingw-w64-x86_64-libgeotiff
             mingw-w64-x86_64-catch
             zip
-      # A plain hello-world (no GDAL/Qt) ran in 8.8ms even on the previous
-      # windows-2025-vs2026 image - ruling out the runner image, Defender
-      # (same freshly-built/unsigned .exe profile as the ones that DO
-      # hang), ctest, and the MSYS2 bash wrapper all at once, since none of
-      # those differ between it and wrftools_core_tests.exe (which still
-      # hangs on windows-2022 too). The one remaining difference is what
-      # gets linked in: GDAL::GDAL, Qt6::Core, Qt6::Gui. These two probes
-      # link ONLY Qt or ONLY GDAL (never both) to binary-search which one
-      # is responsible - each gets its own bounded wait (Start-Process +
-      # WaitForExit, not just `&`) so a hang in one doesn't block learning
-      # the other's result in the same run.
-      - name: Diagnose whether Qt or GDAL causes the hang (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        timeout-minutes: 5
-        run: |
-          $mingw = "$env:RUNNER_TEMP\msys64\mingw64"
-          $env:PATH = "$mingw\bin;$env:PATH"
-
-          function Run-Probe($name, $exe) {
-            Write-Host "--- $name ---"
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $p = Start-Process -FilePath $exe -NoNewWindow -PassThru
-            $finished = $p.WaitForExit(20000)
-            $sw.Stop()
-            if ($finished) {
-              Write-Host "$name finished in $($sw.Elapsed), exit code $($p.ExitCode)"
-            } else {
-              Write-Host "$name HUNG past 20s - killing it"
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-            }
-          }
-
-          '#include <cstdio>
-          #include <cstdlib>
-          #include <QImage>
-          int main() { QImage image(4, 4, QImage::Format_RGBA8888); puts("probe_qt ok"); std::_Exit(0); }' | Out-File -Encoding ascii probe_qt.cpp
-          $qtFlags = (& "$mingw\bin\pkg-config.exe" --cflags --libs Qt6Core Qt6Gui) -split ' '
-          & "$mingw\bin\g++.exe" -std=c++20 probe_qt.cpp -o probe_qt.exe @qtFlags
-          Run-Probe "probe_qt" ".\probe_qt.exe"
-
-          '#include <cstdio>
-          #include <cstdlib>
-          #include <gdal_priv.h>
-          int main() { GDALAllRegister(); puts("probe_gdal ok"); std::_Exit(0); }' | Out-File -Encoding ascii probe_gdal.cpp
-          & "$mingw\bin\g++.exe" -std=c++20 probe_gdal.cpp -o probe_gdal.exe "-I$mingw\include" "-L$mingw\lib" -lgdal
-          Run-Probe "probe_gdal" ".\probe_gdal.exe"
-
-          # Neither alone hung - combines both AND actually opens a real
-          # netCDF fixture via GDAL (closer to what WrfFile's constructor,
-          # test #1's own hang site, does than just GDALAllRegister()) to
-          # isolate whether it's the Qt+GDAL combination, or netCDF/HDF5
-          # file I/O specifically, that's responsible.
-          '#include <cstdio>
-          #include <cstdlib>
-          #include <QImage>
-          #include <gdal_priv.h>
-          int main() {
-              GDALAllRegister();
-              QImage image(4, 4, QImage::Format_RGBA8888);
-              auto* ds = GDALOpen("NETCDF:tests/fixtures/wrfout_with_1d_var.nc:T2", GA_ReadOnly);
-              puts(ds ? "opened dataset" : "open FAILED");
-              if (ds) GDALClose(ds);
-              puts("probe_combined ok");
-              std::_Exit(0);
-          }' | Out-File -Encoding ascii probe_combined.cpp
-          & "$mingw\bin\g++.exe" -std=c++20 probe_combined.cpp -o probe_combined.exe @qtFlags "-I$mingw\include" "-L$mingw\lib" -lgdal
-          Run-Probe "probe_combined" ".\probe_combined.exe"
-
-          # probe_combined hung; neither Qt alone nor GDAL alone did. Splits
-          # that result one more way: does merely LINKING both together
-          # hang (no GDALOpen call at all), or is it specifically opening a
-          # real netCDF/HDF5 file with both linked in?
-          '#include <cstdio>
-          #include <cstdlib>
-          #include <QImage>
-          #include <gdal_priv.h>
-          int main() {
-              GDALAllRegister();
-              QImage image(4, 4, QImage::Format_RGBA8888);
-              puts("probe_combined_noopen ok");
-              std::_Exit(0);
-          }' | Out-File -Encoding ascii probe_combined_noopen.cpp
-          & "$mingw\bin\g++.exe" -std=c++20 probe_combined_noopen.cpp -o probe_combined_noopen.exe @qtFlags "-I$mingw\include" "-L$mingw\lib" -lgdal
-          Run-Probe "probe_combined_noopen" ".\probe_combined_noopen.exe"
-
-          # Merely linking both is fine (probe_combined_noopen); only
-          # actually opening a real netCDF/HDF5 file with both linked
-          # hangs. HDF5's file locking (LockFileEx on Windows) hanging is a
-          # well-known, well-documented issue class - HDF5_USE_FILE_LOCKING
-          # =FALSE is the standard workaround. Reruns probe_combined's
-          # exact binary with that env var set to test it directly.
-          $env:HDF5_USE_FILE_LOCKING = "FALSE"
-          Run-Probe "probe_combined_nolocking" ".\probe_combined.exe"
-          Remove-Item Env:\HDF5_USE_FILE_LOCKING
-
-          # That wasn't it either. Rather than keep guessing blindly: GDAL's
-          # own CPL_DEBUG trace prints live (stdout, via -NoNewWindow) up to
-          # the exact point it freezes - showing directly which driver/
-          # plugin-loading step (e.g. a lazy LoadLibrary for a netCDF/HDF5
-          # plugin DLL racing something Qt set up - a classic Windows
-          # loader-lock deadlock shape) is actually stuck, instead of
-          # another round of trial-and-error env vars.
-          $env:CPL_DEBUG = "ON"
-          Run-Probe "probe_combined_debug" ".\probe_combined.exe"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug

@@ -11,6 +11,7 @@
 #include "wrftools/colorbar.hpp"
 #include "wrftools/wps_binary_source.hpp"
 #include "wrftools/wrf_source.hpp"
+#include "fast_exit.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -31,21 +32,11 @@
 using namespace wrftools;
 
 // A custom main (rather than linking Catch2's auto-provided one) purely to
-// call std::_Exit below - see its comment. Otherwise identical to what
+// call fastExit below - see its comment. Otherwise identical to what
 // Catch2WithMain itself generates.
 int main(int argc, char* argv[]) {
     const int result = Catch::Session().run(argc, argv);
-    // _Exit skips ALL static-destructor/atexit teardown (GDAL/netCDF's own
-    // driver-unregistration hooks among them) - on Windows CI that teardown
-    // path has been observed to hang indefinitely well after every test has
-    // already run and reported its result (confirmed: "All tests passed"
-    // prints only once ctest's own --timeout kills the process, exactly
-    // 120.01s after the last test finished), turning a passing run into a
-    // timeout failure. catch_discover_tests spawns a fresh process per test
-    // case here, so this fires on every single one. The process's own state
-    // doesn't need to survive past this point, so skipping it is safe here
-    // even though it wouldn't be in the shipped app.
-    std::_Exit(result);
+    wrftools_tests::fastExit(result);  // see fast_exit.hpp
 }
 
 TEST_CASE("WRF series names are parsed and ordered") {

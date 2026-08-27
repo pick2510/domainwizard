@@ -3,6 +3,7 @@
 #include "wrftools/colormaps.hpp"
 #include "wrftools/raster_layer.hpp"
 #include "wrftools/theme.hpp"
+#include "fast_exit.hpp"
 
 #include <cstdlib>
 #include <map>
@@ -24,14 +25,7 @@
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     const int result = Catch::Session().run(argc, argv);
-    // _Exit skips ALL static-destructor/atexit teardown (Qt, GDAL/netCDF's
-    // own driver-unregistration hooks, ...) - on Windows that teardown path
-    // has been observed to hang indefinitely well after every test has
-    // already run and reported its result, turning a passing run into a
-    // ctest --timeout kill. The test process's own state doesn't need to
-    // survive past this point, so skipping it is safe here even though it
-    // wouldn't be in the shipped app.
-    std::_Exit(result);
+    wrftools_tests::fastExit(result);  // see fast_exit.hpp
 }
 
 namespace {
