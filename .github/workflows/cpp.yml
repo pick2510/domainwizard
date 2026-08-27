@@ -88,7 +88,8 @@ jobs:
         timeout-minutes: 2
         run: |
           $env:PATH = "$env:RUNNER_TEMP\msys64\mingw64\bin;$env:PATH"
-          'int main(){puts("hello");return 0;}' | Out-File -Encoding ascii hello.cpp
+          '#include <cstdio>' | Out-File -Encoding ascii hello.cpp
+          'int main(){puts("hello");return 0;}' | Out-File -Encoding ascii -Append hello.cpp
           & "$env:RUNNER_TEMP\msys64\mingw64\bin\g++.exe" hello.cpp -o hello.exe
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
           & .\hello.exe
