@@ -68,33 +68,53 @@ jobs:
             mingw-w64-x86_64-libgeotiff
             mingw-w64-x86_64-catch
             zip
-      # Cheap (~seconds, not the ~15 minutes a full project build+run
-      # costs) isolation test for a runner-image-level cause: compiles and
-      # runs a trivial hello-world with the exact same MinGW toolchain,
-      # completely independent of this project's own code. windows-latest
-      # previously resolved to windows-2025-vs2026, a brand-new preview
-      # image, on which even this had "All tests passed" (or here, "hello")
-      # print and then the process never returning control to its caller -
-      # confirmed 3 times over (through ctest, through bash directly,
-      # through plain pwsh directly), ruling out ctest/bash/our own code
-      # (std::_Exit() is an unconditional OS-level kill). Pinning to the
-      # long-stable windows-2022 image above is the fix attempt; if this
-      # step ALSO hangs here, the image pin didn't help and the cause is
-      # something else runner-wide (most likely Defender/EDR on every
-      # freshly-built, unsigned MinGW .exe).
-      - name: Diagnose a minimal MinGW hello-world for a runner-image-level hang (Windows)
+      # A plain hello-world (no GDAL/Qt) ran in 8.8ms even on the previous
+      # windows-2025-vs2026 image - ruling out the runner image, Defender
+      # (same freshly-built/unsigned .exe profile as the ones that DO
+      # hang), ctest, and the MSYS2 bash wrapper all at once, since none of
+      # those differ between it and wrftools_core_tests.exe (which still
+      # hangs on windows-2022 too). The one remaining difference is what
+      # gets linked in: GDAL::GDAL, Qt6::Core, Qt6::Gui. These two probes
+      # link ONLY Qt or ONLY GDAL (never both) to binary-search which one
+      # is responsible - each gets its own bounded wait (Start-Process +
+      # WaitForExit, not just `&`) so a hang in one doesn't block learning
+      # the other's result in the same run.
+      - name: Diagnose whether Qt or GDAL causes the hang (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 2
+        timeout-minutes: 3
         run: |
-          $env:PATH = "$env:RUNNER_TEMP\msys64\mingw64\bin;$env:PATH"
-          '#include <cstdio>' | Out-File -Encoding ascii hello.cpp
-          'int main(){puts("hello");return 0;}' | Out-File -Encoding ascii -Append hello.cpp
-          & "$env:RUNNER_TEMP\msys64\mingw64\bin\g++.exe" hello.cpp -o hello.exe
-          $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          & .\hello.exe
-          $sw.Stop()
-          Write-Host "Elapsed: $($sw.Elapsed)"
+          $mingw = "$env:RUNNER_TEMP\msys64\mingw64"
+          $env:PATH = "$mingw\bin;$env:PATH"
+
+          function Run-Probe($name, $exe) {
+            Write-Host "--- $name ---"
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $p = Start-Process -FilePath $exe -NoNewWindow -PassThru
+            $finished = $p.WaitForExit(20000)
+            $sw.Stop()
+            if ($finished) {
+              Write-Host "$name finished in $($sw.Elapsed), exit code $($p.ExitCode)"
+            } else {
+              Write-Host "$name HUNG past 20s - killing it"
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          '#include <cstdio>
+          #include <cstdlib>
+          #include <QImage>
+          int main() { QImage image(4, 4, QImage::Format_RGBA8888); puts("probe_qt ok"); std::_Exit(0); }' | Out-File -Encoding ascii probe_qt.cpp
+          $qtFlags = (& "$mingw\bin\pkg-config.exe" --cflags --libs Qt6Core Qt6Gui) -split ' '
+          & "$mingw\bin\g++.exe" -std=c++20 probe_qt.cpp -o probe_qt.exe @qtFlags
+          Run-Probe "probe_qt" ".\probe_qt.exe"
+
+          '#include <cstdio>
+          #include <cstdlib>
+          #include <gdal_priv.h>
+          int main() { GDALAllRegister(); puts("probe_gdal ok"); std::_Exit(0); }' | Out-File -Encoding ascii probe_gdal.cpp
+          & "$mingw\bin\g++.exe" -std=c++20 probe_gdal.cpp -o probe_gdal.exe "-I$mingw\include" "-L$mingw\lib" -lgdal
+          Run-Probe "probe_gdal" ".\probe_gdal.exe"
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
