@@ -18,6 +18,7 @@
 //   ERROR <message>  (on failure; exit code is then non-zero)
 #include "wrftools/reproject.hpp"
 #include "wrftools/error.hpp"
+#include "wrftools/fast_exit.hpp"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -74,7 +75,7 @@ int main(int argc, char* argv[]) {
     QCoreApplication application(argc, argv);
     if (argc < 2) {
         emitLine("ERROR Usage: wrftools_reproject_worker <job.json>");
-        return 1;
+        wrftools::fastExit(1);
     }
     try {
         const auto options = readJob(QString::fromLocal8Bit(argv[1]));
@@ -82,9 +83,16 @@ int main(int argc, char* argv[]) {
             emitLine("PROGRESS " + std::to_string(progress.completed) + " " + std::to_string(progress.total) + " " + progress.message);
         });
         for (const auto& path : written) emitLine("DONE " + path.string());
-        return 0;
+        // fastExit(0), not a normal return: this process links both Qt and
+        // GDAL/netCDF, and a plain return here confirmed (via CI) hangs on
+        // Windows in DLL_PROCESS_DETACH teardown after every output file is
+        // already written and closed - see fast_exit.hpp. QProcess never
+        // sees a `finished` signal for a process stuck exiting, so
+        // ReprojectForm would wait forever despite the job having actually
+        // succeeded.
+        wrftools::fastExit(0);
     } catch (const std::exception& error) {
         emitLine(std::string("ERROR ") + error.what());
-        return 1;
+        wrftools::fastExit(1);
     }
 }

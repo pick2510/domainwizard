@@ -791,21 +791,42 @@ hold all the logic in `wrftools_core`, independent of Qt.
   environment (GitHub Actions' Windows runners; a real end user's
   network-mounted storage is the same class of risk). It only showed up
   here and not in the three plain `NetcdfFile` tests fixed just above
-  because those write a small, fixed-size, uncompressed variable - this is
-  the only path in the whole test suite that closes a chunked,
+  because those write a small, fixed-size, uncompressed variable, while
+  this is the only path in the whole test suite that closes a chunked,
   deflate-compressed variable on a genuinely *growable* (unlimited) time
-  dimension, which is exactly the kind of close HDF5's locking handshake
-  costs the most. Fixed with the HDF Group's own documented workaround,
-  `HDF5_USE_FILE_LOCKING=FALSE` - not set only for this one test or only on
-  Windows, but centrally in `NetcdfFile::open`/`create`
-  (`disableHdf5FileLockingIfUnset` in `netcdf_file.cpp`, a no-op if the
-  environment already sets the variable explicitly), so every entry point
-  that goes through this class - the GUI app, the Reproject worker, the
-  test binaries - is covered without each having to remember it
-  individually, and so a real Windows user hitting the same thing against
-  their own network storage is covered too, not just CI. The earlier
-  diagnostic's 300s/420s were reverted back down to a sane 60s/180s once
-  this landed.
+  dimension - so the leading theory was HDF5's own documented file-locking
+  hang on certain filesystems, fixed by setting `HDF5_USE_FILE_LOCKING=
+  FALSE` centrally in `NetcdfFile::open`/`create`
+  (`disableHdf5FileLockingIfUnset` in `netcdf_file.cpp`). **That theory was
+  wrong** - a third CI run with the fix in place hung identically, same
+  spot, same symptom. The real cause turned out to be nothing to do with
+  netCDF/HDF5 internals at all: `wrftools_reproject_worker` links **both**
+  Qt and GDAL/netCDF in one process, and this project already has a
+  confirmed, documented fix for exactly that combination -
+  `tests/fast_exit.hpp`, used by all three test binaries, for a Windows-only
+  deadlock in `DllMain(DLL_PROCESS_DETACH)` teardown when a plain `return`
+  from `main()` routes through `ExitProcess()`. The worker's `main()` was
+  still doing a plain `return`, so it hit the identical deadlock - it had
+  already finished every real GDAL warp and file write (confirmed by the
+  captured progress log showing all 3 timesteps written) and simply never
+  actually finished *exiting*, so `QProcess` never saw a `finished` signal
+  and `ReprojectForm` waited forever for a job that had, in truth, already
+  succeeded. `disableHdf5FileLockingIfUnset` was left in place (harmless,
+  and HDF5's own documented workaround is still worth having regardless -
+  see its own comment for why callers might still hit that class of issue
+  against real network-mounted storage), but the actual fix was promoting
+  `fast_exit.hpp`'s helper to a shared `include/wrftools/fast_exit.hpp`
+  (`wrftools::fastExit`, `[[noreturn]]`, `TerminateProcess` on Windows) and
+  calling it from every exit path in `reproject_worker.cpp`'s `main()`
+  instead of `return`ing normally - safe there specifically because every
+  output file is already closed and every stdout line already explicitly
+  flushed by the time it's reached, so the only teardown being skipped is
+  GDAL/Qt's own internal driver-unregistration bookkeeping, with no
+  externally observable effect on a process about to exit anyway. The
+  diagnostic 300s/420s timeouts came back down to 60s (`waitWhileRunning`)
+  and 240s (`cpp.yml`'s Windows `ctest --timeout`, which also turned out to
+  need genuinely more room than 120s or even 180s for the unrelated real
+  LCZ-pipeline test, independent of this bug, once actually measured).
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

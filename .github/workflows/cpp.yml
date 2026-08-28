@@ -139,13 +139,16 @@ jobs:
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        # 180, not 120: Windows CI is measurably slower for process-spawn +
-        # DLL-load-heavy tests (the whole wrftools_ui_tests binary, one
-        # add_test() rather than per-case catch_discover_tests, measured at
-        # ~115s there even before the Reproject worker's own subprocess
-        # test could actually complete - see netcdf_file.cpp's
-        # disableHdf5FileLockingIfUnset for what was actually wrong).
-        run: ctest --test-dir build-cpp --output-on-failure --timeout 180
+        # 240, not 120: Windows CI is measurably slower for GDAL-heavy work
+        # - confirmed by CI, not guessed. The full LCZ pipeline test alone
+        # measured over 180s but under 240s there; wrftools_ui_tests (one
+        # add_test(), not per-case catch_discover_tests) measured ~115s on
+        # top of that even before accounting for the Reproject worker's own
+        # subprocess test, which used to hang indefinitely on Windows for
+        # an unrelated reason - see reproject_worker.cpp's fastExit(), now
+        # fixed. This timeout is just ordinary Windows-vs-Linux/macOS
+        # slack, not a workaround for that bug.
+        run: ctest --test-dir build-cpp --output-on-failure --timeout 240
       # Packaged separately from the Debug build/test above (its own fresh
       # Release, BUILD_TESTING=OFF configure+build) - only reached once
       # tests have actually passed, matching what build-portable-cpp.sh/
