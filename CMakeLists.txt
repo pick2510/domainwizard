@@ -150,6 +150,7 @@ add_library(wrftools_core
     src/netcdf_file.cpp
     src/lcz.cpp
     src/reproject.cpp
+    src/stats.cpp
 )
 target_include_directories(wrftools_core PUBLIC include)
 target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui convert_geotiff_reader PkgConfig::NETCDF)
@@ -165,6 +166,15 @@ add_library(wrftools_ui
     src/geotiff_convert_form.cpp
     src/lcz_form.cpp
     src/reproject_form.cpp
+    src/chart_widget.cpp
+    src/point_inspector_dialog.cpp
+    # TimeSeriesDialog/RasterStatsDialog declare Q_OBJECT (needed for
+    # qobject_cast in tests) but live in include/wrftools/, not next to
+    # their .cpp in src/ - AUTOMOC's header/source pairing only looks in a
+    # source file's own directory, so the header must be listed explicitly
+    # here or it's silently never moc'd (an "undefined reference to vtable
+    # for ..." link error, not a moc/compile error).
+    include/wrftools/point_inspector_dialog.hpp
 )
 target_include_directories(wrftools_ui PUBLIC include)
 target_link_libraries(wrftools_ui PUBLIC wrftools_core convert_geotiff_lib Qt6::Gui Qt6::Widgets Qt6::Network)

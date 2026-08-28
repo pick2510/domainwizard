@@ -3,6 +3,7 @@
 #include "wrftools/colorbar.hpp"
 #include "wrftools/colormaps.hpp"
 #include "wrftools/error.hpp"
+#include "wrftools/point_inspector_dialog.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/units.hpp"
 #include "wrftools/wrf_series.hpp"
@@ -208,12 +209,13 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(nextStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(1); });
     connect(northArrow_, &QCheckBox::toggled, this, [this](bool checked) { map_->setShowNorthArrow(checked); });
     map_->setHoverValueHandler([this](LonLat point) { return hoverValueAt(point); });
+    map_->setClickHandler([this](LonLat point) { onMapClicked(point); });
 
     updatePanelVisibility();
 }
 
 ViewForm::~ViewForm() {
-    if (map_) map_->setHoverValueHandler({});
+    if (map_) { map_->setHoverValueHandler({}); map_->setClickHandler({}); }
 }
 
 void ViewForm::openFile() {
@@ -641,6 +643,75 @@ std::optional<QString> ViewForm::hoverValueAt(LonLat point) {
         } catch (const std::exception&) { continue; }
     }
     return std::nullopt;
+}
+
+std::optional<PointInspection> ViewForm::inspectPoint(LonLat point) {
+    // Same topmost-first search as hoverValueAt - whichever layer's value
+    // the hover readout would show at this point is also what gets
+    // inspected here.
+    for (auto it = layers_.rbegin(); it != layers_.rend(); ++it) {
+        if (!it->settings.visible) continue;
+        try {
+            auto& source = renderer_.openFile({it->filePath});
+            if (!renderer_.valueAt(it->filePath, it->settings, point)) continue;
+            const auto found = std::find_if(source.variables().begin(), source.variables().end(),
+                [it](const WrfVariable& v) { return v.name == it->settings.variable; });
+            if (found == source.variables().end()) continue;
+            const auto unit = findUnit(found->units, it->settings.unitKey);
+
+            PointInspection result;
+            result.variable = it->settings.variable;
+            result.unitLabel = unit.label;
+
+            const auto* seriesTimes = source.seriesTimes();
+            const int timeCount = seriesTimes ? static_cast<int>(seriesTimes->size()) : found->timeCount;
+            if (timeCount > 1) {
+                result.isTimeSeries = true;
+                // Reuses valueAt() (same warp+cache pipeline that renders
+                // what's on screen) per time step, rather than reading the
+                // raw grid directly - the result must match exactly what
+                // stepping through playback at this point would show, not
+                // just be numerically close to it.
+                QApplication::setOverrideCursor(Qt::WaitCursor);
+                QCoreApplication::processEvents();
+                RasterLayer probe = it->settings;
+                for (int timeIndex = 0; timeIndex < timeCount; ++timeIndex) {
+                    probe.timeIndex = timeIndex;
+                    const auto value = renderer_.valueAt(it->filePath, probe, point);
+                    result.timeLabels.push_back(seriesTimes ? seriesTimes->at(static_cast<std::size_t>(timeIndex))
+                                                             : "Step " + std::to_string(timeIndex + 1) + " of " + std::to_string(timeCount));
+                    result.timeSeriesValues.push_back(value ? std::optional<float>(static_cast<float>(*value)) : std::nullopt);
+                    QCoreApplication::processEvents();
+                }
+                QApplication::restoreOverrideCursor();
+            } else {
+                auto values = source.read(it->settings.variable, it->settings.timeIndex, it->settings.levelIndex);
+                convertInPlace(values, unit);
+                for (const auto value : values) if (std::isfinite(value)) result.rasterValues.push_back(value);
+            }
+            return result;
+        } catch (const std::exception&) { continue; }
+    }
+    return std::nullopt;
+}
+
+void ViewForm::onMapClicked(LonLat point) {
+    const auto inspection = inspectPoint(point);
+    if (!inspection) return;
+    const auto unitSuffix = inspection->unitLabel.empty() ? "" : " (" + inspection->unitLabel + ")";
+    if (inspection->isTimeSeries) {
+        std::vector<QString> labels;
+        labels.reserve(inspection->timeLabels.size());
+        for (const auto& label : inspection->timeLabels) labels.push_back(QString::fromStdString(label));
+        auto* dialog = new TimeSeriesDialog(
+            QString::fromStdString(inspection->variable + " at (" + std::to_string(point.lon) + ", " + std::to_string(point.lat) + ")" + unitSuffix),
+            std::move(labels), inspection->timeSeriesValues, QString::fromStdString(inspection->unitLabel), this);
+        dialog->show();
+    } else {
+        auto* dialog = new RasterStatsDialog(QString::fromStdString(inspection->variable + " - raster distribution" + unitSuffix),
+            inspection->rasterValues, QString::fromStdString(inspection->unitLabel), this);
+        dialog->show();
+    }
 }
 
 void ViewForm::stepPlayback(int direction) {

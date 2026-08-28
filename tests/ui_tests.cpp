@@ -10,6 +10,7 @@
 #include "wrftools/lcz.hpp"
 #include "wrftools/lcz_form.hpp"
 #include "wrftools/main_window.hpp"
+#include "wrftools/point_inspector_dialog.hpp"
 #include "wrftools/reproject_form.hpp"
 #include "wrftools/theme.hpp"
 #include "wrftools/tile_map_widget.hpp"
@@ -903,6 +904,85 @@ TEST_CASE("destroying the view form clears its hover handler so a later mouse-mo
     }  // form destroyed here; map (declared first) outlives it, as it does for every real tab in MainWindow.
     move(map, QPointF(150, 150));
     CHECK(map.hoverText().contains("°,"));
+}
+
+TEST_CASE("inspectPoint returns a timeseries for a multi-timestep source") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    map.resize(400, 400);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.zoomToSelectedLayer();
+
+    const auto inspection = form.inspectPoint({map.centerLongitude(), map.centerLatitude()});
+    REQUIRE(inspection.has_value());
+    CHECK(inspection->isTimeSeries);
+    REQUIRE(inspection->timeLabels.size() == inspection->timeSeriesValues.size());
+    CHECK(inspection->timeLabels.size() == static_cast<std::size_t>(form.timeCombo()->count()));
+    CHECK(inspection->timeLabels.size() > 1);
+    const auto finiteCount = std::count_if(inspection->timeSeriesValues.begin(), inspection->timeSeriesValues.end(),
+        [](const auto& value) { return value.has_value(); });
+    CHECK(finiteCount > 0);  // the map is centered on the layer, so at least the current timestep should hit real data
+}
+
+TEST_CASE("inspectPoint returns the whole raster's values for a single-timestep source") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    map.resize(400, 400);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.zoomToSelectedLayer();
+
+    const auto inspection = form.inspectPoint({map.centerLongitude(), map.centerLatitude()});
+    REQUIRE(inspection.has_value());
+    CHECK_FALSE(inspection->isTimeSeries);
+    CHECK_FALSE(inspection->rasterValues.empty());
+}
+
+TEST_CASE("inspectPoint returns nullopt when no visible layer covers the point") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    CHECK_FALSE(form.inspectPoint({0.0, 0.0}).has_value());
+}
+
+TEST_CASE("clicking a raster pixel opens a TimeSeriesDialog for a multi-timestep layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    map.resize(400, 400);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.zoomToSelectedLayer();
+
+    const QPointF center(map.width() / 2.0, map.height() / 2.0);
+    press(map, center);
+    release(map, center);
+
+    TimeSeriesDialog* dialog = nullptr;
+    for (auto* widget : QApplication::topLevelWidgets()) if (auto* found = qobject_cast<TimeSeriesDialog*>(widget)) dialog = found;
+    REQUIRE(dialog != nullptr);
+    dialog->close();
+}
+
+TEST_CASE("clicking a raster pixel opens a RasterStatsDialog for a single-timestep layer") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    map.resize(400, 400);
+    form.openFiles({"tests/fixtures/geo_em_small.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    form.zoomToSelectedLayer();
+
+    const QPointF center(map.width() / 2.0, map.height() / 2.0);
+    press(map, center);
+    release(map, center);
+
+    RasterStatsDialog* dialog = nullptr;
+    for (auto* widget : QApplication::topLevelWidgets()) if (auto* found = qobject_cast<RasterStatsDialog*>(widget)) dialog = found;
+    REQUIRE(dialog != nullptr);
+    dialog->close();
 }
 
 TEST_CASE("dragging a root domain's outline moves its center point live") {

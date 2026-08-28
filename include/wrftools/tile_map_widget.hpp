@@ -103,6 +103,18 @@ public:
     using HoverValueHandler = std::function<std::optional<QString>(LonLat)>;
     void setHoverValueHandler(HoverValueHandler handler);
 
+    // Fired on a plain left-click on the map background (not a pan, not a
+    // press on the legend/info overlay or a draggable-group overlay/handle -
+    // those all take priority in mousePressEvent, same as the hover
+    // readout's "nothing here" fallback). A "click" is a press+release with
+    // less than kClickMoveThreshold screen-pixel movement between them, so
+    // an actual pan (even a short one) never fires this. ViewForm uses this
+    // to open the point-inspector dialogs (TimeSeriesDialog/
+    // RasterStatsDialog); harmless to leave registered while another tab is
+    // active, matching HoverValueHandler's own always-on registration.
+    using ClickHandler = std::function<void(LonLat)>;
+    void setClickHandler(ClickHandler handler);
+
     // Static "N" compass arrow in the bottom-right corner - this widget
     // never rotates the basemap, so north is always straight up. Off by
     // default; included in exportImage()'s output, like the legend.
@@ -238,6 +250,7 @@ private:
     bool dragging_{false};
     QPointF dragStart_;
     HoverValueHandler hoverValueHandler_;
+    ClickHandler clickHandler_;
     QString hoverText_;
     bool showNorthArrow_{false};
 };

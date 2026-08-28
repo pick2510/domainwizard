@@ -17,7 +17,10 @@ Convert are plain file-in/file-out forms.
   colored raster layers over the basemap. Includes a movable colorbar,
   categorical legends (`LU_INDEX`, `IVGTYP`, soil type, ...), timestep
   playback, a north arrow, a pixel-value/lon-lat hover readout, and
-  PNG/JPEG map export.
+  PNG/JPEG map export. Clicking a raster pixel opens a popup with either a
+  timeseries of that point across every time step plus descriptive
+  statistics (a series/multi-timestep file), or descriptive statistics and
+  a distribution histogram of the whole raster (a single-timestep file).
 - **Reproject** - convert wrfout files into plain CF-1.7 NetCDF on a
   regular grid in a chosen EPSG, for tools like QGIS, xarray/rioxarray, or
   CDO that don't understand WRF's native grid. Optionally crop to an AOI
@@ -114,6 +117,8 @@ src/wrf_file.cpp, wrf_series.cpp, wrf_source.cpp, wps_binary_source.cpp
                                  WRF/WPS/WPS_GEOG file access
 src/layer_renderer.cpp, raster_layer.cpp, warp.cpp
                                  View tab render/cache pipeline
+src/point_inspector_dialog.cpp, chart_widget.cpp, stats.cpp
+                                 click-a-pixel timeseries/distribution popups
 src/lcz_form.cpp, lcz.cpp       LCZ tab + pipeline
 src/reproject_form.cpp, reproject.cpp, reproject_worker.cpp
                                  Reproject tab + out-of-process worker

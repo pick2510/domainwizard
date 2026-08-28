@@ -14,6 +14,7 @@
 #include "wrftools/netcdf_file.hpp"
 #include "wrftools/lcz.hpp"
 #include "wrftools/reproject.hpp"
+#include "wrftools/stats.hpp"
 #include "fast_exit.hpp"
 
 #include <netcdf.h>
@@ -2494,4 +2495,40 @@ TEST_CASE("NetcdfFile::readText/writeText round-trip a Times-shaped char variabl
         CHECK(file.readText("Times") == text);
     }
     std::filesystem::remove(path);
+}
+
+TEST_CASE("computeDescriptiveStats ignores non-finite values and reports count/min/max/mean/median/stddev") {
+    const std::vector<float> values{1.0f, 2.0f, 3.0f, 4.0f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()};
+    const auto stats = computeDescriptiveStats(values);
+    CHECK(stats.count == 4);
+    CHECK(stats.minimum == Catch::Approx(1.0f));
+    CHECK(stats.maximum == Catch::Approx(4.0f));
+    CHECK(stats.mean == Catch::Approx(2.5f));
+    CHECK(stats.median == Catch::Approx(2.5f));  // even count -> average of the two middle values
+    CHECK(stats.stddev == Catch::Approx(std::sqrt(1.25f)));
+}
+
+TEST_CASE("computeDescriptiveStats throws UserError when every value is non-finite") {
+    const std::vector<float> values{std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()};
+    CHECK_THROWS_AS(computeDescriptiveStats(values), UserError);
+}
+
+TEST_CASE("computeHistogram buckets values across the requested bin count") {
+    const std::vector<float> values{0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f};
+    const auto histogram = computeHistogram(values, 5);
+    CHECK(histogram.binCounts.size() == 5);
+    std::size_t total = 0;
+    for (const auto count : histogram.binCounts) total += count;
+    CHECK(total == values.size());
+    CHECK(histogram.binStart == Catch::Approx(0.0f));
+    CHECK(histogram.binWidth == Catch::Approx(2.0f));
+}
+
+TEST_CASE("computeHistogram widens a zero-range input so it still gets one visible bin") {
+    const std::vector<float> values{5.0f, 5.0f, 5.0f};
+    const auto histogram = computeHistogram(values, 4);
+    std::size_t total = 0;
+    for (const auto count : histogram.binCounts) total += count;
+    CHECK(total == values.size());
+    CHECK(histogram.binWidth > 0.0f);
 }

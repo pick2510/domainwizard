@@ -26,6 +26,23 @@ class TileMapWidget;
 // its own independent render settings. Mirrors rasterlayer.RasterLayer,
 // split from the render-parameter RasterLayer struct (raster_layer.hpp)
 // because filePath/layerId are ViewForm bookkeeping, not render inputs.
+// What ViewForm::inspectPoint found at a clicked point - either a
+// timeseries (the layer's source has more than one time step) or the whole
+// current-slice raster's values (a single-timestep source), per the
+// point-inspector feature's two modes. Exactly one of the two payloads is
+// populated, selected by isTimeSeries.
+struct PointInspection {
+    std::string variable;
+    std::string unitLabel;
+    bool isTimeSeries{};
+    // isTimeSeries == true: one entry per time step (nullopt where the
+    // point fell outside the raster, or was nodata, at that step).
+    std::vector<std::string> timeLabels;
+    std::vector<std::optional<float>> timeSeriesValues;
+    // isTimeSeries == false: every finite value in the current slice.
+    std::vector<float> rasterValues;
+};
+
 struct ViewLayer {
     int layerId{};
     std::string filePath;
@@ -122,6 +139,14 @@ public:
     // nodata.
     void computeSeriesRange();
 
+    // Finds the topmost visible layer covering `point` (same draw-order
+    // rule as hoverValueAt) and builds either a timeseries across every
+    // time step of its source, or the whole current-slice raster's values
+    // if the source has only one time step - the data behind
+    // onMapClicked()'s dialogs, split out so it's testable without opening
+    // a real QDialog. Returns nullopt if no visible layer covers the point.
+    [[nodiscard]] std::optional<PointInspection> inspectPoint(LonLat point);
+
 private:
     void openFile();
     void openGeogDataset();
@@ -147,6 +172,9 @@ private:
     // to TileMapWidget's hover-value handler, registered once in the
     // constructor.
     [[nodiscard]] std::optional<QString> hoverValueAt(LonLat point);
+    // TileMapWidget::ClickHandler target, registered in the constructor -
+    // calls inspectPoint() and opens the matching non-modal dialog.
+    void onMapClicked(LonLat point);
 
     void refreshMap();
     void updateColorbar();

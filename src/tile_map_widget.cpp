@@ -145,6 +145,7 @@ void TileMapWidget::clearRasterOverlayGroup(const QString& name) { rasterGroups_
 void TileMapWidget::setLegend(QPixmap legend) { legend_ = std::move(legend); update(); }
 void TileMapWidget::setInfoText(const QString& text) { infoText_ = text; update(); }
 void TileMapWidget::setHoverValueHandler(HoverValueHandler handler) { hoverValueHandler_ = std::move(handler); }
+void TileMapWidget::setClickHandler(ClickHandler handler) { clickHandler_ = std::move(handler); }
 void TileMapWidget::setShowNorthArrow(bool show) { showNorthArrow_ = show; update(); }
 
 void TileMapWidget::setDraggableVectorOverlayGroup(const QString& groupName) { draggableGroup_ = groupName; }
@@ -543,9 +544,22 @@ void TileMapWidget::mouseMoveEvent(QMouseEvent* event) {
     updateHover();  // after the center actually moved, so the readout matches the new viewport
     dragStart_ = event->position();
 }
-void TileMapWidget::mouseReleaseEvent(QMouseEvent*) {
+void TileMapWidget::mouseReleaseEvent(QMouseEvent* event) {
     if (dragTarget_ == "overlay" && overlayDragEnd_) overlayDragEnd_();
     if (dragTarget_ == "overlay-resize" && overlayResizeEnd_) overlayResizeEnd_();
+    // dragTarget_.isEmpty() && dragging_: the press landed on plain map
+    // background (not the legend/info overlay or a draggable-group overlay/
+    // handle, all of which set dragTarget_ instead - see mousePressEvent),
+    // so this was a pan attempt. Below kClickMoveThreshold pixels of actual
+    // movement, treat it as a click instead of a pan.
+    constexpr double kClickMoveThreshold = 4.0;
+    if (dragging_ && dragTarget_.isEmpty() && clickHandler_) {
+        const auto delta = event->position() - dragStart_;
+        if (std::hypot(delta.x(), delta.y()) < kClickMoveThreshold) {
+            const auto here = lonLat(event->position() + viewportTopLeft(), zoom_);
+            clickHandler_({here.x(), here.y()});
+        }
+    }
     dragging_ = false;
     dragTarget_.clear();
 }
