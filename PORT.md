@@ -761,6 +761,25 @@ hold all the logic in `wrftools_core`, independent of Qt.
     allowed to actually finish. The Windows-only "Full LCZ pipeline" timeout
     seen in the same run needed no source change - it inherits the same
     ctest `--timeout` and was very likely just as starved for margin.
+  A second CI run confirmed both of those (all `NetcdfFile` tests and the
+  LCZ pipeline timeout green on Windows), but the `ReprojectForm` case
+  itself still failed the same way even at 90s - and the accumulated
+  `PROGRESS` messages captured in the failure's own `INFO` context showed
+  it had already finished writing all 3 real timesteps (`wrfout_d03...:
+  T2` logged three times) before going quiet, i.e. it was hanging in
+  `runReproject`'s final `out.close()` (a plain `nc_close`, `src/
+  reproject.cpp:676`) - after the expensive GDAL work was already done, not
+  during it, so a longer wait was never going to fix it. The real cause was
+  almost certainly the CI Windows Defender exclusions predating this
+  feature: `$env:GITHUB_WORKSPACE` and the MSYS2 install dir were excluded,
+  but not `$env:TEMP` - a different root entirely (`C:\Users\runneradmin\
+  AppData\Local\Temp`) - which is exactly where `QTemporaryDir`/
+  `std::filesystem::temp_directory_path()` write this test's real,
+  GDAL-produced, chunked+compressed `.nc` output; real-time scanning of a
+  freshly-closed HDF5 file blocking its own close/fsync is a documented
+  class of Windows-runner-only stall. Fixed by adding `$env:TEMP` to
+  `cpp.yml`'s existing Defender-exclusion step, plus the worker and test
+  executables themselves to `ExclusionProcess` as a second layer.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

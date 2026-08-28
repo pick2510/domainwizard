@@ -27,7 +27,18 @@ jobs:
       # Not the fix for the DLL_PROCESS_DETACH deadlock below (fastExit()
       # in tests/fast_exit.hpp is) - kept anyway as cheap, harmless
       # insurance against unrelated Defender-induced slowness on freshly-
-      # built, unsigned .exe's.
+      # built, unsigned .exe's. $env:TEMP (Windows' own temp dir, e.g.
+      # C:\Users\runneradmin\AppData\Local\Temp) is a DIFFERENT root than
+      # GITHUB_WORKSPACE/the MSYS2 install dir below and was missing here -
+      # QTemporaryDir/std::filesystem::temp_directory_path() (the Reproject
+      # tab's own tests among them) write their real, GDAL-produced .nc
+      # output there, and real-time scanning of a freshly-closed netCDF/
+      # HDF5 file (chunked+compressed, unlike the plain test fixtures) is a
+      # documented source of exactly this kind of runner-only stall - a
+      # worker process that had already finished all its actual GDAL work
+      # and simply never returned from closing the output file. The worker
+      # and test executables themselves are also added to ExclusionProcess
+      # for the same reason, on top of the path exclusion.
       - name: Exclude workspace from Windows Defender (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -35,7 +46,8 @@ jobs:
         run: |
           Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
           Add-MpPreference -ExclusionPath "D:\a\_temp\msys64"
-          Add-MpPreference -ExclusionProcess "c++.exe","cc1plus.exe","ctest.exe","ninja.exe"
+          Add-MpPreference -ExclusionPath "$env:TEMP"
+          Add-MpPreference -ExclusionProcess "c++.exe","cc1plus.exe","ctest.exe","ninja.exe","wrftools_reproject_worker.exe","wrftools_ui_tests.exe","wrftools_core_tests.exe","wrftools_widget_tests.exe"
       # libnetcdf-dev/netcdf/mingw-w64-x86_64-netcdf (below): NetcdfFile's
       # (netcdf_file.hpp/.cpp) direct netCDF-C linkage for the w2w LCZ port
       # - see CMakeLists.txt's pkg_check_modules(NETCDF ...) and
