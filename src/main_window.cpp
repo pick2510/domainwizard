@@ -44,9 +44,14 @@ QScrollArea* scrollWrap(QWidget* content) {
 
 MainWindow::MainWindow() {
     setWindowTitle("WRF Tools");
-    resize(1300, 800);
+    resize(1400, 800);
     auto* tabs = new QTabWidget;
-    tabs->setMinimumWidth(340);
+    // 340 (the original width) was too narrow for the LCZ and Reproject
+    // tabs' own widest rows - their Browse buttons and paired X/Y fields
+    // ran off the edge, forcing a horizontal scrollbar to even reach them.
+    // 460 clears the Reproject tab's own ~442px natural width plus the
+    // scroll area's frame/scrollbar reservation, so no tab needs one.
+    tabs->setMinimumWidth(460);
     map_ = new TileMapWidget;
     auto* domainForm = new DomainForm(map_);
     tabs->addTab(scrollWrap(domainForm), "Domains");
@@ -62,7 +67,7 @@ MainWindow::MainWindow() {
     splitter->addWidget(tabs);
     splitter->addWidget(map_);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({360, 940});
+    splitter->setSizes({480, 920});
     setCentralWidget(splitter);
     auto* filemenu = menuBar()->addMenu("&File");
     auto* action = filemenu->addAction("Export Map Image...");

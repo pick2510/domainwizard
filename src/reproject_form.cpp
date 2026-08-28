@@ -79,28 +79,56 @@ ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
     inputGroup->setLayout(inputForm);
     layout->addWidget(inputGroup);
 
+    // X/Y pixel-size and extent fields are paired on one row each (a small
+    // "X"/"Y" sub-label ahead of each field, rather than a separate
+    // QFormLayout row per axis) - halves this group's vertical footprint
+    // and, combined with the widened tab panel below, keeps every field
+    // and its full label on-screen without the horizontal scrollbar a
+    // narrower single-column layout forced.
     auto* crsGroup = new QGroupBox("Output CRS and grid", this);
     auto* crsForm = new QFormLayout;
     epsg_ = new QLineEdit("4326", this);
     crsForm->addRow("Target EPSG code", epsg_);
+
+    auto* pixelSizeRow = new QWidget(this);
+    auto* pixelSizeRowLayout = new QHBoxLayout(pixelSizeRow);
+    pixelSizeRowLayout->setContentsMargins(0, 0, 0, 0);
     pixelSizeX_ = new QLineEdit(this);
     pixelSizeX_->setPlaceholderText("auto");
-    crsForm->addRow("Pixel size X", pixelSizeX_);
     pixelSizeY_ = new QLineEdit(this);
     pixelSizeY_->setPlaceholderText("auto");
-    crsForm->addRow("Pixel size Y", pixelSizeY_);
+    pixelSizeRowLayout->addWidget(new QLabel("X", this));
+    pixelSizeRowLayout->addWidget(pixelSizeX_);
+    pixelSizeRowLayout->addWidget(new QLabel("Y", this));
+    pixelSizeRowLayout->addWidget(pixelSizeY_);
+    crsForm->addRow("Pixel size", pixelSizeRow);
+
+    auto* extentMinRow = new QWidget(this);
+    auto* extentMinRowLayout = new QHBoxLayout(extentMinRow);
+    extentMinRowLayout->setContentsMargins(0, 0, 0, 0);
     extentMinX_ = new QLineEdit(this);
     extentMinX_->setPlaceholderText("auto");
-    crsForm->addRow("Extent min X", extentMinX_);
     extentMinY_ = new QLineEdit(this);
     extentMinY_->setPlaceholderText("auto");
-    crsForm->addRow("Extent min Y", extentMinY_);
+    extentMinRowLayout->addWidget(new QLabel("X", this));
+    extentMinRowLayout->addWidget(extentMinX_);
+    extentMinRowLayout->addWidget(new QLabel("Y", this));
+    extentMinRowLayout->addWidget(extentMinY_);
+    crsForm->addRow("Extent min", extentMinRow);
+
+    auto* extentMaxRow = new QWidget(this);
+    auto* extentMaxRowLayout = new QHBoxLayout(extentMaxRow);
+    extentMaxRowLayout->setContentsMargins(0, 0, 0, 0);
     extentMaxX_ = new QLineEdit(this);
     extentMaxX_->setPlaceholderText("auto");
-    crsForm->addRow("Extent max X", extentMaxX_);
     extentMaxY_ = new QLineEdit(this);
     extentMaxY_->setPlaceholderText("auto");
-    crsForm->addRow("Extent max Y", extentMaxY_);
+    extentMaxRowLayout->addWidget(new QLabel("X", this));
+    extentMaxRowLayout->addWidget(extentMaxX_);
+    extentMaxRowLayout->addWidget(new QLabel("Y", this));
+    extentMaxRowLayout->addWidget(extentMaxY_);
+    crsForm->addRow("Extent max", extentMaxRow);
+
     crsGroup->setLayout(crsForm);
     layout->addWidget(crsGroup);
 
@@ -116,8 +144,8 @@ ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
     selectRowLayout->setContentsMargins(0, 0, 0, 0);
     selectAllButton_ = new QPushButton("All", this);
     selectNoneButton_ = new QPushButton("None", this);
-    selectRowLayout->addWidget(selectAllButton_);
-    selectRowLayout->addWidget(selectNoneButton_);
+    selectRowLayout->addWidget(selectAllButton_, 1);
+    selectRowLayout->addWidget(selectNoneButton_, 1);
     variablesLayout->addWidget(selectRow);
     variablesGroup->setLayout(variablesLayout);
     layout->addWidget(variablesGroup);
@@ -127,10 +155,10 @@ ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
     resampling_ = new QComboBox(this);
     resampling_->addItems({"Bilinear", "Nearest", "Average", "Mode"});
     optionsForm->addRow("Resampling", resampling_);
-    nearestForCategorical_ = new QCheckBox("Always use nearest-neighbour for categorical variables", this);
+    nearestForCategorical_ = new QCheckBox("Nearest-neighbour for categorical variables", this);
     nearestForCategorical_->setChecked(true);
     optionsForm->addRow("", nearestForCategorical_);
-    mergeSeries_ = new QCheckBox("Merge each series into a single file", this);
+    mergeSeries_ = new QCheckBox("Merge series into one file", this);
     mergeSeries_->setChecked(true);
     optionsForm->addRow("", mergeSeries_);
     outputDirectory_ = new QLineEdit(this);
@@ -151,8 +179,8 @@ ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
     runButton_ = new QPushButton("Run", this);
     cancelButton_ = new QPushButton("Cancel", this);
     cancelButton_->setEnabled(false);
-    runRowLayout->addWidget(runButton_);
-    runRowLayout->addWidget(cancelButton_);
+    runRowLayout->addWidget(runButton_, 1);
+    runRowLayout->addWidget(cancelButton_, 1);
     layout->addWidget(runRow);
 
     progress_ = new QProgressBar(this);

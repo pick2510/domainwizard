@@ -621,6 +621,28 @@ hold all the logic in `wrftools_core`, independent of Qt.
 - Fixtures under `tests/fixtures/reproject/` are carved (via `ncks`, not
   synthesized) from a real WRF 4.7.1 run over Hong Kong, keeping real
   geometry/attributes/projection at a committable size.
+- **Follow-up (2026-08-28): tab panel widened for the Reproject tab's own
+  field count.** The Reproject tab's natural width (its EPSG/pixel-size/
+  extent/variables/output-directory controls) came out wider than every
+  earlier tab, and `main_window.cpp`'s original `tabs->setMinimumWidth(340)`
+  + `splitter->setSizes({360, 940})` were sized for the LCZ tab (the
+  previous widest, ~440px `sizeHint`) - confirmed visually via an offscreen
+  Qt probe (`QT_QPA_PLATFORM=offscreen`, grabbing each tab to a PNG, no
+  X server needed), which showed the Reproject tab's Browse buttons,
+  checkbox labels, and Run/Cancel row all running off the visible edge,
+  reachable only via a horizontal scrollbar. Fixed two ways: (1)
+  `ReprojectForm`'s pixel-size and extent fields, previously one
+  `QFormLayout` row per axis (6 rows), are now paired X/Y on one row each
+  (3 rows) with a small "X"/"Y" sub-label ahead of each field - this alone
+  dropped the tab's own natural width from ~504px to ~442px; checkbox
+  labels were also shortened to fit ("Always use nearest-neighbour for
+  categorical variables" -> "Nearest-neighbour for categorical variables").
+  (2) `MainWindow`'s tab panel minimum width raised 340 -> 460 and the
+  splitter's initial split 360/940 -> 480/920 (default window 1300x800 ->
+  1400x800, so the map doesn't lose net space) - comfortably clears every
+  tab's own `sizeHint` (LCZ and Reproject both land around 440-442px) plus
+  the scroll area's frame/scrollbar reservation, verified by re-running the
+  same offscreen probe until no tab showed a horizontal scrollbar.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 
