@@ -43,6 +43,16 @@ LonLat mercatorToLonLat(double x, double y) {
     return {x / kMercatorEarthRadius * 180.0 / M_PI, std::atan(std::sinh(y / kMercatorEarthRadius)) * 180.0 / M_PI};
 }
 
+// RAII wait cursor - guarantees restoreOverrideCursor() runs even if the
+// guarded scope throws (a plain setOverrideCursor()/restoreOverrideCursor()
+// pair does not: an exception between them leaves the override-cursor stack
+// unbalanced, so the whole application is stuck showing a wait cursor until
+// restarted).
+struct ScopedWaitCursor {
+    ScopedWaitCursor() { QApplication::setOverrideCursor(Qt::WaitCursor); }
+    ~ScopedWaitCursor() { QApplication::restoreOverrideCursor(); }
+};
+
 // Mirrors viewform.py's _EXTRA_DIM_LABELS - a variable's own dimension name
 // (e.g. "bottom_top") isn't fit for display, so the level-row label
 // reflects what kind of extra dimension is actually selectable, not just a
@@ -531,15 +541,16 @@ void ViewForm::computeSeriesRange() {
     // reprojection this variable would otherwise need for display is pure
     // savings, not a shortcut that loses accuracy (a warp only resamples
     // pixel placement, never invents values outside the source's own range).
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    QCoreApplication::processEvents();
-    for (int timeIndex = 0; timeIndex < timeCount; ++timeIndex) {
-        auto values = source.read(layer->settings.variable, timeIndex, layer->settings.levelIndex);
-        convertInPlace(values, unit);
-        for (const auto value : values) if (std::isfinite(value)) { globalMinimum = std::min(globalMinimum, value); globalMaximum = std::max(globalMaximum, value); }
+    {
+        ScopedWaitCursor waitCursor;
         QCoreApplication::processEvents();
+        for (int timeIndex = 0; timeIndex < timeCount; ++timeIndex) {
+            auto values = source.read(layer->settings.variable, timeIndex, layer->settings.levelIndex);
+            convertInPlace(values, unit);
+            for (const auto value : values) if (std::isfinite(value)) { globalMinimum = std::min(globalMinimum, value); globalMaximum = std::max(globalMaximum, value); }
+            QCoreApplication::processEvents();
+        }
     }
-    QApplication::restoreOverrideCursor();
 
     if (!std::isfinite(globalMinimum)) throw UserError("Every time step of this variable is entirely nodata.");
 
@@ -672,7 +683,7 @@ std::optional<PointInspection> ViewForm::inspectPoint(LonLat point) {
                 // raw grid directly - the result must match exactly what
                 // stepping through playback at this point would show, not
                 // just be numerically close to it.
-                QApplication::setOverrideCursor(Qt::WaitCursor);
+                ScopedWaitCursor waitCursor;
                 QCoreApplication::processEvents();
                 RasterLayer probe = it->settings;
                 for (int timeIndex = 0; timeIndex < timeCount; ++timeIndex) {
@@ -683,7 +694,6 @@ std::optional<PointInspection> ViewForm::inspectPoint(LonLat point) {
                     result.timeSeriesValues.push_back(value ? std::optional<float>(static_cast<float>(*value)) : std::nullopt);
                     QCoreApplication::processEvents();
                 }
-                QApplication::restoreOverrideCursor();
             } else {
                 auto values = source.read(it->settings.variable, it->settings.timeIndex, it->settings.levelIndex);
                 convertInPlace(values, unit);

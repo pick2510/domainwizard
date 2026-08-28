@@ -9,14 +9,20 @@ namespace wrftools {
 namespace {
 QString statsSummaryText(const DescriptiveStats& stats, const QString& unitLabel) {
     const QString unit = unitLabel.isEmpty() ? QString() : " " + unitLabel;
-    return QString("Count: %1    Min: %2%6    Max: %3%6    Mean: %4%6    Median: %7%6    Std Dev: %5%6")
+    // Each placeholder is used exactly once, numbered in the same
+    // left-to-right order the .arg() calls fill them in - unlike a shared
+    // "%N" reused after every number (relying on QString::arg() always
+    // targeting the lowest still-unfilled placeholder regardless of call
+    // order), reordering these calls to match a future reordering of the
+    // labels can't silently swap two values.
+    const auto number = [](double value) { return QString::number(value, 'g', 6); };
+    return QString("Count: %1    Min: %2    Max: %3    Mean: %4    Median: %5    Std Dev: %6")
         .arg(stats.count)
-        .arg(stats.minimum, 0, 'g', 6)
-        .arg(stats.maximum, 0, 'g', 6)
-        .arg(stats.mean, 0, 'g', 6)
-        .arg(stats.stddev, 0, 'g', 6)
-        .arg(unit)
-        .arg(stats.median, 0, 'g', 6);
+        .arg(number(stats.minimum) + unit)
+        .arg(number(stats.maximum) + unit)
+        .arg(number(stats.mean) + unit)
+        .arg(number(stats.median) + unit)
+        .arg(number(stats.stddev) + unit);
 }
 
 QLabel* statsLabel(QWidget* parent) {
