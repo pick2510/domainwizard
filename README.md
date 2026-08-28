@@ -1,82 +1,72 @@
 # WRF Tools
 
-A standalone (no QGIS required) native C++20/Qt6/GDAL WRF/WPS tool with
-three tabs on one shared map: **Domains**, for defining nested model
-domains (dragged and resized directly on the map, or edited numerically)
-and importing/exporting `namelist.wps`; **View**, for opening WRF/WPS
-NetCDF files (`geo_em*`, `met_em*`, `wrfinput*`, `wrfout*` - including a
-multi-select of several same-domain files from a split-per-timestep run,
-auto-combined into one file with a single time axis) *and* raw WPS_GEOG
-binary static-data directories (e.g. `topo_gmted2010_30s`), drawing a
-configurable stack of colored raster layers - one per (variable, time
-step, vertical level, colormap, unit, opacity, interpolate-on-display)
-selection - over the same basemap, so terrain/land-use/meteorology can be
-checked against where the domains were actually configured; and
-**Convert**, for GeoTIFF <-> WPS geogrid binary conversion. A colorbar for
-the selected layer (with configurable tick count/number format) is drawn
-directly on the map as a movable, resizable overlay; a known-categorical
-variable (`LU_INDEX`, `IVGTYP`, soil-type fields, ...) auto-selects a
-discrete swatch-per-class legend instead of a gradient, using the file's
-own WRF `LANDUSE.TBL`/`MODIFIED_IGBP_MODIS_NOAH` colors where available. An
-optional, independently movable info overlay ("Show Info Overlay" in the
-Colorbar box) shows the selected layer's variable, unit, and current time
-as one label. For a multi-timestep layer, Previous/Next buttons step
-through timesteps one at a time (wrapping at either end), a Play button
-loops through them automatically at a configurable interval, and the info
-overlay's timestamp updates alongside. An optional north arrow ("Show North
-Arrow" in the View box) marks the fixed up-is-north orientation, and hovering
-anywhere over the map shows a small readout of the topmost visible layer's
-pixel value under the cursor alongside its lon/lat (falling back to just the
-coordinates where no raster covers that point) - the hover readout is
-transient UI chrome and is left out of exported images. The whole map view -
-basemap, layers, outlines, legend, north arrow - can
-be exported as a PNG/JPEG via `File > Export Map Image...`. The app
-follows the OS's light/dark theme automatically, with a manual
-`Options > Theme` override.
+A standalone, native C++20/Qt6/GDAL desktop app for working with WRF/WPS
+files - no QGIS, no Chromium/QWebEngine, no third-party map library
+required.
 
-Deliberately lightweight: no QGIS, no Chromium/QWebEngine, no third-party
-map/web library. The map is a small hand-rolled XYZ tile widget
-(`tile_map_widget.hpp`/`.cpp`) built on Qt Widgets alone, with support for
-both vector overlays (domain outlines) and raster overlays (View-tab
-layers) drawn in independent, z-ordered groups so the Domains and View
-tabs can update their own overlays without disturbing each other's. Domain
-geometry, CRS handling, and namelist I/O are built directly on GDAL/OGR/OSR
-(`crs.hpp`/`.cpp`, `domain.hpp`/`.cpp`, `wps_namelist.hpp`/`.cpp`);
-colormaps (`colormaps.hpp`/`.cpp`, including a categorical mode and a
-`jet` map) are small fixed-stop LUTs; unit conversion (`units.hpp`/`.cpp`,
-e.g. K -> degC, m/s -> knots, Pa -> hPa, m -> ft, mm -> in) is a small
-explicit table, not a general unit-parsing library.
+## Features
 
-## Setup
+Five tabs; Domains, View, and Reproject share one map widget, LCZ and
+Convert are plain file-in/file-out forms.
 
-Linux, macOS, and Windows are all supported (developed on Linux; built and
-tested on macOS/Windows too, via CI - see [Packaging](#packaging) below).
+- **Domains** - define nested model domains by dragging/resizing directly
+  on the map or editing numerically, with `namelist.wps` import/export.
+- **View** - open WRF/WPS NetCDF files (`geo_em*`, `met_em*`, `wrfinput*`,
+  `wrfout*`, including multi-file series auto-combined into one time axis)
+  and raw WPS_GEOG binary datasets, and draw a configurable stack of
+  colored raster layers over the basemap. Includes a movable colorbar,
+  categorical legends (`LU_INDEX`, `IVGTYP`, soil type, ...), timestep
+  playback, a north arrow, a pixel-value/lon-lat hover readout, and
+  PNG/JPEG map export.
+- **Reproject** - convert wrfout files into plain CF-1.7 NetCDF on a
+  regular grid in a chosen EPSG, for tools like QGIS, xarray/rioxarray, or
+  CDO that don't understand WRF's native grid. Optionally crop to an AOI
+  rectangle drawn on the map. Runs in a separate worker process so the GUI
+  stays responsive.
+- **LCZ** - applies Local Climate Zone urban-canopy parameters to a
+  `geo_em` file from an LCZ classification GeoTIFF, for use with WRF's
+  urban physics options.
+- **Convert** - GeoTIFF <-> WPS geogrid binary conversion.
 
-On Debian/Ubuntu install the native development dependencies (`libtiff`/
-`libgeotiff` come in as transitive dependencies of `libgdal-dev`, so
-they're not listed explicitly):
+The app follows the OS's light/dark theme automatically (`Options > Theme`
+for a manual override).
 
-```
+## Installation
+
+Download the latest portable build for your platform from the
+[Releases](../../releases) page - no installation needed, just extract and
+run.
+
+## Building from source
+
+**Dependencies**
+
+Debian/Ubuntu:
+
+```sh
 sudo apt install cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev catch2
 ```
 
-On macOS with Homebrew:
+macOS (Homebrew):
 
-```
+```sh
 brew install cmake ninja qt gdal proj catch2
 ```
 
-On Windows, inside an MSYS2 MINGW64 shell:
+Windows (inside an MSYS2 MINGW64 shell):
 
-```
+```sh
 pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja \
   mingw-w64-x86_64-qt6-base mingw-w64-x86_64-gdal mingw-w64-x86_64-proj \
   mingw-w64-x86_64-libtiff mingw-w64-x86_64-libgeotiff mingw-w64-x86_64-catch
 ```
 
-## Run
+> GDAL >= 3.9 is required (for `exportToCF1`, used by the Reproject tab).
+> On Ubuntu's stock apt (GDAL 3.8.4), add the `ubuntugis-unstable` PPA first.
 
-```
+**Build and run**
+
+```sh
 cmake -S . -B build-cpp -G Ninja -DCMAKE_BUILD_TYPE=Debug
 # On macOS, also pass -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
 cmake --build build-cpp
@@ -86,164 +76,102 @@ ctest --test-dir build-cpp --output-on-failure
 
 ## Packaging
 
-Every push/PR builds, tests, and packages the app on Linux, macOS, and
-Windows via GitHub Actions (`.github/workflows/cpp.yml`), and uploads the
-portable `wrftools-linux`/`wrftools-macos`/`wrftools-windows` bundles as
-downloadable workflow artifacts - no local build needed just to try it.
+Every push/PR builds, tests, and packages the app for Linux, macOS, and
+Windows via GitHub Actions, uploading portable bundles as workflow
+artifacts. Tagged `v*` pushes publish a GitHub Release with all three
+attached.
 
-To build a portable bundle locally instead:
+To build a portable bundle locally:
 
-```
+```sh
 ./build-portable-cpp.sh      # Linux -> dist/wrftools-cpp/
 ./build-portable-macos.sh    # macOS -> dist/wrftools.app, dist/wrftools-macos.zip
 ./build-portable-windows.sh  # Windows (MSYS2 MINGW64 shell) -> dist/wrftools-windows/, dist/wrftools-windows.zip
 ```
 
-`build-portable-cpp.sh` (`cmake/bundle_linux.cmake`) builds Release and
-bundles the executable, its full shared-library closure
-(`file(GET_RUNTIME_DEPENDENCIES)`, including the Qt `platforms`/`tls`/
-`imageformats` plugins resolved via a second pass since they're dlopen'd),
-and GDAL/PROJ's data files, then `patchelf --set-rpath`s everything to
-`$ORIGIN`-relative paths - self-contained aside from libc/libstdc++/the
-dynamic loader, which stay tied to a comparably-recent-or-newer glibc than
-the build machine's. Requires `patchelf` (`apt install patchelf`).
+Each script bundles the app plus the `wrftools_reproject_worker` helper
+and GDAL/PROJ data files into a self-contained, relocatable directory:
 
-`build-portable-macos.sh` builds Release and bundles the app via Qt's own
-`macdeployqt` (Qt frameworks/plugins) followed by `dylibbundler`
-(everything else non-system: GDAL, PROJ, and their own transitive deps),
-then copies GDAL/PROJ's data directories into `Contents/share/{gdal,proj}`
-beside the executable so no `GDAL_DATA`/`PROJ_DATA` environment setup is
-needed at run time. Requires `dylibbundler` (`brew install dylibbundler`).
-
-`build-portable-windows.sh` builds Release and bundles the exe via Qt's own
-`windeployqt` (Qt DLLs/plugins/MinGW runtime) followed by a hand-rolled
-`ldd` dependency-closure walk for everything else non-system (GDAL, PROJ,
-libtiff, libgeotiff, and their own transitive deps), then copies GDAL/
-PROJ's data directories into `share/{gdal,proj}` beside `bin/wrftools.exe`.
-Must run inside an MSYS2 MINGW64 shell.
-
-The target Linux machine still needs the base graphics stack essentially
-every Linux desktop already has (`libgl1`/`libegl1` or equivalent) - GL/EGL
-libraries are deliberately *not* bundled, since they're tied to the actual
-GPU driver in use; a bundled generic copy would be wrong on the target
-machine, not just redundant.
+| Platform | Tool used | Notes |
+|---|---|---|
+| Linux | `cmake/bundle_linux.cmake` + `patchelf` | Full shared-library closure via `file(GET_RUNTIME_DEPENDENCIES)`, rewritten to `$ORIGIN`-relative RPATHs. Needs a comparably-recent-or-newer glibc than the build machine, and the target's own GL/EGL stack (not bundled - tied to the GPU driver). |
+| macOS | `macdeployqt` + `dylibbundler` | Qt frameworks/plugins, then everything else (GDAL, PROJ, transitive deps). |
+| Windows | `windeployqt` + hand-rolled `ldd` walk | Must run inside an MSYS2 MINGW64 shell. |
 
 ## Project layout
 
-- `src/main.cpp` - entry point: GDAL data-directory discovery (so a
-  portable bundle finds its own bundled `GDAL_DATA`/`PROJ_DATA` instead of
-  a system install) and `MainWindow` construction.
-- `src/main_window.cpp` - the top-level window: the Domains/View/
-  Convert tab set sharing one `TileMapWidget`, `File > Export Map Image`,
-  and the `Options > Theme` (System/Light/Dark) menu.
-- `src/tile_map_widget.cpp` - the map widget: Web Mercator tile math,
-  async tile fetch with an on-disk cache, mouse pan/zoom, named z-ordered
-  raster/vector overlay groups, drag-to-move/resize handling for both
-  domain outlines and the colorbar/info overlays, and `exportImage()`.
-- `src/domain_form.cpp` - the Domains tab: an editable domain tree
-  (siblings supported, not just a linear chain), namelist import/export,
-  and wiring domain edits (including on-map drag/resize) into
-  `domain_overlay.cpp`'s outlines.
-- `src/domain_overlay.cpp` - turns a domain tree's bboxes into
-  densified, projected-then-reprojected-to-lon/lat outline polygons for
-  the map widget, so curved projections like Lambert Conformal render
-  accurately rather than as straight-edged boxes.
-- `src/domain.cpp` - domain bbox/padding/containment math (Lambert,
-  Polar, Mercator, and lon/lat projections) shared by the Domains tab and
-  its tests.
-- `src/crs.cpp` - builds a WRF/WPS coordinate reference system (on
-  WRF's own spherical earth radius, not WGS84) from proj4 strings, with
-  cached coordinate transforms since a naive per-call
-  `OGRCreateCoordinateTransformation` was measurably slow across a whole
-  domain outline's worth of vertices.
-- `src/wps_namelist.cpp` - `namelist.wps` read/write, preserving
-  unknown groups/keys (e.g. `&metgrid`, `&ungrib`, `geog_data_*`) on
-  export rather than dropping them.
-- `src/view_form.cpp` - the View tab: open files/series or a
-  WPS_GEOG binary dataset directory, add/remove/reorder layers, and
-  configure each layer's variable/time/level/colormap/units/opacity/
-  range/interpolate/colorbar-ticks. A categorical variable auto-selects
-  the categorical colormap; playback steps through every timestep on a
-  timer.
-- `src/wrf_file.cpp` - opens a WRF/WPS NetCDF file via GDAL's own
-  netCDF driver (no separate NetCDF library dependency), exposing its
-  variables, geotransform (derived from the staggered U/V coordinate
-  grids, not the mass grid), and CRS; destaggers `U`/`V` by simple
-  adjacent-cell averaging.
-- `src/wrf_series.cpp` - groups several same-domain WRF/WPS files
-  (the common `frames_per_outfile=1` convention) into one time axis
-  spanning all of them, purely from a recognized filename pattern; lazy -
-  only the first file is opened up front, the rest open on first read of
-  one of their own timesteps.
-- `src/wrf_source.cpp` / `src/wps_binary_source.cpp` - the
-  `WrfSource` interface `LayerRenderer` renders against (`WrfFile`,
-  `WrfFileSeries`, or `WpsBinarySource` behind one uniform surface).
-  `wps_binary_source.cpp` reads a raw WPS_GEOG binary dataset directory
-  (an `index` file plus numbered tile files - the format `geogrid.exe`
-  itself reads/writes) directly, including real-world edge cases like
-  0..360 longitude datasets, tile-alignment padding beyond the true
-  global extent, and an explicit `row_order` key - something the
-  original Python implementation never visualized at all.
-- `src/layer_renderer.cpp` / `src/raster_layer.cpp` /
-  `src/warp.cpp` - the View tab's layer model and its two-tier
-  render/cache pipeline: an open-file registry, a byte-bounded cache of
-  warped (EPSG:3857) arrays (`warp.cpp`, via an in-memory `GDALWarp`,
-  output-size-capped so a very high-resolution global raster warps in a
-  bounded amount of time near the poles instead of unboundedly), and a
-  count-bounded cache of colormapped images.
-- `src/colormaps.cpp` - fixed-stop named color LUTs (viridis, plasma,
-  magma, cividis, coolwarm, terrain, greys, jet) plus a categorical LUT
-  (real WRF landuse/soil-type class colors where the scheme is known,
-  falling back to a deterministic 8-color cycle otherwise).
-- `src/units.cpp` - a small explicit unit-conversion table (K ->
-  degC/degF, m/s -> km/h/knots/mph, Pa -> hPa/inHg, m -> ft/km, mm -> in)
-  for the View tab's per-layer unit picker.
-- `src/colorbar.cpp` - builds the View tab's on-map colorbar legend:
-  a gradient with a configurable number of evenly spaced ticks (auto/
-  fixed/scientific format) for a continuous layer, or a color-swatch-per-
-  class list for a categorical one.
-- `src/theme.cpp` - OS light/dark theme detection (Qt's own
-  `QStyleHints::colorScheme()` where available, with a GNOME `gsettings`
-  fallback for desktops where that's unreliable) and application, plus
-  the persisted manual `System`/`Light`/`Dark` override.
-- `src/geotiff_convert_form.cpp` - the Convert tab: a Qt GUI over the
-  vendored `convert_geotiff` library (see below).
+```
+src/main.cpp, main_window.cpp   entry point + top-level window/tab set
+src/tile_map_widget.cpp         shared map widget (tiles, overlays, drag/resize)
+src/domain_form.cpp             Domains tab
+src/domain_overlay.cpp          domain bboxes -> on-map outlines
+src/domain.cpp                  domain bbox/padding/containment math
+src/crs.cpp                     WRF/WPS CRS handling
+src/wps_namelist.cpp            namelist.wps read/write
+src/view_form.cpp               View tab
+src/wrf_file.cpp, wrf_series.cpp, wrf_source.cpp, wps_binary_source.cpp
+                                 WRF/WPS/WPS_GEOG file access
+src/layer_renderer.cpp, raster_layer.cpp, warp.cpp
+                                 View tab render/cache pipeline
+src/lcz_form.cpp, lcz.cpp       LCZ tab + pipeline
+src/reproject_form.cpp, reproject.cpp, reproject_worker.cpp
+                                 Reproject tab + out-of-process worker
+src/colormaps.cpp, units.cpp, colorbar.cpp
+                                 color LUTs, unit conversion, legend rendering
+src/theme.cpp                   light/dark theme detection
+src/geotiff_convert_form.cpp    Convert tab (GUI over vendored convert_geotiff)
+```
 
-## Vendored `convert_geotiff`
+The LCZ pipeline runs synchronously on the GUI thread by design, not as an
+oversight: `main.cpp`'s `GDALAllRegister()` thread-affines GDAL/HDF5 state
+to the GUI thread, and running netCDF-C/GDAL from a second thread
+afterward deadlocks on at least one real libhdf5 build (confirmed by
+reproduction). The Reproject tab avoids the same hazard by running in a
+separate process instead.
 
-`src/convert_geotiff/`/`include/convert_geotiff/` is
-[convert_geotiff](https://github.com/jbeezley/convert_geotiff) (public
-domain, by jbeezley), a small, GDAL-free GeoTIFF <-> WPS geogrid binary
-conversion library, vendored unmodified except for its GUI - the original
-FLTK interface was replaced with `GeotiffConvertForm`, marshaling its
-background conversion thread's progress/completion back to the Qt GUI
-thread via `QMetaObject::invokeMethod(..., Qt::QueuedConnection)` instead
-of FLTK's `Fl::lock()`/`Fl::awake()`.
+## Credits and license
 
-The index-file/tile-data reader (`geogrid_index.cpp`, `geogrid_reader.cpp`
-- no TIFF/GEOTIFF dependency) is built as its own `convert_geotiff_reader`
-CMake target so `wrftools_core`'s `WpsBinarySource` (View tab
-visualization) can reuse it without pulling libtiff/libgeotiff into the
-core library; the GeoTIFF read/write code, which does need those, stays in
-`convert_geotiff_lib`, linked only by the GUI for the Convert tab.
+WRF Tools itself is MIT licensed - see [LICENSE](LICENSE).
+
+Parts of it are ported from, or vendor code from, other open-source
+projects:
+
+- **[gis4wrf](https://github.com/GIS4WRF/gis4wrf)** (MIT, (c) D. Meyer and
+  M. Riechert, 2018) - this app's earlier Python/PyQt6 predecessor was
+  built on gis4wrf's core; several pieces of geospatial logic (the WRF
+  sphere CRS construction, WRF landuse/soil-type categorical color tables)
+  are ported from `gis4wrf.core` into this app's C++ implementation.
+- **[w2w](https://github.com/matthiasdemuzere/w2w)** (MIT, (c) Matthias
+  Demuzere, 2021) - the LCZ tab's Stage 2-4 pipeline is a direct port of
+  `w2w.py`/`add_wrf_version`'s `main()`. See `PORT_W2W.MD` for the full
+  function-by-function mapping.
+- **[convert_geotiff](https://github.com/jbeezley/convert_geotiff)**
+  (public domain, by jbeezley) - vendored unmodified in
+  `src/convert_geotiff/`/`include/convert_geotiff/` except for its GUI, where
+  the original FLTK interface was replaced with `GeotiffConvertForm`. The
+  index/tile-data reader (no TIFF/GEOTIFF dependency) is built as a
+  separate `convert_geotiff_reader` target so the View tab's
+  `WpsBinarySource` can reuse it without pulling libtiff/libgeotiff into
+  the core library.
 
 ## Known limitations
 
-- No checked support for antimeridian-crossing or polar *display* domains
-  (a WPS_GEOG raster layer's own global-dataset antimeridian wraparound
-  is handled - see `wps_binary_source.cpp`).
+- No antimeridian-crossing or polar *display* domain support (a WPS_GEOG
+  layer's own antimeridian wraparound is handled).
 - No rotated lat/lon WRF/WPS projection support.
-- No `albers_nad83` WPS_GEOG source projection support (rare in practice;
-  fails with a clear error rather than misreading).
-- Single-file internal times remain index-labelled ("Step N of M") when
-  GDAL cannot expose a file's own `Times` variable; a filename-based
-  multi-file series exposes real timestamps instead, unless any file in
-  it has more than one internal timestep itself.
-- No checkerboard/grid-cell overlay; domain *outlines* are rendered, which
-  is what matters for checking nest placement.
+- No `albers_nad83` WPS_GEOG source projection support.
+- Single-file internal times are index-labelled ("Step N of M") when GDAL
+  can't expose a file's own `Times` variable; multi-file series use real
+  timestamps unless a file in the series has more than one timestep itself.
+- No checkerboard/grid-cell overlay - only domain outlines.
+- A reprojected export drops WRF's own grid attributes, so it no longer
+  opens in this app's own View tab (by design - other tools read the CF
+  grid mapping correctly).
 - Basemap uses OpenStreetMap's standard tile server.
 
+## History
+
 This app was ported from an earlier Python/PyQt6 implementation, since
-removed from the repository; see `PORT.md` for the full porting history
-(the Python source itself is still recoverable from git history before
-this removal, if ever needed).
+removed from the repository; see `PORT.md` and `PORT_W2W.MD` for the full
+porting history (the Python source is still recoverable from git history
+before removal).
