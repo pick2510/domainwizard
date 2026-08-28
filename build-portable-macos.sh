@@ -46,7 +46,11 @@ DIST_DIR=dist
 rm -rf "$BUILD_DIR" "$DIST_DIR"
 
 cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_PREFIX_PATH="$QT_PREFIX"
-cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu)" --target wrftools_cpp
+# wrftools_reproject_worker: the Reproject tab launches this as a separate
+# process at runtime (see reproject_form.hpp) - it has to ship inside the
+# same .app bundle as the main executable, not just get built somewhere
+# under $BUILD_DIR.
+cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu)" --target wrftools_cpp wrftools_reproject_worker
 
 # MACOSX_BUNDLE TRUE (CMakeLists.txt, APPLE-only) plus OUTPUT_NAME "wrftools"
 # together always produce build-portable-macos/wrftools.app - not searched
@@ -62,21 +66,41 @@ mkdir -p "$DIST_DIR"
 cp -R "$APP_BUNDLE" "$DIST_DIR/"
 APP_PATH="$DIST_DIR/wrftools.app"
 
-"$MACDEPLOYQT" "$APP_PATH"
-
 EXECUTABLE="$APP_PATH/Contents/MacOS/wrftools"
 if [ ! -x "$EXECUTABLE" ]; then
   echo "Expected executable not found at $EXECUTABLE" >&2
   exit 1
 fi
 
+# wrftools_reproject_worker (see reproject_form.hpp) has to live right
+# beside the main executable in Contents/MacOS/ - that's where
+# QCoreApplication::applicationDirPath() resolves to at runtime, and where
+# workerExecutablePath() looks for it. Copied in BEFORE macdeployqt runs,
+# below, so its own -executable= pass can fix up this binary's Qt
+# references too, not just the main app's.
+WORKER_EXECUTABLE="$APP_PATH/Contents/MacOS/wrftools_reproject_worker"
+cp "$BUILD_DIR/wrftools_reproject_worker" "$WORKER_EXECUTABLE"
+
+# -executable=: macdeployqt's own documented mechanism for an extra binary
+# inside the bundle beyond the main one (e.g. a helper subprocess) that
+# also links Qt and needs the same Frameworks/ relocation - without it, the
+# worker's Qt6Core reference stays pointed at the build-time Homebrew path.
+"$MACDEPLOYQT" "$APP_PATH" "-executable=$WORKER_EXECUTABLE"
+
 # Bundles every remaining non-system dylib the executable (transitively)
 # needs - GDAL/PROJ and everything under them - that macdeployqt doesn't
 # touch (it only knows about Qt itself). dylibbundler recognizes libraries
 # macdeployqt already relocated onto @rpath/@executable_path and leaves
-# them alone, so running the two back to back is safe.
+# them alone, so running the two back to back is safe. Both binaries point
+# at the same -d/-p destination, so a dependency needed by both (e.g.
+# libproj) is only actually copied once - dylibbundler detects it's already
+# present there on the worker's pass and just rewrites its reference.
 dylibbundler -od -b \
   -x "$EXECUTABLE" \
+  -d "$APP_PATH/Contents/libs" \
+  -p "@executable_path/../libs"
+dylibbundler -od -b \
+  -x "$WORKER_EXECUTABLE" \
   -d "$APP_PATH/Contents/libs" \
   -p "@executable_path/../libs"
 

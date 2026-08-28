@@ -26,6 +26,15 @@ endif()
 if(NOT OUTPUT_DIR)
     message(FATAL_ERROR "Pass -DOUTPUT_DIR=<directory to create the bundle in>")
 endif()
+# The Reproject tab launches this as a separate QProcess at runtime (see
+# reproject_form.hpp's class comment) via QCoreApplication::
+# applicationDirPath(), i.e. it must sit right next to the main binary in
+# the finished bundle's bin/ - not merely be built. WORKER_EXECUTABLE is
+# optional only so this script stays usable for a bare manual invocation;
+# build-portable-cpp.sh always passes it.
+if(WORKER_EXECUTABLE AND NOT EXISTS "${WORKER_EXECUTABLE}")
+    message(FATAL_ERROR "-DWORKER_EXECUTABLE was given but does not exist: ${WORKER_EXECUTABLE}")
+endif()
 
 find_program(PATCHELF_EXECUTABLE patchelf)
 if(NOT PATCHELF_EXECUTABLE)
@@ -55,6 +64,13 @@ file(MAKE_DIRECTORY "${OUTPUT_DIR}/share/proj")
 get_filename_component(EXE_NAME "${EXECUTABLE}" NAME)
 file(COPY "${EXECUTABLE}" DESTINATION "${OUTPUT_DIR}/bin")
 set(BUNDLED_EXE "${OUTPUT_DIR}/bin/${EXE_NAME}")
+
+set(BUNDLED_WORKER_EXE "")
+if(WORKER_EXECUTABLE)
+    get_filename_component(WORKER_EXE_NAME "${WORKER_EXECUTABLE}" NAME)
+    file(COPY "${WORKER_EXECUTABLE}" DESTINATION "${OUTPUT_DIR}/bin")
+    set(BUNDLED_WORKER_EXE "${OUTPUT_DIR}/bin/${WORKER_EXE_NAME}")
+endif()
 
 # --- Locate the Qt plugin directory, from the ACTUAL libQt6Core.so this
 # build links against - not a hardcoded prefix, since a Debian/Ubuntu
@@ -138,7 +154,7 @@ endforeach()
 # FlexiBLAS backend needs its own actual BLAS/LAPACK implementation, e.g.
 # libopenblas, that the dispatch shim alone never references) ---
 file(GET_RUNTIME_DEPENDENCIES
-    EXECUTABLES "${BUNDLED_EXE}"
+    EXECUTABLES "${BUNDLED_EXE}" ${BUNDLED_WORKER_EXE}
     MODULES ${qt_plugin_files} ${flexiblas_backend_files}
     RESOLVED_DEPENDENCIES_VAR resolved_deps
     UNRESOLVED_DEPENDENCIES_VAR unresolved_deps
@@ -238,6 +254,12 @@ endif()
 execute_process(COMMAND "${PATCHELF_EXECUTABLE}" --set-rpath "\$ORIGIN/../lib" "${BUNDLED_EXE}" RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "patchelf failed on ${BUNDLED_EXE}")
+endif()
+if(BUNDLED_WORKER_EXE)
+    execute_process(COMMAND "${PATCHELF_EXECUTABLE}" --set-rpath "\$ORIGIN/../lib" "${BUNDLED_WORKER_EXE}" RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "patchelf failed on ${BUNDLED_WORKER_EXE}")
+    endif()
 endif()
 foreach(lib_name ${bundled_lib_names})
     execute_process(COMMAND "${PATCHELF_EXECUTABLE}" --set-rpath "\$ORIGIN" "${OUTPUT_DIR}/lib/${lib_name}" RESULT_VARIABLE rc)

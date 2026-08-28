@@ -43,21 +43,35 @@ DIST_DIR=dist/wrftools-windows
 rm -rf "$BUILD_DIR" "$DIST_DIR" "dist/wrftools-windows.zip"
 
 cmake -S . -B "$BUILD_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-cmake --build "$BUILD_DIR" -j"$(nproc)" --target wrftools_cpp
+# wrftools_reproject_worker: the Reproject tab launches this as a separate
+# process at runtime (see reproject_form.hpp) - it has to ship in the same
+# bundle as the main app, not just get built somewhere under $BUILD_DIR.
+cmake --build "$BUILD_DIR" -j"$(nproc)" --target wrftools_cpp wrftools_reproject_worker
 
 EXECUTABLE="$BUILD_DIR/wrftools.exe"
 if [ ! -f "$EXECUTABLE" ]; then
   echo "Expected executable not found at $EXECUTABLE" >&2
   exit 1
 fi
+WORKER_EXECUTABLE="$BUILD_DIR/wrftools_reproject_worker.exe"
+if [ ! -f "$WORKER_EXECUTABLE" ]; then
+  echo "Expected executable not found at $WORKER_EXECUTABLE" >&2
+  exit 1
+fi
 
 mkdir -p "$DIST_DIR/bin" "$DIST_DIR/share/gdal" "$DIST_DIR/share/proj"
 cp "$EXECUTABLE" "$DIST_DIR/bin/"
+cp "$WORKER_EXECUTABLE" "$DIST_DIR/bin/"
 
 # Deploys Qt's own DLLs (Core/Gui/Widgets/Network/...), the platform/image-
 # format plugins, and the MinGW runtime DLLs (libgcc_s_seh, libstdc++,
 # libwinpthread) it detects this is a MinGW build needs, all alongside the
-# exe.
+# exe. Only run against wrftools.exe, not the worker too - Windows resolves
+# DLLs by searching the exe's own directory, and the worker sits right next
+# to it in the same bin/ (unlike macOS's install-name-based linking, where
+# each Mach-O binary carries its own reference paths and needs its own
+# fixup pass), so whatever Qt DLL subset the worker needs (just Qt6Core) is
+# already satisfied by this one deployment.
 "$WINDEPLOYQT" --no-translations "$DIST_DIR/bin/wrftools.exe"
 
 # windeployqt only resolves Qt's own dependency graph - GDAL/PROJ/libtiff/
@@ -67,7 +81,7 @@ cp "$EXECUTABLE" "$DIST_DIR/bin/"
 # base-Windows system DLL, which `ldd` resolves to C:\Windows\...) that the
 # exe or an already-collected DLL links against.
 declare -A collected
-queue=("$DIST_DIR/bin/wrftools.exe")
+queue=("$DIST_DIR/bin/wrftools.exe" "$DIST_DIR/bin/wrftools_reproject_worker.exe")
 while IFS= read -r -d '' file; do queue+=("$file"); done < <(find "$DIST_DIR/bin" -maxdepth 1 -iname "*.dll" -print0)
 while [ "${#queue[@]}" -gt 0 ]; do
   current="${queue[0]}"

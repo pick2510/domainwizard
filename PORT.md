@@ -827,6 +827,48 @@ hold all the logic in `wrftools_core`, independent of Qt.
   and 240s (`cpp.yml`'s Windows `ctest --timeout`, which also turned out to
   need genuinely more room than 120s or even 180s for the unrelated real
   LCZ-pipeline test, independent of this bug, once actually measured).
+- **Follow-up (2026-08-28): the portable-bundle scripts never actually
+  shipped the Reproject worker**, reported by a user running the packaged
+  Linux build: "Reproject worker executable not found:
+  `.../bin/wrftools_reproject_worker`". All three of `build-portable-cpp.sh`
+  (Linux), `build-portable-macos.sh`, `build-portable-windows.sh` only ever
+  built and bundled the `wrftools_cpp` target - `wrftools_reproject_worker`
+  was added to `CMakeLists.txt`'s `install()` rule when the Reproject tab
+  first landed, but none of these three scripts use `cmake --install`
+  (`install()` only matters for a system package manager install, not these
+  scripts' own from-scratch dependency-closure bundling), so it was silent
+  dead code from day one - never caught because every local/CI verification
+  of the feature ran the worker straight from the build directory, never
+  from a packaged bundle. Fixed on all three platforms, each with its own
+  mechanics:
+  - **Linux** (`cmake/bundle_linux.cmake`): new optional `-DWORKER_EXECUTABLE=`
+    parameter, copied into the same `bin/` as the main executable,
+    included in the `file(GET_RUNTIME_DEPENDENCIES ...)` closure alongside
+    it (so any dependency it needs that the GUI app doesn't gets bundled
+    too), and patchelf'd onto the same `$ORIGIN/../lib` RPATH.
+  - **macOS** (`build-portable-macos.sh`): copied into `Contents/MacOS/`
+    *before* `macdeployqt` runs, then passed to it via `-executable=` -
+    Qt's own documented mechanism for an extra Qt-linked binary inside the
+    same bundle - so its Qt6Core reference gets relocated onto the same
+    already-deployed `Contents/Frameworks/` rather than staying pointed at
+    the build-time Homebrew path; `dylibbundler` then runs a second time
+    against it (same `-d`/`-p` destination as the main executable, so a
+    dependency both need, e.g. `libproj`, is bundled once and just
+    referenced twice) for GDAL/PROJ's own libraries, which `macdeployqt`
+    doesn't touch.
+  - **Windows** (`build-portable-windows.sh`): copied into `bin/` alongside
+    `wrftools.exe`; `windeployqt` only needs to run once (unlike macOS,
+    Windows resolves DLLs by searching the loading exe's own directory, not
+    a reference baked into the binary, so the worker automatically picks up
+    whatever Qt DLLs `windeployqt` already deployed there for the main
+    app); the hand-rolled `ldd`-based GDAL/PROJ closure walk's initial
+    queue now seeds from both executables, not just `wrftools.exe`.
+  Verified locally end-to-end on Linux (the platform available to verify
+  directly): built the portable bundle, confirmed the worker binary is
+  present with a resolving RPATH and no unresolved shared libraries
+  (`ldd`), and ran it directly against a real job file - it warped and
+  wrote a real fixture, matching what `wrftools_ui_tests`'s own end-to-end
+  case already exercises against the un-packaged build.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

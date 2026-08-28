@@ -51,9 +51,12 @@ if [ -z "$QT6_CMAKE_DIR" ]; then
 fi
 
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DQt6_DIR="$QT6_CMAKE_DIR"
-cmake --build "$BUILD_DIR" -j"$(nproc)" --target wrftools_cpp
+# wrftools_reproject_worker: the Reproject tab launches this as a separate
+# process at runtime (see reproject_form.hpp) - it has to ship in the same
+# bundle as the main app, not just get built somewhere under $BUILD_DIR.
+cmake --build "$BUILD_DIR" -j"$(nproc)" --target wrftools_cpp wrftools_reproject_worker
 
-cmake -DEXECUTABLE="$BUILD_DIR/wrftools" -DOUTPUT_DIR="$DIST_DIR" -P cmake/bundle_linux.cmake
+cmake -DEXECUTABLE="$BUILD_DIR/wrftools" -DWORKER_EXECUTABLE="$BUILD_DIR/wrftools_reproject_worker" -DOUTPUT_DIR="$DIST_DIR" -P cmake/bundle_linux.cmake
 
 echo
 echo "Built: $DIST_DIR ($(du -sh "$DIST_DIR" | cut -f1))"
