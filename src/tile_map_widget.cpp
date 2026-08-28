@@ -352,6 +352,7 @@ void TileMapWidget::paintEvent(QPaintEvent*) {
     for (const auto& key : vectorKeys) for (const auto& overlay : vectorGroups_[key].overlays) {
         if (overlay.points.size() < 2) continue;
         const auto path = overlayPath(overlay, topLeft);
+        if (overlay.closed && overlay.fill.alpha() > 0) painter.fillPath(path, overlay.fill);
         painter.setPen(QPen(overlay.color, overlay.width));
         painter.drawPath(path);
     }

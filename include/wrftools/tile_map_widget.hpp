@@ -47,7 +47,11 @@ struct TileProvider {
 // setOverlayResizeHandlers) computed from its own authoritative bounds,
 // rather than this widget trying to infer "corners" from an arbitrary,
 // densified ring.
-struct VectorOverlay { std::vector<LonLat> points; QColor color{Qt::red}; double width{2.0}; bool closed{false}; std::vector<LonLat> handles{}; };
+// fill is transparent (alpha 0) by default, matching every existing caller
+// (domain/AOI outlines were stroke-only until the Reproject tab's shaded
+// domain footprint needed a filled polygon too) - only closed overlays with
+// a non-transparent fill are actually filled (see paintEvent).
+struct VectorOverlay { std::vector<LonLat> points; QColor color{Qt::red}; double width{2.0}; bool closed{false}; std::vector<LonLat> handles{}; QColor fill{Qt::transparent}; };
 // image is already reprojected to EPSG:3857 (see warp.hpp) - bounds3857 is
 // therefore a pure scale+translate placement, never a stretch/skew of the
 // source grid, unlike the old lon/lat-corner placement this replaced.

@@ -1581,7 +1581,8 @@ TEST_CASE("a full LCZ run against the real Zaragoza sample domain produces every
 }
 
 TEST_CASE("ReprojectForm defaults: EPSG 4326, bilinear resampling, merge checked, no variables") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     CHECK(form.epsgField()->text() == "4326");
     REQUIRE(form.resamplingCombo()->count() == 4);
     CHECK(form.resamplingCombo()->currentText() == "Bilinear");
@@ -1592,7 +1593,8 @@ TEST_CASE("ReprojectForm defaults: EPSG 4326, bilinear resampling, merge checked
 }
 
 TEST_CASE("ReprojectForm::setInputPaths populates the variable list from a real wrfout, sorted, with units shown") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     REQUIRE(form.variablesList()->count() > 0);
     QStringList names;
@@ -1606,7 +1608,8 @@ TEST_CASE("ReprojectForm::setInputPaths populates the variable list from a real 
 }
 
 TEST_CASE("ReprojectForm::setInputPaths preserves prior check state by name when the input selection changes") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     for (int i = 0; i < form.variablesList()->count(); ++i)
         if (form.variablesList()->item(i)->data(Qt::UserRole).toString() == "T2") form.variablesList()->item(i)->setCheckState(Qt::Checked);
@@ -1618,20 +1621,126 @@ TEST_CASE("ReprojectForm::setInputPaths preserves prior check state by name when
     CHECK(foundChecked);
 }
 
+TEST_CASE("loading a real wrfout draws a shaded domain footprint and a matching AOI rectangle on the map") {
+    TileMapWidget map;
+    ReprojectForm form(&map);
+    CHECK_FALSE(map.hasVectorOverlayGroup("reproject-domain"));
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+
+    REQUIRE(map.hasVectorOverlayGroup("reproject-domain"));
+    CHECK(map.vectorOverlayGroupSize("reproject-domain") == 1);
+    REQUIRE(map.hasVectorOverlayGroup("reproject-aoi"));
+    CHECK(map.vectorOverlayGroupSize("reproject-aoi") == 1);
+
+    REQUIRE(form.domainBoundsLonLat().has_value());
+    REQUIRE(form.aoiBoundsLonLat().has_value());
+    const auto& domain = *form.domainBoundsLonLat();
+    const auto& aoi = *form.aoiBoundsLonLat();
+    CHECK(domain.maxX > domain.minX);
+    CHECK(domain.maxY > domain.minY);
+    // No crop until the user actually drags/resizes the AOI - it starts out
+    // matching the domain footprint exactly, and the Extent fields stay
+    // "auto".
+    CHECK(aoi.minX == Catch::Approx(domain.minX));
+    CHECK(aoi.minY == Catch::Approx(domain.minY));
+    CHECK(aoi.maxX == Catch::Approx(domain.maxX));
+    CHECK(aoi.maxY == Catch::Approx(domain.maxY));
+    CHECK(form.extentMinXField()->text().isEmpty());
+    CHECK(form.extentMaxYField()->text().isEmpty());
+
+    // Clearing the input selection clears both overlays again.
+    form.setInputPaths({});
+    CHECK_FALSE(map.hasVectorOverlayGroup("reproject-domain"));
+    CHECK_FALSE(map.hasVectorOverlayGroup("reproject-aoi"));
+}
+
+TEST_CASE("dragging the AOI rectangle's NE corner handle crops it and writes the target-CRS extent fields") {
+    TileMapWidget map;
+    map.resize(400, 300);
+    ReprojectForm form(&map);
+    form.show();
+    // Only the active tab's AOI overlay is drag/resize-enabled on the
+    // shared map - mirrors DomainForm's own active-gating, and matches how
+    // MainWindow actually wires ReprojectForm::setActive to the tab bar.
+    form.setActive(true);
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    REQUIRE(form.domainBoundsLonLat().has_value());
+    const auto domain = *form.domainBoundsLonLat();
+
+    // Center the map exactly on the AOI's NE handle (maxX/maxY) at a high
+    // zoom, so its screen position is simply the widget's own center pixel -
+    // avoids hand-deriving the Mercator pixel math for this fixture's real
+    // (and otherwise arbitrary) Hong Kong coordinates, unlike the
+    // DomainForm resize tests above which hardcode it for a fixed lon=0/
+    // lat=0 case.
+    map.setCenter(domain.maxX, domain.maxY, 10);
+    map.grab();
+    const QPointF neHandle(map.width() / 2.0, map.height() / 2.0);
+    press(map, neHandle);
+    CHECK(map.dragTarget() == "overlay-resize");
+    move(map, neHandle + QPointF(-30, 30));  // toward the SW anchor: shrink inward
+    // The Extent fields update live, mid-drag, like DomainForm's own fields do.
+    CHECK_FALSE(form.extentMaxXField()->text().isEmpty());
+    release(map, neHandle + QPointF(-30, 30));
+    CHECK(map.dragTarget().isEmpty());
+
+    REQUIRE(form.aoiBoundsLonLat().has_value());
+    const auto aoi = *form.aoiBoundsLonLat();
+    CHECK(aoi.maxX < domain.maxX);
+    CHECK(aoi.maxY < domain.maxY);
+    CHECK(aoi.minX == Catch::Approx(domain.minX));
+    CHECK(aoi.minY == Catch::Approx(domain.minY));
+
+    // Extent fields are in the target CRS (still EPSG:4326/degrees here) -
+    // min stays at the untouched SW anchor, max moved in with the handle.
+    CHECK(form.extentMinXField()->text().toDouble() == Catch::Approx(domain.minX));
+    CHECK(form.extentMinYField()->text().toDouble() == Catch::Approx(domain.minY));
+    CHECK(form.extentMaxXField()->text().toDouble() == Catch::Approx(aoi.maxX));
+    CHECK(form.extentMaxYField()->text().toDouble() == Catch::Approx(aoi.maxY));
+
+    // Resetting reverts the rectangle to the full domain and clears the
+    // fields back to "auto".
+    form.resetAoiButton()->click();
+    REQUIRE(form.aoiBoundsLonLat().has_value());
+    CHECK(form.aoiBoundsLonLat()->maxX == Catch::Approx(domain.maxX));
+    CHECK(form.extentMaxXField()->text().isEmpty());
+    CHECK(form.extentMinXField()->text().isEmpty());
+}
+
+TEST_CASE("the AOI rectangle is not draggable while another tab owns the map") {
+    TileMapWidget map;
+    map.resize(400, 300);
+    ReprojectForm form(&map);
+    form.show();
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    REQUIRE(form.domainBoundsLonLat().has_value());
+    // form.setActive(true) deliberately not called - mirrors a fresh
+    // ReprojectForm sitting on an inactive tab (active_ defaults false).
+
+    map.setCenter(form.domainBoundsLonLat()->maxX, form.domainBoundsLonLat()->maxY, 10);
+    map.grab();
+    const QPointF neHandle(map.width() / 2.0, map.height() / 2.0);
+    press(map, neHandle);
+    CHECK(map.dragTarget().isEmpty());  // panned, not resized
+}
+
 TEST_CASE("running reprojection with no input files throws UserError") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     CHECK_THROWS_AS(form.runReproject(), UserError);
     CHECK_FALSE(form.isRunning());
 }
 
 TEST_CASE("running reprojection with inputs but no checked variables throws UserError") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     CHECK_THROWS_AS(form.runReproject(), UserError);
 }
 
 TEST_CASE("an unparseable EPSG code throws UserError before anything is launched") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     form.variablesList()->item(0)->setCheckState(Qt::Checked);
     form.epsgField()->setText("not-a-number");
@@ -1640,7 +1749,8 @@ TEST_CASE("an unparseable EPSG code throws UserError before anything is launched
 }
 
 TEST_CASE("a negative pixel size throws UserError") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     form.variablesList()->item(0)->setCheckState(Qt::Checked);
     form.pixelSizeXField()->setText("-1");
@@ -1648,7 +1758,8 @@ TEST_CASE("a negative pixel size throws UserError") {
 }
 
 TEST_CASE("no output directory throws UserError") {
-    ReprojectForm form;
+    TileMapWidget map;
+    ReprojectForm form(&map);
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     form.variablesList()->item(0)->setCheckState(Qt::Checked);
     CHECK_THROWS_AS(form.runReproject(), UserError);
@@ -1658,7 +1769,9 @@ TEST_CASE("a full reprojection run against real fixtures writes a merged output 
     QTemporaryDir outputDir;
     REQUIRE(outputDir.isValid());
 
-    ReprojectForm form;
+    TileMapWidget map;
+
+    ReprojectForm form(&map);
     form.setInputPaths({
         QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string()),
         QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_30_00.nc").string()),

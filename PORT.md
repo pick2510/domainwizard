@@ -643,6 +643,53 @@ hold all the logic in `wrftools_core`, independent of Qt.
   tab's own `sizeHint` (LCZ and Reproject both land around 440-442px) plus
   the scroll area's frame/scrollbar reservation, verified by re-running the
   same offscreen probe until no tab showed a horizontal scrollbar.
+- **Follow-up (2026-08-28): map-drawn Area of Interest, cropping the
+  reprojection.** `ReprojectForm` now takes the shared `TileMapWidget*`
+  (constructor signature changed, `ReprojectForm(TileMapWidget*, QWidget*)`,
+  matching `DomainForm`/`ViewForm`) instead of being map-independent. Loading
+  a wrfout file or series draws its footprint - `WrfFile::geographicBounds()`,
+  the same real WGS84 extent already used by the datum-shift fix above - as a
+  lightly shaded, filled rectangle on the map (a new `VectorOverlay::fill`
+  field, transparent by default so no existing caller/overlay changes
+  appearance; `TileMapWidget::paintEvent` now fills a closed overlay's path
+  before stroking it, same order as the legend/info boxes). A second
+  rectangle, initially matching the domain exactly, sits on top with corner
+  handles: dragging a handle resizes it (anchored on the diagonally opposite
+  corner, exactly `DomainForm`'s own resize convention - see
+  `kOppositeCorner` in `reproject_form.cpp`, deliberately mirroring
+  `domain_overlay.cpp`'s identical `kOppositeOf`), and dragging its body
+  moves it - reusing `TileMapWidget`'s existing drag/resize-handler and
+  corner-handle machinery wholesale rather than adding a new "rubber-band
+  draw" interaction mode. No new core logic was needed for the actual
+  cropping: `GridOverride::extent` (target-CRS bounds) already existed and
+  `computeDestinationGrid`/`runReproject` already restrict the destination
+  raster to it, so GDAL's warp naturally only computes pixels inside the
+  selection - the AOI rectangle is purely a visual way to fill the existing
+  Extent min/max fields, not a separate code path. Every drag/resize move
+  re-derives those fields via `Crs::wgs84().transformBbox(aoiBounds,
+  targetCrs)` (`targetCrs` built from `describeTargetCrs(epsg).wkt`, so it
+  tracks whatever EPSG the user has typed, including a change mid-edit via
+  the field's `editingFinished`); a "Reset area of interest to full domain"
+  button clears them back to "auto" rather than writing the rectangle's own
+  coordinates, since GDAL's suggested grid for the untouched full domain is
+  generally tighter than this rectangle's plain WGS84 bounding box.
+  Manually typing the Extent fields still works exactly as before - the
+  rectangle is a convenience on top of them, not a replacement.
+  One correctness fix was needed to make any of this safe: `MainWindow`'s
+  `QTabWidget::currentChanged` handler compared `tabs->widget(index)`
+  against the raw form pointers (`domainForm`, and the new `reprojectForm`),
+  but every tab is actually added via `scrollWrap(form)` - `tabs->widget()`
+  returns the wrapping `QScrollArea`, never the form itself, so that
+  comparison was always false. Latent before this change (its only visible
+  effect was `DomainForm::setActive(true)` never actually firing from a tab
+  switch, silently relying on that class's own `active_{true}` default
+  member value matching the Domains tab's initial selection), it became
+  load-bearing once a second form needed the same one-drag-handler-slot-per-
+  map arbitration - `TileMapWidget` stores a single set of drag/resize
+  callbacks, not one per group, so `DomainForm` and `ReprojectForm` must each
+  re-claim it in their own `setActive(true)` (both now do) and the tab
+  bar must actually tell them which one that is. Fixed by comparing against
+  the `QScrollArea*` returned from each `scrollWrap()` call instead.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

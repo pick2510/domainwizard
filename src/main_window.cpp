@@ -54,15 +54,27 @@ MainWindow::MainWindow() {
     tabs->setMinimumWidth(460);
     map_ = new TileMapWidget;
     auto* domainForm = new DomainForm(map_);
-    tabs->addTab(scrollWrap(domainForm), "Domains");
+    auto* domainScroll = scrollWrap(domainForm);
+    tabs->addTab(domainScroll, "Domains");
     tabs->addTab(scrollWrap(new ViewForm(map_)), "View");
     tabs->addTab(scrollWrap(new GeotiffConvertForm), "Convert");
     tabs->addTab(scrollWrap(new LczForm), "LCZ");
-    tabs->addTab(scrollWrap(new ReprojectForm), "Reproject");
-    // Only the active tab's redraw should recenter the shared map - without
-    // this, e.g. every Domains-tab field edit would yank the camera back
-    // while the user is looking at View-tab raster layers.
-    connect(tabs, &QTabWidget::currentChanged, this, [domainForm, tabs](int index) { domainForm->setActive(tabs->widget(index) == domainForm); });
+    auto* reprojectForm = new ReprojectForm(map_);
+    auto* reprojectScroll = scrollWrap(reprojectForm);
+    tabs->addTab(reprojectScroll, "Reproject");
+    // Only the active tab's redraw should recenter the shared map, and only
+    // the active tab's overlay group should be drag/resize-enabled on it -
+    // without this, e.g. every Domains-tab field edit would yank the camera
+    // back while the user is looking at View-tab raster layers, or a drag
+    // meant for the Reproject tab's AOI rectangle would move a domain
+    // outline sitting underneath it instead (or vice versa). Compared
+    // against the scroll-wrapping widget actually added to the tab bar
+    // (tabs->widget(index)), not the form itself - addTab was given
+    // scrollWrap(form), never form directly.
+    connect(tabs, &QTabWidget::currentChanged, this, [domainForm, domainScroll, reprojectForm, reprojectScroll, tabs](int index) {
+        domainForm->setActive(tabs->widget(index) == domainScroll);
+        reprojectForm->setActive(tabs->widget(index) == reprojectScroll);
+    });
     auto* splitter = new QSplitter;
     splitter->addWidget(tabs);
     splitter->addWidget(map_);

@@ -2,6 +2,7 @@
 
 #include "wrftools/error.hpp"
 #include "wrftools/reproject.hpp"
+#include "wrftools/tile_map_widget.hpp"
 #include "wrftools/warp.hpp"
 #include "wrftools/wrf_file.hpp"
 #include "wrftools/wrf_series.hpp"
@@ -31,6 +32,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cmath>
 #include <limits>
@@ -39,6 +41,30 @@
 
 namespace wrftools {
 namespace {
+
+// Handle order SW, SE, NE, NW, matching TileMapWidget::setOverlayResizeHandlers'
+// documented order (and domain_overlay.cpp's identical convention) - the
+// anchor for a resize is the diagonally opposite corner, two positions
+// further around this list.
+constexpr std::array<int, 4> kOppositeCorner{2, 3, 0, 1};
+
+std::array<LonLat, 4> cornersOf(const Bounds2D& b) {
+    return {{{b.minX, b.minY}, {b.maxX, b.minY}, {b.maxX, b.maxY}, {b.minX, b.maxY}}};
+}
+
+// A closed, filled-and-stroked rectangle overlay for `bounds` (already
+// lon/lat, so - unlike domain_overlay.cpp's densifiedRing - no projection
+// or curvature to account for: a WGS84 axis-aligned box is already a
+// straight-edged rectangle in this widget's own lon/lat display space).
+// `handles` non-empty makes it draggable/resizable once its group is
+// marked as such (see setActive).
+VectorOverlay rectOverlay(const Bounds2D& bounds, QColor stroke, QColor fill, bool withHandles) {
+    const auto c = cornersOf(bounds);
+    std::vector<LonLat> ring{c[0], c[1], c[2], c[3], c[0]};
+    std::vector<LonLat> handles;
+    if (withHandles) handles.assign(c.begin(), c.end());
+    return VectorOverlay{std::move(ring), stroke, 2.0, /*closed=*/true, std::move(handles), fill};
+}
 
 double parseOptionalDouble(const QLineEdit& field, const QString& label) {
     const auto text = field.text().trimmed();
@@ -59,7 +85,7 @@ QString workerExecutablePath() {
 
 }  // namespace
 
-ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
+ReprojectForm::ReprojectForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(map) {
     auto* layout = new QVBoxLayout(this);
 
     auto* inputGroup = new QGroupBox("Input files", this);
@@ -128,6 +154,14 @@ ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
     extentMaxRowLayout->addWidget(new QLabel("Y", this));
     extentMaxRowLayout->addWidget(extentMaxY_);
     crsForm->addRow("Extent max", extentMaxRow);
+
+    // Draw the domain footprint on the shared map and let the user shrink
+    // it to an Area of Interest by dragging the rectangle's corner handles
+    // (or its body, to move it) - see updateMapOverlays/onAoi*. This just
+    // writes into the same Extent min/max fields above, so it's a
+    // convenience on top of typing them in by hand, not a separate path.
+    resetAoiButton_ = new QPushButton("Reset area of interest to full domain", this);
+    crsForm->addRow("", resetAoiButton_);
 
     crsGroup->setLayout(crsForm);
     layout->addWidget(crsGroup);
@@ -218,6 +252,11 @@ ReprojectForm::ReprojectForm(QWidget* parent) : QWidget(parent) {
         for (int i = 0; i < variables_->count(); ++i)
             if (!variables_->item(i)->isHidden()) variables_->item(i)->setCheckState(Qt::Unchecked);
     });
+    connect(resetAoiButton_, &QPushButton::clicked, this, [this] { resetAoiToFullDomain(); });
+    // The Extent fields are in the TARGET CRS, so a changed EPSG makes the
+    // previously-written values wrong even though the AOI rectangle itself
+    // (in lon/lat) hasn't moved - re-derive them from the same rectangle.
+    connect(epsg_, &QLineEdit::editingFinished, this, [this] { applyAoiToExtentFields(); });
 }
 
 ReprojectForm::~ReprojectForm() {
@@ -225,6 +264,11 @@ ReprojectForm::~ReprojectForm() {
         worker_->kill();
         worker_->waitForFinished(1000);
     }
+    // Mirrors ViewForm's own hover-handler cleanup: the map outlives this
+    // form (it's a member of MainWindow, constructed first), so a later
+    // drag on whatever overlay happens to occupy this group afterward must
+    // not land in a destroyed form's callbacks.
+    if (map_ && map_->draggableVectorOverlayGroup() == "reproject-aoi") map_->setDraggableVectorOverlayGroup({});
 }
 
 void ReprojectForm::setInputPaths(const QStringList& paths) {
@@ -251,7 +295,11 @@ void ReprojectForm::refreshVariables() {
     variables_->clear();
     structureLabel_->clear();
 
-    if (inputPaths_.isEmpty()) return;
+    if (inputPaths_.isEmpty()) {
+        domainBoundsLonLat_.reset();
+        updateMapOverlays();
+        return;
+    }
     std::vector<std::filesystem::path> paths;
     for (const auto& path : inputPaths_) paths.emplace_back(path.toStdString());
 
@@ -263,6 +311,10 @@ void ReprojectForm::refreshVariables() {
             structureLabel_->setText(QString("%1 unrelated file(s) - not a series").arg(paths.size()));
 
         WrfFile file(paths.front());
+        const auto& bounds = file.geographicBounds();
+        domainBoundsLonLat_ = Bounds2D{bounds.west, bounds.south, bounds.east, bounds.north};
+        resetAoiToFullDomain();  // also redraws the domain/AOI overlays
+        if (map_) map_->zoomToBounds({bounds.west, bounds.south}, {bounds.east, bounds.north});
         for (const auto& variable : file.variables()) {
             const auto name = QString::fromStdString(variable.name);
             QString label = name;
@@ -276,6 +328,8 @@ void ReprojectForm::refreshVariables() {
             item->setCheckState(previous != previousChecks.end() ? previous->second : Qt::Unchecked);
         }
     } catch (const std::exception& error) {
+        domainBoundsLonLat_.reset();
+        updateMapOverlays();
         logLine("Could not read input file(s): " + QString::fromUtf8(error.what()));
     }
 }
@@ -436,5 +490,114 @@ void ReprojectForm::handleWorkerFinished(int exitCode, int exitStatus) {
         logLine("Reprojection complete.");
     }
 }
+
+void ReprojectForm::setActive(bool active) {
+    active_ = active;
+    if (!map_) return;
+    if (active_) {
+        // (Re-)claim the map's single drag/resize handler slot every time
+        // this tab becomes active - it's shared with DomainForm's own
+        // domain-outline dragging, so whichever tab last did this "owns"
+        // it; gating this on active_ (rather than registering once in the
+        // constructor) is what keeps the two from clobbering each other,
+        // regardless of construction or tab-switch order.
+        map_->setOverlayDragHandlers(
+            [this](std::size_t index, LonLat lonLat) { onAoiDragStart(index, lonLat); },
+            [this](std::size_t index, LonLat lonLat) { onAoiDragMove(index, lonLat); },
+            [this] { onAoiDragEnd(); });
+        map_->setOverlayResizeHandlers(
+            [this](std::size_t index, std::size_t handle, LonLat lonLat) { onAoiResizeStart(index, handle, lonLat); },
+            [this](std::size_t index, std::size_t handle, LonLat lonLat) { onAoiResizeMove(index, handle, lonLat); },
+            [this] { onAoiResizeEnd(); });
+    }
+    map_->setDraggableVectorOverlayGroup(active_ ? "reproject-aoi" : QString());
+}
+
+void ReprojectForm::updateMapOverlays() {
+    if (!map_) return;
+    if (!domainBoundsLonLat_) {
+        map_->clearVectorOverlayGroup("reproject-domain");
+        map_->clearVectorOverlayGroup("reproject-aoi");
+        return;
+    }
+    // Domain footprint: a slightly shaded fill so it reads as "the area
+    // covered by these files" against the basemap, not draggable (no
+    // handles, and it never sits in the draggable group).
+    map_->setVectorOverlayGroup(
+        "reproject-domain", {rectOverlay(*domainBoundsLonLat_, QColor(33, 150, 243, 200), QColor(33, 150, 243, 40), false)}, kVectorOverlayZ);
+    // AOI: drawn on top (z+1) with corner handles, so it's always visible
+    // and grabbable even where it exactly overlaps the full domain outline.
+    const auto& aoi = aoiBoundsLonLat_.value_or(*domainBoundsLonLat_);
+    map_->setVectorOverlayGroup(
+        "reproject-aoi", {rectOverlay(aoi, QColor(245, 124, 0, 220), QColor(245, 124, 0, 60), true)}, kVectorOverlayZ + 1);
+}
+
+void ReprojectForm::resetAoiToFullDomain() {
+    aoiOverridden_ = false;
+    aoiBoundsLonLat_ = domainBoundsLonLat_;
+    // Untouched fields mean "auto" (GDAL's own suggested grid) - a subtly
+    // different, and generally tighter/more accurate, extent than this
+    // rectangle's plain WGS84 bounding box would give, so a reset clears
+    // them rather than writing the box's coordinates into them.
+    extentMinX_->clear();
+    extentMinY_->clear();
+    extentMaxX_->clear();
+    extentMaxY_->clear();
+    updateMapOverlays();
+}
+
+void ReprojectForm::applyAoiToExtentFields() {
+    if (!aoiOverridden_ || !aoiBoundsLonLat_) return;
+    try {
+        bool epsgOk = false;
+        const int epsg = epsg_->text().toInt(&epsgOk);
+        if (!epsgOk || epsg <= 0) return;  // leave fields as-is; Run will report the bad EPSG
+        const auto target = Crs::fromWkt(describeTargetCrs(epsg).wkt);
+        const auto targetBounds = Crs::wgs84().transformBbox(*aoiBoundsLonLat_, target);
+        extentMinX_->setText(QString::number(targetBounds.minX, 'f', 6));
+        extentMinY_->setText(QString::number(targetBounds.minY, 'f', 6));
+        extentMaxX_->setText(QString::number(targetBounds.maxX, 'f', 6));
+        extentMaxY_->setText(QString::number(targetBounds.maxY, 'f', 6));
+    } catch (const std::exception&) {
+        // EPSG not (yet) resolvable while the user is mid-edit - nothing to
+        // do here; runReproject()'s own EPSG validation reports it.
+    }
+}
+
+void ReprojectForm::onAoiDragStart(std::size_t, LonLat pressLonLat) {
+    if (!domainBoundsLonLat_) return;
+    aoiDrag_ = AoiDragState{pressLonLat, aoiBoundsLonLat_.value_or(*domainBoundsLonLat_)};
+}
+
+void ReprojectForm::onAoiDragMove(std::size_t, LonLat currentLonLat) {
+    if (!aoiDrag_) return;
+    const double deltaLon = currentLonLat.lon - aoiDrag_->pressLonLat.lon;
+    const double deltaLat = currentLonLat.lat - aoiDrag_->pressLonLat.lat;
+    const auto& start = aoiDrag_->startBounds;
+    aoiBoundsLonLat_ = Bounds2D{start.minX + deltaLon, start.minY + deltaLat, start.maxX + deltaLon, start.maxY + deltaLat};
+    aoiOverridden_ = true;
+    updateMapOverlays();
+    applyAoiToExtentFields();
+}
+
+void ReprojectForm::onAoiDragEnd() { aoiDrag_.reset(); }
+
+void ReprojectForm::onAoiResizeStart(std::size_t, std::size_t handleIndex, LonLat) {
+    if (handleIndex >= kOppositeCorner.size() || !domainBoundsLonLat_) return;
+    const auto corners = cornersOf(aoiBoundsLonLat_.value_or(*domainBoundsLonLat_));
+    aoiResize_ = AoiResizeState{corners[static_cast<std::size_t>(kOppositeCorner[handleIndex])]};
+}
+
+void ReprojectForm::onAoiResizeMove(std::size_t, std::size_t, LonLat currentLonLat) {
+    if (!aoiResize_) return;
+    const auto& anchor = aoiResize_->anchor;
+    aoiBoundsLonLat_ = Bounds2D{std::min(anchor.lon, currentLonLat.lon), std::min(anchor.lat, currentLonLat.lat), std::max(anchor.lon, currentLonLat.lon),
+        std::max(anchor.lat, currentLonLat.lat)};
+    aoiOverridden_ = true;
+    updateMapOverlays();
+    applyAoiToExtentFields();
+}
+
+void ReprojectForm::onAoiResizeEnd() { aoiResize_.reset(); }
 
 }  // namespace wrftools

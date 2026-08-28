@@ -1,6 +1,9 @@
 #pragma once
 
+#include "wrftools/crs.hpp"
+
 #include <atomic>
+#include <optional>
 #include <QWidget>
 
 class QCheckBox;
@@ -14,6 +17,8 @@ class QProgressBar;
 class QPushButton;
 
 namespace wrftools {
+
+class TileMapWidget;
 
 // The "Reproject" tab: reprojects a single wrfout/geo_em file, or a whole
 // wrfout series, to an arbitrary EPSG code as CF-1.7 NetCDF (see
@@ -38,8 +43,17 @@ namespace wrftools {
 // the form and starting the process; it does not block.
 class ReprojectForm final : public QWidget {
 public:
-    explicit ReprojectForm(QWidget* parent = nullptr);
+    // map is shared with every other tab (Domains/View/...), same pattern
+    // as DomainForm/ViewForm - see setActive.
+    explicit ReprojectForm(TileMapWidget* map, QWidget* parent = nullptr);
     ~ReprojectForm() override;
+
+    // Gates whether this tab's Area-of-Interest rectangle is the map's
+    // currently drag/resize-enabled overlay - called from MainWindow's
+    // QTabWidget::currentChanged, mirroring DomainForm::setActive. Without
+    // this, whichever tab constructed last would permanently own the map's
+    // drag/resize handlers regardless of which tab is actually showing.
+    void setActive(bool active);
 
     // Bypass the file pickers, mirroring LczForm's setLczFile/setWrfFile -
     // so tests can drive the form without a QFileDialog.
@@ -63,6 +77,10 @@ public:
     [[nodiscard]] QLineEdit* epsgField() const noexcept { return epsg_; }
     [[nodiscard]] QLineEdit* pixelSizeXField() const noexcept { return pixelSizeX_; }
     [[nodiscard]] QLineEdit* pixelSizeYField() const noexcept { return pixelSizeY_; }
+    [[nodiscard]] QLineEdit* extentMinXField() const noexcept { return extentMinX_; }
+    [[nodiscard]] QLineEdit* extentMinYField() const noexcept { return extentMinY_; }
+    [[nodiscard]] QLineEdit* extentMaxXField() const noexcept { return extentMaxX_; }
+    [[nodiscard]] QLineEdit* extentMaxYField() const noexcept { return extentMaxY_; }
     [[nodiscard]] QListWidget* variablesList() const noexcept { return variables_; }
     [[nodiscard]] QComboBox* resamplingCombo() const noexcept { return resampling_; }
     [[nodiscard]] QCheckBox* mergeSeriesCheck() const noexcept { return mergeSeries_; }
@@ -73,6 +91,9 @@ public:
     [[nodiscard]] QProgressBar* progressBar() const noexcept { return progress_; }
     [[nodiscard]] QPlainTextEdit* logView() const noexcept { return log_; }
     [[nodiscard]] QListWidget* resultsList() const noexcept { return results_; }
+    [[nodiscard]] QPushButton* resetAoiButton() const noexcept { return resetAoiButton_; }
+    [[nodiscard]] const std::optional<Bounds2D>& domainBoundsLonLat() const noexcept { return domainBoundsLonLat_; }
+    [[nodiscard]] const std::optional<Bounds2D>& aoiBoundsLonLat() const noexcept { return aoiBoundsLonLat_; }
 
 private:
     void startReprojectFromSignal();
@@ -84,6 +105,40 @@ private:
     void cancel();
     void handleWorkerOutput();
     void handleWorkerFinished(int exitCode, int exitStatus);
+
+    // Draws the shaded domain footprint ("reproject-domain") and the
+    // draggable/resizable AOI rectangle ("reproject-aoi") from
+    // domainBoundsLonLat_/aoiBoundsLonLat_ - called after every change to
+    // either.
+    void updateMapOverlays();
+    // Clears any user crop: AOI reverts to the full domain footprint and
+    // the extent fields go back to "auto" (empty).
+    void resetAoiToFullDomain();
+    // Re-derives the Extent min/max fields (in the TARGET CRS) from
+    // aoiBoundsLonLat_ - called after every AOI drag/resize move and
+    // whenever the target EPSG changes, since the fields' units depend on
+    // it. A no-op until the user has actually dragged/resized the AOI at
+    // least once (aoiOverridden_), so a plain EPSG edit on a freshly loaded
+    // file doesn't silently populate "auto" fields with the domain's own
+    // coarse WGS84 bounding box.
+    void applyAoiToExtentFields();
+    void onAoiDragStart(std::size_t overlayIndex, LonLat pressLonLat);
+    void onAoiDragMove(std::size_t overlayIndex, LonLat currentLonLat);
+    void onAoiDragEnd();
+    void onAoiResizeStart(std::size_t overlayIndex, std::size_t handleIndex, LonLat pressLonLat);
+    void onAoiResizeMove(std::size_t overlayIndex, std::size_t handleIndex, LonLat currentLonLat);
+    void onAoiResizeEnd();
+
+    TileMapWidget* map_{};
+    bool active_{false};
+    std::optional<Bounds2D> domainBoundsLonLat_;
+    std::optional<Bounds2D> aoiBoundsLonLat_;
+    bool aoiOverridden_{false};
+    struct AoiDragState { LonLat pressLonLat; Bounds2D startBounds; };
+    std::optional<AoiDragState> aoiDrag_;
+    struct AoiResizeState { LonLat anchor; };
+    std::optional<AoiResizeState> aoiResize_;
+    QPushButton* resetAoiButton_{};
 
     QLineEdit* inputSummary_{};
     QPushButton* browseInputsButton_{};
