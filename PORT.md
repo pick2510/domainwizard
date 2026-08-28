@@ -690,6 +690,23 @@ hold all the logic in `wrftools_core`, independent of Qt.
   re-claim it in their own `setActive(true)` (both now do) and the tab
   bar must actually tell them which one that is. Fixed by comparing against
   the `QScrollArea*` returned from each `scrollWrap()` call instead.
+- **Follow-up (2026-08-28): the AOI rectangle can only crop the domain, never
+  extend past it** - there's no data out there to crop, so letting the
+  rectangle stray outside the footprint would silently ask GDAL for a grid
+  extent partly outside the source raster (harmless in itself - the warp
+  just leaves those cells NaN/fill-valued - but pointless and confusing to
+  offer). `onAoiResizeMove` now clamps the dragged corner itself into the
+  domain bounds (`clampToDomain`, plain `std::clamp` per axis) before
+  computing the new min/max, so a corner handle simply stops at the domain
+  edge instead of pulling the rectangle past it - the anchor corner is
+  always already inside the domain (an invariant `aoiBoundsLonLat_` never
+  violates), so clamping just the moving corner is sufficient for an
+  axis-aligned box. Body drags need a different clamp
+  (`clampRectToDomain`): clamping each corner of the translated rectangle
+  independently would shrink/distort it, so instead the *translation* is
+  clamped - shifted back just enough that the whole rectangle re-enters the
+  domain, preserving its size - a wall the rectangle stops against rather
+  than a rubber band that snaps its shape.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

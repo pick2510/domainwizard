@@ -66,6 +66,35 @@ VectorOverlay rectOverlay(const Bounds2D& bounds, QColor stroke, QColor fill, bo
     return VectorOverlay{std::move(ring), stroke, 2.0, /*closed=*/true, std::move(handles), fill};
 }
 
+// The AOI can only crop the domain, never extend past it - the file simply
+// has no values out there. Used by both the resize handles (clamp the
+// dragged corner itself, before it ever reaches the min/max below) and the
+// body drag (clamp the point under the cursor, then re-derive the whole
+// rectangle from it - see onAoiDragMove).
+LonLat clampToDomain(LonLat point, const Bounds2D& domain) {
+    return {std::clamp(point.lon, domain.minX, domain.maxX), std::clamp(point.lat, domain.minY, domain.maxY)};
+}
+
+// Same idea for a body drag, which translates the whole rectangle rather
+// than moving one corner - clamping each corner independently would distort
+// its size, so instead clamp the *translation* itself, then (belt and
+// braces, since the AOI is never wider/taller than the domain to begin
+// with) clamp the result too.
+Bounds2D clampRectToDomain(Bounds2D rect, const Bounds2D& domain) {
+    double shiftX = 0.0, shiftY = 0.0;
+    if (rect.minX < domain.minX) shiftX = domain.minX - rect.minX;
+    else if (rect.maxX > domain.maxX) shiftX = domain.maxX - rect.maxX;
+    if (rect.minY < domain.minY) shiftY = domain.minY - rect.minY;
+    else if (rect.maxY > domain.maxY) shiftY = domain.maxY - rect.maxY;
+    rect.minX += shiftX; rect.maxX += shiftX;
+    rect.minY += shiftY; rect.maxY += shiftY;
+    rect.minX = std::clamp(rect.minX, domain.minX, domain.maxX);
+    rect.maxX = std::clamp(rect.maxX, domain.minX, domain.maxX);
+    rect.minY = std::clamp(rect.minY, domain.minY, domain.maxY);
+    rect.maxY = std::clamp(rect.maxY, domain.minY, domain.maxY);
+    return rect;
+}
+
 double parseOptionalDouble(const QLineEdit& field, const QString& label) {
     const auto text = field.text().trimmed();
     if (text.isEmpty()) return std::numeric_limits<double>::quiet_NaN();
@@ -570,11 +599,12 @@ void ReprojectForm::onAoiDragStart(std::size_t, LonLat pressLonLat) {
 }
 
 void ReprojectForm::onAoiDragMove(std::size_t, LonLat currentLonLat) {
-    if (!aoiDrag_) return;
+    if (!aoiDrag_ || !domainBoundsLonLat_) return;
     const double deltaLon = currentLonLat.lon - aoiDrag_->pressLonLat.lon;
     const double deltaLat = currentLonLat.lat - aoiDrag_->pressLonLat.lat;
     const auto& start = aoiDrag_->startBounds;
-    aoiBoundsLonLat_ = Bounds2D{start.minX + deltaLon, start.minY + deltaLat, start.maxX + deltaLon, start.maxY + deltaLat};
+    const Bounds2D moved{start.minX + deltaLon, start.minY + deltaLat, start.maxX + deltaLon, start.maxY + deltaLat};
+    aoiBoundsLonLat_ = clampRectToDomain(moved, *domainBoundsLonLat_);
     aoiOverridden_ = true;
     updateMapOverlays();
     applyAoiToExtentFields();
@@ -589,10 +619,11 @@ void ReprojectForm::onAoiResizeStart(std::size_t, std::size_t handleIndex, LonLa
 }
 
 void ReprojectForm::onAoiResizeMove(std::size_t, std::size_t, LonLat currentLonLat) {
-    if (!aoiResize_) return;
-    const auto& anchor = aoiResize_->anchor;
-    aoiBoundsLonLat_ = Bounds2D{std::min(anchor.lon, currentLonLat.lon), std::min(anchor.lat, currentLonLat.lat), std::max(anchor.lon, currentLonLat.lon),
-        std::max(anchor.lat, currentLonLat.lat)};
+    if (!aoiResize_ || !domainBoundsLonLat_) return;
+    const auto& anchor = aoiResize_->anchor;  // already inside the domain - see onAoiResizeStart
+    const auto point = clampToDomain(currentLonLat, *domainBoundsLonLat_);
+    aoiBoundsLonLat_ = Bounds2D{
+        std::min(anchor.lon, point.lon), std::min(anchor.lat, point.lat), std::max(anchor.lon, point.lon), std::max(anchor.lat, point.lat)};
     aoiOverridden_ = true;
     updateMapOverlays();
     applyAoiToExtentFields();

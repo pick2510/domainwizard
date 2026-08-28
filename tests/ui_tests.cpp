@@ -1707,6 +1707,60 @@ TEST_CASE("dragging the AOI rectangle's NE corner handle crops it and writes the
     CHECK(form.extentMinXField()->text().isEmpty());
 }
 
+TEST_CASE("the AOI rectangle cannot be resized or dragged past the domain's own footprint") {
+    TileMapWidget map;
+    map.resize(400, 300);
+    ReprojectForm form(&map);
+    form.show();
+    form.setActive(true);
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    REQUIRE(form.domainBoundsLonLat().has_value());
+    const auto domain = *form.domainBoundsLonLat();
+
+    // Try to drag the NE handle far past the domain's own NE corner.
+    map.setCenter(domain.maxX, domain.maxY, 10);
+    map.grab();
+    const QPointF neHandle(map.width() / 2.0, map.height() / 2.0);
+    press(map, neHandle);
+    move(map, neHandle + QPointF(300, -300));  // way outside the domain to the NE
+    release(map, neHandle + QPointF(300, -300));
+
+    REQUIRE(form.aoiBoundsLonLat().has_value());
+    // Clamped to the domain's own NE corner, not wherever the cursor ended up.
+    CHECK(form.aoiBoundsLonLat()->maxX == Catch::Approx(domain.maxX));
+    CHECK(form.aoiBoundsLonLat()->maxY == Catch::Approx(domain.maxY));
+
+    // Now shrink the AOI away from the SW corner, then try to drag the
+    // whole (now smaller) rectangle's body far past the domain's SW corner.
+    map.setCenter(domain.minX, domain.minY, 10);
+    map.grab();
+    const QPointF swHandle(map.width() / 2.0, map.height() / 2.0);
+    press(map, swHandle);
+    move(map, swHandle + QPointF(40, -40));  // shrink inward first
+    release(map, swHandle + QPointF(40, -40));
+    const auto shrunk = *form.aoiBoundsLonLat();
+    REQUIRE(shrunk.minX > domain.minX);
+    REQUIRE(shrunk.minY > domain.minY);
+    const double width = shrunk.maxX - shrunk.minX;
+    const double height = shrunk.maxY - shrunk.minY;
+
+    map.setCenter((shrunk.minX + shrunk.maxX) / 2.0, (shrunk.minY + shrunk.maxY) / 2.0, 10);
+    map.grab();
+    const QPointF bodyCenter(map.width() / 2.0, map.height() / 2.0);
+    press(map, bodyCenter);
+    CHECK(map.dragTarget() == "overlay");
+    move(map, bodyCenter + QPointF(-400, 400));  // drag far past the SW corner
+    release(map, bodyCenter + QPointF(-400, 400));
+
+    REQUIRE(form.aoiBoundsLonLat().has_value());
+    const auto draggedOut = *form.aoiBoundsLonLat();
+    CHECK(draggedOut.minX == Catch::Approx(domain.minX));
+    CHECK(draggedOut.minY == Catch::Approx(domain.minY));
+    // Still the same size - clamped by translation, not resized.
+    CHECK(draggedOut.maxX - draggedOut.minX == Catch::Approx(width));
+    CHECK(draggedOut.maxY - draggedOut.minY == Catch::Approx(height));
+}
+
 TEST_CASE("the AOI rectangle is not draggable while another tab owns the map") {
     TileMapWidget map;
     map.resize(400, 300);
