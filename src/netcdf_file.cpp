@@ -4,6 +4,7 @@
 #include <netcdf.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -11,6 +12,29 @@
 
 namespace wrftools {
 namespace {
+
+// HDF5 (which every netCDF-4 file goes through under the hood) can hang
+// indefinitely in nc_close - not just run slowly - while trying to acquire/
+// release its optional SWMR-related file lock on certain filesystems;
+// confirmed on GitHub Actions' own Windows runners (a real end user's
+// network-mounted storage is the same class of risk), where a Reproject-tab
+// export of a merged, chunked+deflate-compressed, growable-time-dimension
+// output hung at exactly that point for minutes regardless of how long the
+// caller was willing to wait, while an otherwise-identical fixed-size,
+// uncompressed write closed instantly - HDF5_USE_FILE_LOCKING=FALSE is the
+// HDF Group's own documented workaround. Set once, here, before the first
+// file this class ever touches is opened or created - rather than in only
+// one entry point (the Reproject worker, GUI main(), or a test binary) -
+// so every caller of this class is covered, and only if the environment
+// doesn't already carry an explicit value, so a caller/deployment that
+// actually wants file locking can still opt back in.
+void disableHdf5FileLockingIfUnset() {
+#ifdef _WIN32
+    if (std::getenv("HDF5_USE_FILE_LOCKING") == nullptr) _putenv_s("HDF5_USE_FILE_LOCKING", "FALSE");
+#else
+    setenv("HDF5_USE_FILE_LOCKING", "FALSE", 0);
+#endif
+}
 
 void checkNc(int status, const std::string& what) {
     if (status != NC_NOERR) throw UserError("NetCDF error (" + what + "): " + nc_strerror(status));
@@ -95,12 +119,14 @@ void copyVariableData(int srcNcid, int srcVarid, NetcdfFile::NcType type, const 
 NetcdfFile::NetcdfFile(int ncid, std::filesystem::path path, Mode mode) : ncid_(ncid), path_(std::move(path)), mode_(mode) {}
 
 NetcdfFile NetcdfFile::open(const std::filesystem::path& path, Mode mode) {
+    disableHdf5FileLockingIfUnset();
     int ncid = -1;
     checkNc(nc_open(path.string().c_str(), mode == Mode::ReadWrite ? NC_WRITE : NC_NOWRITE, &ncid), "nc_open " + path.string());
     return NetcdfFile(ncid, path, mode);
 }
 
 NetcdfFile NetcdfFile::create(const std::filesystem::path& path, Format format) {
+    disableHdf5FileLockingIfUnset();
     int createMode = NC_CLOBBER;
     switch (format) {
         case Format::Netcdf4: createMode |= NC_NETCDF4; break;

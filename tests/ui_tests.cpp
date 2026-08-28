@@ -92,25 +92,15 @@ void waitWhileRunning(LczForm& form) {
 // Same idea, for ReprojectForm - unlike the two above, this one's "worker"
 // is a genuinely separate QProcess (see reproject_form.hpp's class comment
 // for why), so isRunning() only goes false once that process's `finished`
-// signal has been delivered through the event loop.
-//
-// TEMPORARY DIAGNOSTIC (2026-08-28): on Windows CI this test hangs inside
-// the worker's final out.close() (a plain nc_close()) - the captured
-// progress log shows all 3 real timesteps already written before it goes
-// quiet, so the expensive GDAL work is done; something after that never
-// returns. Two prior fixes (raising this from 30s to 90s; excluding
-// $env:TEMP and the worker/test executables from Windows Defender) made no
-// observable difference - same hang, same spot, both times - which argues
-// against "just slow I/O" or AV interference and for a genuine deadlock in
-// the MinGW-built netCDF/HDF5 write path (chunked + deflate-compressed
-// variable on an unlimited dimension is the prime suspect). Bumped way up
-// once, deliberately, to settle which it is: if this passes, it really was
-// just slow and the timeout should come back down to something sane with a
-// root cause noted; if it still fails identically, that confirms a true
-// hang and this deadline stops being the right fix at all. See cpp.yml's
-// Test (Windows) step, raised alongside this for the same reason.
+// signal has been delivered through the event loop. 60s covers process
+// spawn + fresh DLL load on a cold Windows CI runner plus three real GDAL
+// warps - previously this hung indefinitely on Windows regardless of how
+// long the wait was (confirmed at 300s), which turned out to be HDF5's
+// file-locking hang in nc_close (see netcdf_file.cpp's
+// disableHdf5FileLockingIfUnset), not a matter of needing more time; this
+// deadline is just the ordinary "something went actually wrong" backstop.
 void waitWhileRunning(ReprojectForm& form) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
     QCoreApplication::processEvents();
 }

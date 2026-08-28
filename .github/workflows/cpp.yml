@@ -139,11 +139,13 @@ jobs:
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        # 420, temporarily: matches ui_tests.cpp's own diagnostic bump of
-        # waitWhileRunning(ReprojectForm&) to 300s - see that comment. Not a
-        # steady-state value; revisit once that diagnostic run answers
-        # whether the Windows hang there is real slowness or a true deadlock.
-        run: ctest --test-dir build-cpp --output-on-failure --timeout 420
+        # 180, not 120: Windows CI is measurably slower for process-spawn +
+        # DLL-load-heavy tests (the whole wrftools_ui_tests binary, one
+        # add_test() rather than per-case catch_discover_tests, measured at
+        # ~115s there even before the Reproject worker's own subprocess
+        # test could actually complete - see netcdf_file.cpp's
+        # disableHdf5FileLockingIfUnset for what was actually wrong).
+        run: ctest --test-dir build-cpp --output-on-failure --timeout 180
       # Packaged separately from the Debug build/test above (its own fresh
       # Release, BUILD_TESTING=OFF configure+build) - only reached once
       # tests have actually passed, matching what build-portable-cpp.sh/

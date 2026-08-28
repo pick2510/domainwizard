@@ -780,6 +780,32 @@ hold all the logic in `wrftools_core`, independent of Qt.
   class of Windows-runner-only stall. Fixed by adding `$env:TEMP` to
   `cpp.yml`'s existing Defender-exclusion step, plus the worker and test
   executables themselves to `ExclusionProcess` as a second layer.
+  Neither of those actually fixed it, though - confirmed by a deliberate
+  one-off diagnostic (`waitWhileRunning(ReprojectForm&)` bumped to 300s,
+  `cpp.yml`'s Windows `ctest --timeout` to 420 to match): the test still
+  hung identically, now measured at the full 300s, settling that this was
+  never a matter of needing more time. The real cause: HDF5 (which every
+  netCDF-4 file goes through) can hang indefinitely - not just run slowly -
+  in `nc_close` while acquiring/releasing an optional SWMR-related file
+  lock on certain filesystems, a documented issue on exactly this kind of
+  environment (GitHub Actions' Windows runners; a real end user's
+  network-mounted storage is the same class of risk). It only showed up
+  here and not in the three plain `NetcdfFile` tests fixed just above
+  because those write a small, fixed-size, uncompressed variable - this is
+  the only path in the whole test suite that closes a chunked,
+  deflate-compressed variable on a genuinely *growable* (unlimited) time
+  dimension, which is exactly the kind of close HDF5's locking handshake
+  costs the most. Fixed with the HDF Group's own documented workaround,
+  `HDF5_USE_FILE_LOCKING=FALSE` - not set only for this one test or only on
+  Windows, but centrally in `NetcdfFile::open`/`create`
+  (`disableHdf5FileLockingIfUnset` in `netcdf_file.cpp`, a no-op if the
+  environment already sets the variable explicitly), so every entry point
+  that goes through this class - the GUI app, the Reproject worker, the
+  test binaries - is covered without each having to remember it
+  individually, and so a real Windows user hitting the same thing against
+  their own network storage is covered too, not just CI. The earlier
+  diagnostic's 300s/420s were reverted back down to a sane 60s/180s once
+  this landed.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 
