@@ -13,6 +13,7 @@
 #include "wrftools/wrf_source.hpp"
 #include "wrftools/netcdf_file.hpp"
 #include "wrftools/lcz.hpp"
+#include "wrftools/reproject.hpp"
 #include "fast_exit.hpp"
 
 #include <netcdf.h>
@@ -33,6 +34,7 @@
 #include <sstream>
 
 #include <gdal_priv.h>
+#include <ogr_spatialref.h>
 
 using namespace wrftools;
 
@@ -2118,4 +2120,364 @@ TEST_CASE("checksAndCleaning rejects an unsupported original NUM_LAND_CAT") {
     const auto ucpTable = loadUcpTable("resources/lcz_ucp_lookup.csv");
     CHECK_THROWS_AS(checksAndCleaning(inputs, ucpTable), UserError);
     std::filesystem::remove(dst);
+}
+
+// ---- Reproject tab (see PORT.md) ----
+//
+// Fixtures under tests/fixtures/reproject/ are carved (via `ncks`, not
+// synthesized) from a real production run - three consecutive half-hourly
+// files from /mnt/DC550/HONGKONG/results/PERIOD16_new, a WRF 4.7.1 Mercator
+// domain over Hong Kong (250 m DX/DY) - trimmed to a handful of variables
+// and vertical levels to keep them small while keeping real geometry,
+// attributes, and projection. See the variable list below for why these
+// four were kept: T2 (plain 2D), LU_INDEX (categorical 2D), U (X-staggered
+// 3D on bottom_top), W (Z-staggered 3D on bottom_top_stag - the
+// destaggering case), TSLB (3D on soil_layers_stag - the "stag" in the name
+// that must NOT be destaggered).
+namespace {
+std::filesystem::path reprojectOutputDir(const std::string& suffix) {
+    const auto dir = std::filesystem::temp_directory_path() / ("wrftools-cpp-reproject-" + suffix);
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+}  // namespace
+
+TEST_CASE("describeTargetCrs resolves a geographic and a projected EPSG code, and rejects an unknown one") {
+    const auto geographic = describeTargetCrs(4326);
+    CHECK(geographic.isGeographic);
+    CHECK(geographic.xName == "lon");
+    CHECK(geographic.yName == "lat");
+    CHECK(geographic.gridMappingName == "latitude_longitude");
+
+    const auto projected = describeTargetCrs(32650);  // UTM 50N - Hong Kong's own zone
+    CHECK_FALSE(projected.isGeographic);
+    CHECK(projected.xName == "x");
+    CHECK(projected.yName == "y");
+    CHECK(projected.xUnits == "m");
+    CHECK(projected.gridMappingName == "transverse_mercator");
+
+    CHECK_THROWS_AS(describeTargetCrs(999999), UserError);
+}
+
+TEST_CASE("computeDestinationGrid honours pixel size and extent overrides, and rejects a degenerate request") {
+    WrfFile file("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    const auto target = describeTargetCrs(4326);
+    const auto suggested = computeDestinationGrid(file.size()[0], file.size()[1], file.projectionWkt(), file.geotransform(), target, {});
+    CHECK(suggested.width > 0);
+    CHECK(suggested.height > 0);
+
+    GridOverride halved;
+    halved.pixelSizeX = suggested.geotransform[1] * 2.0;
+    halved.pixelSizeY = -suggested.geotransform[5] * 2.0;
+    const auto coarser = computeDestinationGrid(file.size()[0], file.size()[1], file.projectionWkt(), file.geotransform(), target, halved);
+    CHECK(coarser.width < suggested.width);
+    CHECK(coarser.height < suggested.height);
+
+    GridOverride degenerate;
+    degenerate.pixelSizeX = 1e-12;
+    degenerate.pixelSizeY = 1e-12;
+    CHECK_THROWS_AS(computeDestinationGrid(file.size()[0], file.size()[1], file.projectionWkt(), file.geotransform(), target, degenerate), UserError);
+}
+
+TEST_CASE("runReproject writes a CF-1.7 file for a single real wrfout, with a real grid_mapping and no stale WRF projection globals") {
+    const auto dir = reprojectOutputDir("single-file");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.variables = {"T2", "U"};
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    CHECK(out.getAttribute("", "Conventions").text == "CF-1.7");
+    CHECK_FALSE(out.hasAttribute("", "MAP_PROJ"));
+    CHECK(out.hasAttribute("", "WRF_MAP_PROJ"));
+    CHECK(static_cast<int>(out.getAttribute("", "WRF_MAP_PROJ").numbers.at(0)) == 3);  // Mercator, unchanged from the source
+    CHECK(out.getAttribute("", "MMINLU").text == "MODIFIED_IGBP_MODIS_NOAH");  // simulation metadata, carried forward verbatim
+
+    const auto t2 = out.variable("T2");
+    CHECK(t2.dimensionNames == std::vector<std::string>{"time", "lat", "lon"});
+    CHECK(out.getAttribute("T2", "grid_mapping").text == "crs");
+    CHECK(out.getAttribute("T2", "long_name").text == "TEMP at 2 M");
+    CHECK(out.getAttribute("T2", "units").text == "K");
+
+    const auto u = out.variable("U");
+    CHECK(u.dimensionNames == std::vector<std::string>{"time", "bottom_top", "lat", "lon"});
+
+    CHECK(out.getAttribute("crs", "grid_mapping_name").text == "latitude_longitude");
+    CHECK_FALSE(out.getAttribute("crs", "crs_wkt").text.empty());
+
+    // Bilinear resampling cannot invent values outside the source's own
+    // finite range.
+    WrfFile source("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    const auto sourceT2 = source.read("T2", 0, 0);
+    float sourceMin = std::numeric_limits<float>::infinity(), sourceMax = -std::numeric_limits<float>::infinity();
+    for (float v : sourceT2) if (std::isfinite(v)) { sourceMin = std::min(sourceMin, v); sourceMax = std::max(sourceMax, v); }
+    const auto outT2 = out.readFloat("T2");
+    bool sawFinite = false;
+    for (float v : outT2) {
+        if (v > 1e30f) continue;  // WRF fill value
+        sawFinite = true;
+        CHECK(v >= sourceMin - 0.5f);
+        CHECK(v <= sourceMax + 0.5f);
+    }
+    CHECK(sawFinite);
+}
+
+TEST_CASE("runReproject vertically destaggers W onto bottom_top, but leaves soil_layers_stag alone") {
+    const auto dir = reprojectOutputDir("vertical-destagger");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.variables = {"W", "TSLB"};
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+
+    // Source W has bottom_top_stag = 5 levels (see the fixture's own
+    // ncdump); destaggered, it must land on the SAME "bottom_top" dimension
+    // U/T/P already use, one level fewer.
+    CHECK(out.variable("W").dimensionNames == std::vector<std::string>{"time", "bottom_top", "lat", "lon"});
+    const auto bottomTop = out.dimensions();
+    const auto found = std::find_if(bottomTop.begin(), bottomTop.end(), [](const auto& d) { return d.name == "bottom_top"; });
+    REQUIRE(found != bottomTop.end());
+    CHECK(found->length == 4);  // bottom_top_stag(5) - 1
+
+    // soil_layers_stag keeps its own name and length unchanged - the
+    // "_stag" in its name is WRF naming convention (soil-layer midpoint
+    // depths), not a staggered grid.
+    CHECK(out.variable("TSLB").dimensionNames == std::vector<std::string>{"time", "soil_layers_stag", "lat", "lon"});
+    const auto soil = std::find_if(bottomTop.begin(), bottomTop.end(), [](const auto& d) { return d.name == "soil_layers_stag"; });
+    REQUIRE(soil != bottomTop.end());
+    CHECK(soil->length == 4);
+}
+
+TEST_CASE("runReproject forces nearest-neighbour for a categorical variable even when bilinear is requested") {
+    const auto dir = reprojectOutputDir("categorical");
+    WrfFile source("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    const auto sourceLu = source.read("LU_INDEX", 0, 0);
+    std::set<int> sourceClasses;
+    for (float v : sourceLu) if (std::isfinite(v)) sourceClasses.insert(static_cast<int>(std::lround(v)));
+
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.variables = {"LU_INDEX"};
+    options.resampling = ResampleMethod::Bilinear;
+    options.nearestForCategorical = true;
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    const auto outLu = out.readFloat("LU_INDEX");
+    bool sawFinite = false;
+    for (float v : outLu) {
+        if (v > 1e30f) continue;
+        sawFinite = true;
+        CHECK(std::abs(v - std::lround(v)) < 1e-3f);  // integral - bilinear would have blended fractional values in
+        CHECK(sourceClasses.contains(static_cast<int>(std::lround(v))));
+    }
+    CHECK(sawFinite);
+}
+
+TEST_CASE("runReproject merges a real 3-file series into one output with a correct CF time axis") {
+    const auto dir = reprojectOutputDir("merge");
+    ReprojectOptions options;
+    options.inputs = {
+        "tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc",
+        "tests/fixtures/reproject/wrfout_d03_2025-03-14_00_30_00.nc",
+        "tests/fixtures/reproject/wrfout_d03_2025-03-14_01_00_00.nc",
+    };
+    options.targetEpsg = 4326;
+    options.variables = {"T2"};
+    options.seriesMode = SeriesMode::Merge;
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    const auto dims = out.dimensions();
+    const auto time = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "time"; });
+    REQUIRE(time != dims.end());
+    CHECK(time->length == 3);
+    CHECK(out.getAttribute("time", "units").text == "seconds since 2025-03-14 00:00:00");
+    const auto seconds = out.readDouble("time");
+    REQUIRE(seconds.size() == 3);
+    CHECK(seconds[0] == Catch::Approx(0.0));
+    CHECK(seconds[1] == Catch::Approx(1800.0));
+    CHECK(seconds[2] == Catch::Approx(3600.0));
+
+    const auto timesShape = out.shape("Times");
+    REQUIRE(timesShape.size() == 2);
+    CHECK(timesShape[0] == 3);
+    CHECK(timesShape[1] == 19);
+}
+
+TEST_CASE("runReproject with SeriesMode::PerFile writes one output per input file, sharing the same grid") {
+    const auto dir = reprojectOutputDir("per-file");
+    ReprojectOptions options;
+    options.inputs = {
+        "tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc",
+        "tests/fixtures/reproject/wrfout_d03_2025-03-14_00_30_00.nc",
+        "tests/fixtures/reproject/wrfout_d03_2025-03-14_01_00_00.nc",
+    };
+    options.targetEpsg = 4326;
+    options.variables = {"T2"};
+    options.seriesMode = SeriesMode::PerFile;
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 3);
+    CHECK(written[0].filename() == "wrfout_d03_2025-03-14_00_00_00_epsg4326.nc");
+    CHECK(written[1].filename() == "wrfout_d03_2025-03-14_00_30_00_epsg4326.nc");
+    CHECK(written[2].filename() == "wrfout_d03_2025-03-14_01_00_00_epsg4326.nc");
+
+    std::optional<std::vector<double>> firstLon;
+    for (const auto& path : written) {
+        auto out = NetcdfFile::open(path, NetcdfFile::Mode::ReadOnly);
+        const auto dims = out.dimensions();
+        const auto time = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "time"; });
+        REQUIRE(time != dims.end());
+        CHECK(time->length == 1);
+        const auto lon = out.readDouble("lon");
+        if (!firstLon) firstLon = lon;
+        else CHECK(lon == *firstLon);  // same shared grid across every output file in the run
+    }
+}
+
+TEST_CASE("runReproject rejects an empty variable list, no inputs, and a missing output directory") {
+    ReprojectOptions base;
+    base.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    base.targetEpsg = 4326;
+    base.variables = {"T2"};
+    base.outputDirectory = reprojectOutputDir("errors");
+
+    auto noVariables = base;
+    noVariables.variables.clear();
+    CHECK_THROWS_AS(runReproject(noVariables), UserError);
+
+    auto noInputs = base;
+    noInputs.inputs.clear();
+    CHECK_THROWS_AS(runReproject(noInputs), UserError);
+
+    auto badDirectory = base;
+    badDirectory.outputDirectory = "tests/fixtures/reproject/does_not_exist";
+    CHECK_THROWS_AS(runReproject(badDirectory), UserError);
+
+    auto badVariable = base;
+    badVariable.variables = {"NOT_A_REAL_VARIABLE"};
+    CHECK_THROWS_AS(runReproject(badVariable), UserError);
+}
+
+TEST_CASE("runReproject to a target with a real (non-WGS84) datum, like EPSG:2326 Hong Kong 1980 Grid, lands within a "
+          "pixel of the true WGS84-anchored transform, not offset by the ~300m a naive sphere->target warp gives") {
+    // Regression test for a real bug found via a user report (a QGIS
+    // overlay against OpenStreetMap tiles showing a visible shift): warping
+    // straight from WRF's own undefined-datum modeling sphere to a target
+    // CRS whose geographic base genuinely differs from WGS84 silently
+    // produces PROJ's identity/no-shift fallback instead of the target's
+    // real WGS84->target datum transformation - see targetSharesWgs84Datum's
+    // comment in reproject.cpp for the full mechanism and the two-stage fix.
+    WrfFile file("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    const auto bounds = file.geographicBounds();
+
+    // Ground truth: the NW corner's real WGS84 lon/lat, transformed to
+    // EPSG:2326 through PROJ's own published Hong Kong 1980 <-> WGS84
+    // transformation - independent of this codebase's reprojection code.
+    OGRSpatialReference wgs84;
+    wgs84.importFromEPSG(4326);
+    wgs84.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    OGRSpatialReference hk2326;
+    hk2326.importFromEPSG(2326);
+    hk2326.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    auto* xform = OGRCreateCoordinateTransformation(&wgs84, &hk2326);
+    REQUIRE(xform);
+    double expectedX = bounds.west, expectedY = bounds.north;
+    const bool transformOk = xform->Transform(1, &expectedX, &expectedY);
+    OGRCoordinateTransformation::DestroyCT(xform);
+    REQUIRE(transformOk);
+
+    const auto dir = reprojectOutputDir("hk1980-datum");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 2326;
+    options.variables = {"T2"};
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    const auto x = out.readDouble("x");
+    const auto y = out.readDouble("y");
+    REQUIRE(x.size() >= 2);
+    REQUIRE(y.size() >= 2);
+    // x/y are CELL CENTRES (see the writer's own comment); recover the
+    // NW pixel CORNER by backing off half a pixel, matching the corner
+    // `expectedX`/`expectedY` above.
+    const double actualX = x.front() - (x[1] - x[0]) / 2.0;
+    const double actualY = y.front() - (y[1] - y[0]) / 2.0;
+
+    // Measured directly against both code paths while writing this test:
+    // the pre-fix (single-stage, undatum-linked) warp lands ~170-222m off;
+    // the fixed two-stage warp lands within ~30m (residual resampling/
+    // pixel-corner noise, not the bug). 100m cleanly separates the two -
+    // it must stay well below the ~170m the bug reintroduces, not just
+    // "small", or a regression here would silently slip back under a
+    // looser threshold the way an earlier, too-loose 250m draft of this
+    // same test did.
+    CHECK(std::abs(actualX - expectedX) < 100.0);
+    CHECK(std::abs(actualY - expectedY) < 100.0);
+}
+
+TEST_CASE("NetcdfFile::create makes a brand-new file and writeFloatSlice/readFloatSlice round-trip a hyperslab") {
+    const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-create-test.nc";
+    {
+        auto file = NetcdfFile::create(path);
+        file.defineDimension("time", 3);
+        file.defineDimension("y", 2);
+        file.defineDimension("x", 2);
+        file.defineVariable("v", NC_FLOAT, {"time", "y", "x"});
+        const std::vector<float> plane{1.0f, 2.0f, 3.0f, 4.0f};
+        file.writeFloatSlice("v", {1, 0, 0}, {1, 2, 2}, plane);
+    }
+    auto reopened = NetcdfFile::open(path, NetcdfFile::Mode::ReadOnly);
+    const auto slice = reopened.readFloatSlice("v", {1, 0, 0}, {1, 2, 2});
+    CHECK(slice == std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f});
+    const auto whole = reopened.readFloat("v");
+    CHECK(whole.size() == 12);
+    CHECK(whole[4] == 1.0f);  // (time=1, y=0, x=0)
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("NetcdfFile::writeFloatSlice rejects a mismatched count and an out-of-bounds slice") {
+    const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-slice-bounds-test.nc";
+    auto file = NetcdfFile::create(path);
+    file.defineDimension("y", 2);
+    file.defineDimension("x", 2);
+    file.defineVariable("v", NC_FLOAT, {"y", "x"});
+    CHECK_THROWS_AS(file.writeFloatSlice("v", {0, 0}, {2, 2}, std::vector<float>{1.0f}), UserError);
+    CHECK_THROWS_AS(file.writeFloatSlice("v", {1, 0}, {2, 2}, std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f}), UserError);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("NetcdfFile::attributes enumerates every global attribute of a real file") {
+    auto file = NetcdfFile::open("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc", NetcdfFile::Mode::ReadOnly);
+    const auto globals = file.attributes("");
+    const auto hasName = [&](const std::string& name) {
+        return std::any_of(globals.begin(), globals.end(), [&](const auto& a) { return a.name == name; });
+    };
+    CHECK(hasName("MAP_PROJ"));
+    CHECK(hasName("DX"));
+    CHECK(hasName("TITLE"));
+}
+
+TEST_CASE("NetcdfFile::readText/writeText round-trip a Times-shaped char variable") {
+    const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-text-test.nc";
+    auto file = NetcdfFile::create(path);
+    file.defineDimension("time", 2);
+    file.defineDimension("DateStrLen", 19);
+    file.defineVariable("Times", NC_CHAR, {"time", "DateStrLen"});
+    const std::string text = "2025-03-14_00:00:002025-03-14_00:30:00";
+    file.writeText("Times", text);
+    CHECK(file.readText("Times") == text);
+    std::filesystem::remove(path);
 }

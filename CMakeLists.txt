@@ -34,7 +34,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(GDAL 3.6 REQUIRED)
+find_package(GDAL 3.7 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 # NetCDF-C, linked directly (not through GDAL's netCDF driver) for
@@ -144,6 +144,7 @@ add_library(wrftools_core
     src/wps_binary_source.cpp
     src/netcdf_file.cpp
     src/lcz.cpp
+    src/reproject.cpp
 )
 target_include_directories(wrftools_core PUBLIC include)
 target_link_libraries(wrftools_core PUBLIC GDAL::GDAL Qt6::Core Qt6::Gui convert_geotiff_reader PkgConfig::NETCDF)
@@ -158,6 +159,7 @@ add_library(wrftools_ui
     src/tile_map_widget.cpp
     src/geotiff_convert_form.cpp
     src/lcz_form.cpp
+    src/reproject_form.cpp
 )
 target_include_directories(wrftools_ui PUBLIC include)
 target_link_libraries(wrftools_ui PUBLIC wrftools_core convert_geotiff_lib Qt6::Gui Qt6::Widgets Qt6::Network)
@@ -176,6 +178,15 @@ elseif(WIN32)
     # Qt GUI on launch (Linux/macOS have no such distinction).
     set_target_properties(wrftools_cpp PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
+
+# Headless worker the Reproject tab launches as a separate process (see
+# reproject_worker.cpp's own comment for why) - links only wrftools_core,
+# not wrftools_ui/Widgets, so it never shares GDAL/HDF5's GUI-thread
+# affinity with the main app process.
+add_executable(wrftools_reproject_worker src/reproject_worker.cpp)
+target_link_libraries(wrftools_reproject_worker PRIVATE wrftools_core Qt6::Core)
+target_compile_options(wrftools_reproject_worker PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS wrftools_reproject_worker RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 include(CTest)
 if(BUILD_TESTING)

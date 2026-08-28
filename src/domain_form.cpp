@@ -163,6 +163,22 @@ void DomainForm::setActive(bool active) {
     // group ("view-rasters") that's never marked draggable, but gating this
     // on active_ too means a click on the map while View owns it always
     // pans/zooms, never repositions a domain sitting underneath.
+    if (active_) {
+        // The map has a single drag/resize handler slot, shared with
+        // ReprojectForm's own AOI-rectangle dragging (see
+        // ReprojectForm::setActive) - re-claiming it here on every
+        // activation, rather than only once in the constructor, is what
+        // stops whichever tab was constructed last from permanently
+        // owning it regardless of which tab the user actually switches to.
+        map_->setOverlayDragHandlers(
+            [this](std::size_t index, LonLat lonLat) { onDomainOverlayDragStart(index, lonLat); },
+            [this](std::size_t index, LonLat lonLat) { onDomainOverlayDragMove(index, lonLat); },
+            [this] { onDomainOverlayDragEnd(); });
+        map_->setOverlayResizeHandlers(
+            [this](std::size_t index, std::size_t handle, LonLat lonLat) { onDomainOverlayResizeStart(index, handle, lonLat); },
+            [this](std::size_t index, std::size_t handle, LonLat lonLat) { onDomainOverlayResizeMove(index, handle, lonLat); },
+            [this] { onDomainOverlayResizeEnd(); });
+    }
     map_->setDraggableVectorOverlayGroup(active_ ? "domains" : QString());
 }
 

@@ -52,6 +52,19 @@ public:
 
     static NetcdfFile open(const std::filesystem::path& path, Mode mode);
 
+    // Which on-disk format nc_create should use - passed straight to the
+    // NC_* mode flags, mirroring the format-preservation switch
+    // resizeDimension/rebuildStructure already carry internally, for a
+    // caller building a file from nothing rather than copying an existing
+    // one's format.
+    enum class Format { Classic, Netcdf4, Netcdf4Classic };
+
+    // Creates (clobbering) a brand-new, empty file, returned open
+    // read-write. Unlike open(), there is no existing structure to copy -
+    // the caller builds it up with defineDimension/defineVariable/
+    // putAttribute/write*Slice.
+    static NetcdfFile create(const std::filesystem::path& path, Format format = Format::Netcdf4Classic);
+
     ~NetcdfFile();
     NetcdfFile(NetcdfFile&&) noexcept;
     NetcdfFile& operator=(NetcdfFile&&) noexcept;
@@ -72,6 +85,12 @@ public:
     [[nodiscard]] Attribute getAttribute(const std::string& variableName, const std::string& attrName) const;
     void putAttribute(const std::string& variableName, const Attribute& attribute);
 
+    // Every attribute attached to `variableName` (empty for globals) - what
+    // a "copy everything except these names" pass needs, which the
+    // name-driven hasAttribute/getAttribute pair above can't express on its
+    // own.
+    [[nodiscard]] std::vector<Attribute> attributes(const std::string& variableName) const;
+
     // ---- Data. netCDF-C's typed get/put converts from/to the variable's
     // actual on-disk type, so readFloat works even against an int/double
     // variable (WRF stores nearly everything as float, but this isn't
@@ -86,6 +105,29 @@ public:
     void writeDouble(const std::string& variableName, const std::vector<double>& data);
     void writeInt(const std::string& variableName, const std::vector<std::int32_t>& data);
 
+    // Reads an NC_CHAR variable's contents as raw bytes, concatenated in
+    // on-disk order - a WRF `Times(Time, DateStrLen)` variable comes back as
+    // one string the caller slices into DateStrLen-sized records.
+    // readFloat/readInt would nominally "work" against NC_CHAR too (netCDF-C
+    // converts), but would turn each character into a number - this is the
+    // dedicated text path.
+    [[nodiscard]] std::string readText(const std::string& variableName) const;
+    void writeText(const std::string& variableName, const std::string& data);
+
+    // Partial ("hyperslab") reads/writes: `start`/`count` carry one entry
+    // per dimension of the variable, outermost first, matching
+    // Variable::dimensionNames/shape() - the nc_*_vara_* contract directly.
+    // Unlike writeFloat/writeDouble (whole-variable, so the whole array must
+    // already be resident), this lets a caller stream one slice at a time -
+    // e.g. one reprojected (y, x) plane per (time, level) pair, keeping peak
+    // memory at one plane rather than the full time x level x y x x cube.
+    [[nodiscard]] std::vector<float> readFloatSlice(const std::string& variableName, const std::vector<std::size_t>& start,
+        const std::vector<std::size_t>& count) const;
+    void writeFloatSlice(
+        const std::string& variableName, const std::vector<std::size_t>& start, const std::vector<std::size_t>& count, const std::vector<float>& data);
+    void writeDoubleSlice(
+        const std::string& variableName, const std::vector<std::size_t>& start, const std::vector<std::size_t>& count, const std::vector<double>& data);
+
     // ---- Structural additions to an already-open, already-existing file.
     // Unlike resizeDimension (which changes an EXISTING dimension's size,
     // something netCDF classic genuinely cannot do without rebuilding the
@@ -95,7 +137,28 @@ public:
     // fixed number of new variables the LCZ pipeline adds (FRC_URB2D,
     // URB_PARAM) rather than a hot path. ----
     void defineDimension(const std::string& name, std::size_t length);
-    void defineVariable(const std::string& name, NcType type, const std::vector<std::string>& dimensionNames);
+    // A growable (NC_UNLIMITED) dimension - length is discovered from
+    // however many records are later written to variables using it.
+    void defineUnlimitedDimension(const std::string& name);
+
+    // `chunkSizes` (one entry per dimension) and `deflateLevel` (0-9, or -1
+    // to skip deflate) configure netCDF-4 storage layout for the new
+    // variable - a no-op for a classic-format file, which has neither
+    // concept. `fillValue`, if set, becomes the variable's `_FillValue`
+    // attribute. All three MUST be set here, in defineVariable's own define
+    // episode, rather than via a separate call/putAttribute afterward:
+    // netCDF-4 forbids nc_def_var_chunking/nc_def_var_deflate, and setting
+    // the special _FillValue attribute, once ANY nc_enddef has run since
+    // the variable was defined (netCDF-4 allocates a default fill at that
+    // point if none was given, and then refuses "redefining" it) - and
+    // every other method on this class pays its own redef/enddef round-trip
+    // per call (see the class comment), so a later call would always be too
+    // late. Without explicit chunking, netCDF-4's default chunk shape for
+    // e.g. a (time, level, y, x) variable spans several records, so writing
+    // one (y, x) plane at a time forces a read-modify-write of every
+    // touched chunk on every slice write.
+    void defineVariable(const std::string& name, NcType type, const std::vector<std::string>& dimensionNames, const std::vector<std::size_t>& chunkSizes = {},
+        int deflateLevel = -1, std::optional<float> fillValue = std::nullopt);
 
     void close();  // idempotent; also called by the destructor
 

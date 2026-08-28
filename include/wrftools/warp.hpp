@@ -16,6 +16,27 @@ struct WarpedRaster {
     Bounds2D bounds3857;
 };
 
+// A fully-specified destination raster grid: what warpToGrid's dest* /
+// destGeotransform / destWidth / destHeight arguments describe, bundled so
+// a caller can compute one ONCE (see suggestWarpGrid) and reuse it for
+// every slice of a multi-variable, multi-level, multi-timestep run rather
+// than re-deriving it per warp.
+struct DestinationGrid {
+    std::string wkt;
+    std::array<double, 6> geotransform{};  // top-down: geotransform[5] < 0
+    int width{};
+    int height{};
+};
+
+// GDAL's own natural output grid for a plain "-t_srs <destWkt>" warp of the
+// given source grid - the same GDALSuggestedWarpOutput query warpToCrsImpl
+// already makes internally to size a DISPLAY warp, exposed here uncapped
+// (no kMaxWarpDimension) so an export can keep native resolution. Throws
+// UserError if GDAL cannot suggest one, e.g. the source domain lies outside
+// the target CRS's area of use.
+[[nodiscard]] DestinationGrid suggestWarpGrid(
+    int width, int height, const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform, const std::string& destWkt);
+
 // Builds a georeferenced in-memory GDAL dataset from a plain array and warps
 // it to EPSG:3857, returning the warped array and its bounds - this is what
 // makes the resulting overlay axis-aligned in tile space, the reason to

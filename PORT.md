@@ -477,6 +477,237 @@ either move, beyond this section.
   preference and so belongs entirely to `MainWindow`, which reads it as
   early as possible in its own constructor.
 
+## Reproject tab (exceeds Python)
+
+A new "Reproject" tab - Python had no equivalent - reprojects a wrfout file,
+or a whole wrfout series (`groupWrfPaths`), to an arbitrary EPSG code as
+CF-1.7 conformal NetCDF. `include/wrftools/reproject.hpp`/`src/reproject.cpp`
+hold all the logic in `wrftools_core`, independent of Qt.
+
+- **Variable selection is exactly `WrfFile`'s own filter**: only variables
+  whose `MemoryOrder` starts with `"XY"` are ever offered (already the
+  "2D and 3D only" rule the feature needs - Z-only fields like `ZNU`/`ZS`
+  are excluded automatically, same as the View tab).
+- **Horizontal destaggering** comes for free from `WrfFile::read`, which
+  already averages `U`/`V`-style staggered edges onto the mass grid.
+  **Vertical destaggering** is new: a variable whose extra dimension ends in
+  `_stag` (except `soil_layers_stag`, which despite its name holds soil
+  layer midpoint depths, not a staggered grid) has adjacent levels averaged
+  and collapses onto the *same* dimension name/length the model's
+  unstaggered variables already use - e.g. `W`'s `bottom_top_stag` (65
+  levels) becomes 64 levels under `bottom_top`, the dimension `T`/`P`/`U`
+  already share, rather than a separate output dimension.
+- **The destination grid is computed once per run** (`computeDestinationGrid`,
+  built on a new `suggestWarpGrid` in `warp.hpp`/`.cpp` - the same
+  `GDALSuggestedWarpOutput` query the display warp path already made
+  internally, now exposed uncapped since an export must not hit the display
+  path's `kMaxWarpDimension` downsampling heuristic) and reused for every
+  variable/level/timestep of every output file in the run, so a per-file
+  export is pixel-aligned across files. Every slice goes through the
+  existing `warpToGrid`, with resampling forced to nearest for any variable
+  `WrfFile` already tags with a `categoryScheme` (LU_INDEX, IVGTYP, ...),
+  regardless of what the user picked - bilinear/average would blend
+  category codes into meaningless fractional values.
+- **Follow-up (2026-08-28): a real datum-shift bug, found via a user
+  report** (a QGIS overlay of a reprojected EPSG:2326 - Hong Kong 1980 Grid
+  - file against OpenStreetMap tiles showed a visible offset). Root cause:
+  `WrfFile`'s own source CRS is built on WRF's modeling sphere
+  (`a=b=6370000`, see `crs.hpp`) with **no datum linkage to WGS84 at all** -
+  deliberate, so the app's own internal geometry (map display, LCZ
+  pipeline) never picks up a spurious shift, and the sphere's own lat/lon
+  values are, by WRF's modeling convention, real-world WGS84 coordinates
+  (already confirmed elsewhere in this codebase to agree with geogrid.exe's
+  own `XLAT_M`/`XLONG_M` to within a few metres). Warping straight from
+  that undefined-datum sphere to an external target CRS is harmless when
+  the target's own geographic base **is** WGS84 (true of EPSG:4326 itself,
+  every UTM zone, Web Mercator, ...) - PROJ falls back to an identity/
+  no-shift, which happens to be exactly correct there. It silently gives
+  the **wrong** answer, by hundreds of metres, when the target uses a
+  genuinely different (usually legacy/local) datum: PROJ has a real,
+  published WGS84->HK1980 transformation for EPSG:2326, but never finds it,
+  because the source CRS's datum was never asserted to *be* WGS84 - it just
+  no-ops instead of erroring. Confirmed empirically (point transform, not
+  guessed): the WRF domain centre transformed straight from the sphere to
+  EPSG:2326 landed ~300 m from the same point transformed through real
+  WGS84. A `+towgs84=0,0,0` "identity shift" hack on the sphere was tried
+  and rejected - it makes things *worse* (~15 km off), because a null
+  Helmert shift is done in geocentric XYZ space using the source ellipsoid's
+  own radius, and the sphere's radius (6370000 m) doesn't match WGS84's
+  (6378137 m) at all.
+  Fixed with an explicit **two-stage warp**, applied only when the target's
+  geographic base genuinely differs from WGS84 (`OGRSpatialReference::
+  IsSameGeogCS`, checked once per run in `targetSharesWgs84Datum`) - the
+  common case (UTM, EPSG:4326, Web Mercator, ...) stays a single warp,
+  unchanged: first warp from the source sphere to an intermediate grid on
+  that *same* sphere in geographic (lon/lat) space (an exact,
+  distortion-free unprojection, since source and intermediate share one
+  identical GEOGCS), then **relabel** that intermediate's CRS as literal
+  EPSG:4326 (legitimate given the accuracy note above) and warp again from
+  that properly-labelled WGS84 raster to the real target CRS, where PROJ
+  now finds and applies the genuine datum transformation
+  (`suggestWarpGridDatumSafe`/`DatumSafeSuggestion` in `reproject.cpp`).
+  Applied consistently to **both** the destination grid's own placement
+  (`computeDestinationGrid`) and the per-slice data warp (`runReproject`'s
+  `warpSlice` lambda) - the first attempt at this fix only corrected the
+  data warp and left the grid's own coordinate values computed via the old
+  single-stage (buggy) path, which would have positioned the CF coordinate
+  axes ~300 m away from the data actually resampled into them; both must
+  go through the same datum-safe suggestion or they silently disagree.
+  Pinned by a regression test (`core_tests.cpp`) comparing the reprojected
+  EPSG:2326 output's own NW corner against an independent, real WGS84->
+  EPSG:2326 point transform: measured directly against both code paths
+  while writing the test, the pre-fix warp lands ~170-222 m off and the
+  fixed one lands within ~30 m (residual pixel-corner/resampling noise) -
+  the test's 100 m threshold sits well clear of both, catching a
+  regression back to either failure mode.
+- **Output structure**: real `x`/`y` (projected) or `lon`/`lat` (geographic)
+  coordinate variables, a CF `time` coordinate (`seconds since <first
+  record>`, parsed from each input's own `Times` variable, not the
+  filename, so it works for both a wrfout series and a multi-record single
+  file), the verbatim `Times` char variable kept alongside it, and a `crs`
+  grid-mapping variable built from `OGRSpatialReference::exportToCF1()` -
+  which required bumping `find_package(GDAL 3.6 REQUIRED)` to `3.7` (that
+  method landed in 3.7; every CI target already ships newer). One
+  non-obvious API detail: `exportToCF1`'s first out-parameter is GDAL's
+  *recommended variable name* for the mapping ("crs"), not the
+  `grid_mapping_name` attribute value itself - that comes back inside the
+  key/value list instead, keyed literally `"grid_mapping_name"`. Getting
+  this backwards silently produces a `grid_mapping_name` of `"crs"`, valid
+  CF syntax but semantically wrong; caught by a test that resolves EPSG:4326
+  in isolation (without any prior `GDALAllRegister()` call from another
+  test) and asserts on the actual string, not just that *something* was set.
+- **Global attributes**: everything from the source is copied forward
+  *except* the ones that describe the WRF projection/grid the file no
+  longer has (`MAP_PROJ`, `TRUELAT1/2`, `STAND_LON`, `CEN_LAT/LON`, `DX`,
+  `DY`, the `*_PATCH_*`/`*_GRID_DIMENSION` family, ...) - those are
+  **renamed with a `WRF_` prefix**, not dropped: leaving them under their
+  canonical name would be actively misleading (this app's own
+  `WrfFile::buildWrfCrs`, or any other WRF-aware reader, would happily
+  reconstruct the *old* grid from them and place the reprojected raster in
+  the wrong spot), but the provenance is real and worth keeping.
+- **`NetcdfFile` gained**: `create()` (a brand-new file, vs. `open()`'s
+  existing-file-only contract), `writeFloatSlice`/`readFloatSlice`/
+  `writeDoubleSlice` (hyperslab I/O - a merged multi-hundred-file series is
+  far too large to hold one variable's whole array in memory, which is what
+  every prior write method on this class required), `readText`/`writeText`
+  (`Times` is `NC_CHAR`, which the existing float/double/int read/write
+  methods can't express), and `attributes()` (enumerate every attribute on
+  a variable/global, for the "copy everything except these names" global
+  attribute pass above). `defineVariable` gained optional `chunkSizes`/
+  `deflateLevel`/`fillValue` parameters rather than separate
+  `setChunking`/`setCompression` methods, after hitting a real netCDF-4 API
+  restriction: `nc_def_var_chunking`/`nc_def_var_deflate`/a `_FillValue`
+  attribute must all be set in the *same* `nc_redef`/`nc_enddef` episode as
+  `nc_def_var` itself, and every other method on this class (matching its
+  existing convention) pays its own redef/enddef round-trip per call - a
+  separate `setChunking()` called afterward is always one `enddef` too late
+  ("Attempt to define var properties... after enddef").
+- **Runs out-of-process, not on the GUI thread and not on a background
+  `std::thread`.** `LczForm`'s own class comment documents a real,
+  reproduced deadlock when netCDF-C/GDAL/HDF5 is touched from a second OS
+  thread after the GUI thread already has (a non-threadsafe libhdf5 build) -
+  a `std::thread` is therefore unsafe for this too, and a merged
+  multi-hundred-file export is far too long to accept blocking the GUI
+  (the LCZ tab's accepted tradeoff for its much shorter pipeline). Instead,
+  `ReprojectForm::runReproject()` launches a small separate executable,
+  `wrftools_reproject_worker` (`src/reproject_worker.cpp`, linked only
+  against `wrftools_core` - no Qt Widgets, no GUI), as a `QProcess`: a job
+  description is written to a temporary JSON file, and the worker's stdout
+  is parsed line by line (`PROGRESS <completed> <total> <message>` /
+  `DONE <path>` / `ERROR <message>`) to drive the progress bar and log view
+  through Qt's ordinary event loop. `runReproject()` itself validates the
+  form and starts the process, then returns immediately - it does not
+  block, and Cancel just kills the process.
+- Fixtures under `tests/fixtures/reproject/` are carved (via `ncks`, not
+  synthesized) from a real WRF 4.7.1 run over Hong Kong, keeping real
+  geometry/attributes/projection at a committable size.
+- **Follow-up (2026-08-28): tab panel widened for the Reproject tab's own
+  field count.** The Reproject tab's natural width (its EPSG/pixel-size/
+  extent/variables/output-directory controls) came out wider than every
+  earlier tab, and `main_window.cpp`'s original `tabs->setMinimumWidth(340)`
+  + `splitter->setSizes({360, 940})` were sized for the LCZ tab (the
+  previous widest, ~440px `sizeHint`) - confirmed visually via an offscreen
+  Qt probe (`QT_QPA_PLATFORM=offscreen`, grabbing each tab to a PNG, no
+  X server needed), which showed the Reproject tab's Browse buttons,
+  checkbox labels, and Run/Cancel row all running off the visible edge,
+  reachable only via a horizontal scrollbar. Fixed two ways: (1)
+  `ReprojectForm`'s pixel-size and extent fields, previously one
+  `QFormLayout` row per axis (6 rows), are now paired X/Y on one row each
+  (3 rows) with a small "X"/"Y" sub-label ahead of each field - this alone
+  dropped the tab's own natural width from ~504px to ~442px; checkbox
+  labels were also shortened to fit ("Always use nearest-neighbour for
+  categorical variables" -> "Nearest-neighbour for categorical variables").
+  (2) `MainWindow`'s tab panel minimum width raised 340 -> 460 and the
+  splitter's initial split 360/940 -> 480/920 (default window 1300x800 ->
+  1400x800, so the map doesn't lose net space) - comfortably clears every
+  tab's own `sizeHint` (LCZ and Reproject both land around 440-442px) plus
+  the scroll area's frame/scrollbar reservation, verified by re-running the
+  same offscreen probe until no tab showed a horizontal scrollbar.
+- **Follow-up (2026-08-28): map-drawn Area of Interest, cropping the
+  reprojection.** `ReprojectForm` now takes the shared `TileMapWidget*`
+  (constructor signature changed, `ReprojectForm(TileMapWidget*, QWidget*)`,
+  matching `DomainForm`/`ViewForm`) instead of being map-independent. Loading
+  a wrfout file or series draws its footprint - `WrfFile::geographicBounds()`,
+  the same real WGS84 extent already used by the datum-shift fix above - as a
+  lightly shaded, filled rectangle on the map (a new `VectorOverlay::fill`
+  field, transparent by default so no existing caller/overlay changes
+  appearance; `TileMapWidget::paintEvent` now fills a closed overlay's path
+  before stroking it, same order as the legend/info boxes). A second
+  rectangle, initially matching the domain exactly, sits on top with corner
+  handles: dragging a handle resizes it (anchored on the diagonally opposite
+  corner, exactly `DomainForm`'s own resize convention - see
+  `kOppositeCorner` in `reproject_form.cpp`, deliberately mirroring
+  `domain_overlay.cpp`'s identical `kOppositeOf`), and dragging its body
+  moves it - reusing `TileMapWidget`'s existing drag/resize-handler and
+  corner-handle machinery wholesale rather than adding a new "rubber-band
+  draw" interaction mode. No new core logic was needed for the actual
+  cropping: `GridOverride::extent` (target-CRS bounds) already existed and
+  `computeDestinationGrid`/`runReproject` already restrict the destination
+  raster to it, so GDAL's warp naturally only computes pixels inside the
+  selection - the AOI rectangle is purely a visual way to fill the existing
+  Extent min/max fields, not a separate code path. Every drag/resize move
+  re-derives those fields via `Crs::wgs84().transformBbox(aoiBounds,
+  targetCrs)` (`targetCrs` built from `describeTargetCrs(epsg).wkt`, so it
+  tracks whatever EPSG the user has typed, including a change mid-edit via
+  the field's `editingFinished`); a "Reset area of interest to full domain"
+  button clears them back to "auto" rather than writing the rectangle's own
+  coordinates, since GDAL's suggested grid for the untouched full domain is
+  generally tighter than this rectangle's plain WGS84 bounding box.
+  Manually typing the Extent fields still works exactly as before - the
+  rectangle is a convenience on top of them, not a replacement.
+  One correctness fix was needed to make any of this safe: `MainWindow`'s
+  `QTabWidget::currentChanged` handler compared `tabs->widget(index)`
+  against the raw form pointers (`domainForm`, and the new `reprojectForm`),
+  but every tab is actually added via `scrollWrap(form)` - `tabs->widget()`
+  returns the wrapping `QScrollArea`, never the form itself, so that
+  comparison was always false. Latent before this change (its only visible
+  effect was `DomainForm::setActive(true)` never actually firing from a tab
+  switch, silently relying on that class's own `active_{true}` default
+  member value matching the Domains tab's initial selection), it became
+  load-bearing once a second form needed the same one-drag-handler-slot-per-
+  map arbitration - `TileMapWidget` stores a single set of drag/resize
+  callbacks, not one per group, so `DomainForm` and `ReprojectForm` must each
+  re-claim it in their own `setActive(true)` (both now do) and the tab
+  bar must actually tell them which one that is. Fixed by comparing against
+  the `QScrollArea*` returned from each `scrollWrap()` call instead.
+- **Follow-up (2026-08-28): the AOI rectangle can only crop the domain, never
+  extend past it** - there's no data out there to crop, so letting the
+  rectangle stray outside the footprint would silently ask GDAL for a grid
+  extent partly outside the source raster (harmless in itself - the warp
+  just leaves those cells NaN/fill-valued - but pointless and confusing to
+  offer). `onAoiResizeMove` now clamps the dragged corner itself into the
+  domain bounds (`clampToDomain`, plain `std::clamp` per axis) before
+  computing the new min/max, so a corner handle simply stops at the domain
+  edge instead of pulling the rectangle past it - the anchor corner is
+  always already inside the domain (an invariant `aoiBoundsLonLat_` never
+  violates), so clamping just the moving corner is sufficient for an
+  axis-aligned box. Body drags need a different clamp
+  (`clampRectToDomain`): clamping each corner of the translated rectangle
+  independently would shrink/distort it, so instead the *translation* is
+  clamped - shifted back just enough that the whole rectangle re-enters the
+  domain, preserving its size - a wall the rectangle stops against rather
+  than a rubber band that snaps its shape.
+
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 
 The Python reference only ever reads a WPS_GEOG dataset's `index` metadata
