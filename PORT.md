@@ -477,6 +477,99 @@ either move, beyond this section.
   preference and so belongs entirely to `MainWindow`, which reads it as
   early as possible in its own constructor.
 
+## Reproject tab (exceeds Python)
+
+A new "Reproject" tab - Python had no equivalent - reprojects a wrfout file,
+or a whole wrfout series (`groupWrfPaths`), to an arbitrary EPSG code as
+CF-1.7 conformal NetCDF. `include/wrftools/reproject.hpp`/`src/reproject.cpp`
+hold all the logic in `wrftools_core`, independent of Qt.
+
+- **Variable selection is exactly `WrfFile`'s own filter**: only variables
+  whose `MemoryOrder` starts with `"XY"` are ever offered (already the
+  "2D and 3D only" rule the feature needs - Z-only fields like `ZNU`/`ZS`
+  are excluded automatically, same as the View tab).
+- **Horizontal destaggering** comes for free from `WrfFile::read`, which
+  already averages `U`/`V`-style staggered edges onto the mass grid.
+  **Vertical destaggering** is new: a variable whose extra dimension ends in
+  `_stag` (except `soil_layers_stag`, which despite its name holds soil
+  layer midpoint depths, not a staggered grid) has adjacent levels averaged
+  and collapses onto the *same* dimension name/length the model's
+  unstaggered variables already use - e.g. `W`'s `bottom_top_stag` (65
+  levels) becomes 64 levels under `bottom_top`, the dimension `T`/`P`/`U`
+  already share, rather than a separate output dimension.
+- **The destination grid is computed once per run** (`computeDestinationGrid`,
+  built on a new `suggestWarpGrid` in `warp.hpp`/`.cpp` - the same
+  `GDALSuggestedWarpOutput` query the display warp path already made
+  internally, now exposed uncapped since an export must not hit the display
+  path's `kMaxWarpDimension` downsampling heuristic) and reused for every
+  variable/level/timestep of every output file in the run, so a per-file
+  export is pixel-aligned across files. Every slice goes through the
+  existing `warpToGrid`, with resampling forced to nearest for any variable
+  `WrfFile` already tags with a `categoryScheme` (LU_INDEX, IVGTYP, ...),
+  regardless of what the user picked - bilinear/average would blend
+  category codes into meaningless fractional values.
+- **Output structure**: real `x`/`y` (projected) or `lon`/`lat` (geographic)
+  coordinate variables, a CF `time` coordinate (`seconds since <first
+  record>`, parsed from each input's own `Times` variable, not the
+  filename, so it works for both a wrfout series and a multi-record single
+  file), the verbatim `Times` char variable kept alongside it, and a `crs`
+  grid-mapping variable built from `OGRSpatialReference::exportToCF1()` -
+  which required bumping `find_package(GDAL 3.6 REQUIRED)` to `3.7` (that
+  method landed in 3.7; every CI target already ships newer). One
+  non-obvious API detail: `exportToCF1`'s first out-parameter is GDAL's
+  *recommended variable name* for the mapping ("crs"), not the
+  `grid_mapping_name` attribute value itself - that comes back inside the
+  key/value list instead, keyed literally `"grid_mapping_name"`. Getting
+  this backwards silently produces a `grid_mapping_name` of `"crs"`, valid
+  CF syntax but semantically wrong; caught by a test that resolves EPSG:4326
+  in isolation (without any prior `GDALAllRegister()` call from another
+  test) and asserts on the actual string, not just that *something* was set.
+- **Global attributes**: everything from the source is copied forward
+  *except* the ones that describe the WRF projection/grid the file no
+  longer has (`MAP_PROJ`, `TRUELAT1/2`, `STAND_LON`, `CEN_LAT/LON`, `DX`,
+  `DY`, the `*_PATCH_*`/`*_GRID_DIMENSION` family, ...) - those are
+  **renamed with a `WRF_` prefix**, not dropped: leaving them under their
+  canonical name would be actively misleading (this app's own
+  `WrfFile::buildWrfCrs`, or any other WRF-aware reader, would happily
+  reconstruct the *old* grid from them and place the reprojected raster in
+  the wrong spot), but the provenance is real and worth keeping.
+- **`NetcdfFile` gained**: `create()` (a brand-new file, vs. `open()`'s
+  existing-file-only contract), `writeFloatSlice`/`readFloatSlice`/
+  `writeDoubleSlice` (hyperslab I/O - a merged multi-hundred-file series is
+  far too large to hold one variable's whole array in memory, which is what
+  every prior write method on this class required), `readText`/`writeText`
+  (`Times` is `NC_CHAR`, which the existing float/double/int read/write
+  methods can't express), and `attributes()` (enumerate every attribute on
+  a variable/global, for the "copy everything except these names" global
+  attribute pass above). `defineVariable` gained optional `chunkSizes`/
+  `deflateLevel`/`fillValue` parameters rather than separate
+  `setChunking`/`setCompression` methods, after hitting a real netCDF-4 API
+  restriction: `nc_def_var_chunking`/`nc_def_var_deflate`/a `_FillValue`
+  attribute must all be set in the *same* `nc_redef`/`nc_enddef` episode as
+  `nc_def_var` itself, and every other method on this class (matching its
+  existing convention) pays its own redef/enddef round-trip per call - a
+  separate `setChunking()` called afterward is always one `enddef` too late
+  ("Attempt to define var properties... after enddef").
+- **Runs out-of-process, not on the GUI thread and not on a background
+  `std::thread`.** `LczForm`'s own class comment documents a real,
+  reproduced deadlock when netCDF-C/GDAL/HDF5 is touched from a second OS
+  thread after the GUI thread already has (a non-threadsafe libhdf5 build) -
+  a `std::thread` is therefore unsafe for this too, and a merged
+  multi-hundred-file export is far too long to accept blocking the GUI
+  (the LCZ tab's accepted tradeoff for its much shorter pipeline). Instead,
+  `ReprojectForm::runReproject()` launches a small separate executable,
+  `wrftools_reproject_worker` (`src/reproject_worker.cpp`, linked only
+  against `wrftools_core` - no Qt Widgets, no GUI), as a `QProcess`: a job
+  description is written to a temporary JSON file, and the worker's stdout
+  is parsed line by line (`PROGRESS <completed> <total> <message>` /
+  `DONE <path>` / `ERROR <message>`) to drive the progress bar and log view
+  through Qt's ordinary event loop. `runReproject()` itself validates the
+  form and starts the process, then returns immediately - it does not
+  block, and Cancel just kills the process.
+- Fixtures under `tests/fixtures/reproject/` are carved (via `ncks`, not
+  synthesized) from a real WRF 4.7.1 run over Hong Kong, keeping real
+  geometry/attributes/projection at a committable size.
+
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 
 The Python reference only ever reads a WPS_GEOG dataset's `index` metadata

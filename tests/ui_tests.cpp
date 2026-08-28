@@ -10,6 +10,7 @@
 #include "wrftools/lcz.hpp"
 #include "wrftools/lcz_form.hpp"
 #include "wrftools/main_window.hpp"
+#include "wrftools/reproject_form.hpp"
 #include "wrftools/theme.hpp"
 #include "wrftools/tile_map_widget.hpp"
 #include "wrftools/view_form.hpp"
@@ -41,6 +42,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -83,6 +85,16 @@ void waitWhileRunning(GeotiffConvertForm& form) {
 // this gets a longer deadline.
 void waitWhileRunning(LczForm& form) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+}
+
+// Same idea, for ReprojectForm - unlike the two above, this one's "worker"
+// is a genuinely separate QProcess (see reproject_form.hpp's class comment
+// for why), so isRunning() only goes false once that process's `finished`
+// signal has been delivered through the event loop.
+void waitWhileRunning(ReprojectForm& form) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
     QCoreApplication::processEvents();
 }
@@ -1566,4 +1578,105 @@ TEST_CASE("a full LCZ run against the real Zaragoza sample domain produces every
     for (int i = 0; i < form.resultsList()->count(); ++i) INFO(form.resultsList()->item(i)->text().toStdString());
     for (int i = 0; i < form.resultsList()->count(); ++i) CHECK(form.resultsList()->item(i)->foreground().color() == QColor(Qt::darkGreen));
     CHECK(form.nbuiMaxLabel()->text().contains("Set nbui_max to 5"));
+}
+
+TEST_CASE("ReprojectForm defaults: EPSG 4326, bilinear resampling, merge checked, no variables") {
+    ReprojectForm form;
+    CHECK(form.epsgField()->text() == "4326");
+    REQUIRE(form.resamplingCombo()->count() == 4);
+    CHECK(form.resamplingCombo()->currentText() == "Bilinear");
+    CHECK(form.mergeSeriesCheck()->isChecked());
+    CHECK(form.nearestForCategoricalCheck()->isChecked());
+    CHECK(form.variablesList()->count() == 0);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("ReprojectForm::setInputPaths populates the variable list from a real wrfout, sorted, with units shown") {
+    ReprojectForm form;
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    REQUIRE(form.variablesList()->count() > 0);
+    QStringList names;
+    for (int i = 0; i < form.variablesList()->count(); ++i) names << form.variablesList()->item(i)->data(Qt::UserRole).toString();
+    CHECK(names.contains("T2"));
+    CHECK(names.contains("LU_INDEX"));
+    CHECK(std::is_sorted(names.begin(), names.end()));
+    const auto t2Index = names.indexOf("T2");
+    CHECK(form.variablesList()->item(t2Index)->text().contains("[K]"));
+    for (int i = 0; i < form.variablesList()->count(); ++i) CHECK(form.variablesList()->item(i)->checkState() == Qt::Unchecked);
+}
+
+TEST_CASE("ReprojectForm::setInputPaths preserves prior check state by name when the input selection changes") {
+    ReprojectForm form;
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    for (int i = 0; i < form.variablesList()->count(); ++i)
+        if (form.variablesList()->item(i)->data(Qt::UserRole).toString() == "T2") form.variablesList()->item(i)->setCheckState(Qt::Checked);
+
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_30_00.nc").string())});
+    bool foundChecked = false;
+    for (int i = 0; i < form.variablesList()->count(); ++i)
+        if (form.variablesList()->item(i)->data(Qt::UserRole).toString() == "T2") foundChecked = form.variablesList()->item(i)->checkState() == Qt::Checked;
+    CHECK(foundChecked);
+}
+
+TEST_CASE("running reprojection with no input files throws UserError") {
+    ReprojectForm form;
+    CHECK_THROWS_AS(form.runReproject(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("running reprojection with inputs but no checked variables throws UserError") {
+    ReprojectForm form;
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    CHECK_THROWS_AS(form.runReproject(), UserError);
+}
+
+TEST_CASE("an unparseable EPSG code throws UserError before anything is launched") {
+    ReprojectForm form;
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    form.variablesList()->item(0)->setCheckState(Qt::Checked);
+    form.epsgField()->setText("not-a-number");
+    CHECK_THROWS_AS(form.runReproject(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("a negative pixel size throws UserError") {
+    ReprojectForm form;
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    form.variablesList()->item(0)->setCheckState(Qt::Checked);
+    form.pixelSizeXField()->setText("-1");
+    CHECK_THROWS_AS(form.runReproject(), UserError);
+}
+
+TEST_CASE("no output directory throws UserError") {
+    ReprojectForm form;
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    form.variablesList()->item(0)->setCheckState(Qt::Checked);
+    CHECK_THROWS_AS(form.runReproject(), UserError);
+}
+
+TEST_CASE("a full reprojection run against real fixtures writes a merged output file and reports completion") {
+    QTemporaryDir outputDir;
+    REQUIRE(outputDir.isValid());
+
+    ReprojectForm form;
+    form.setInputPaths({
+        QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string()),
+        QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_30_00.nc").string()),
+        QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_01_00_00.nc").string()),
+    });
+    for (int i = 0; i < form.variablesList()->count(); ++i)
+        if (form.variablesList()->item(i)->data(Qt::UserRole).toString() == "T2") form.variablesList()->item(i)->setCheckState(Qt::Checked);
+    form.setOutputDirectory(outputDir.path());
+
+    form.runReproject();
+    CHECK(form.isRunning());
+    waitWhileRunning(form);
+
+    CHECK_FALSE(form.isRunning());
+    INFO(form.logView()->toPlainText().toStdString());
+    CHECK(form.logView()->toPlainText().contains("Reprojection complete."));
+    REQUIRE(form.resultsList()->count() == 1);
+    const auto outputPath = form.resultsList()->item(0)->text().toStdString();
+    CHECK(std::filesystem::exists(outputPath));
+    CHECK(form.progressBar()->value() == form.progressBar()->maximum());
 }

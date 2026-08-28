@@ -5,6 +5,7 @@
 #include "wrftools/domain_form.hpp"
 #include "wrftools/geotiff_convert_form.hpp"
 #include "wrftools/lcz_form.hpp"
+#include "wrftools/reproject_form.hpp"
 
 #include <QActionGroup>
 #include <QApplication>
@@ -52,6 +53,7 @@ MainWindow::MainWindow() {
     tabs->addTab(scrollWrap(new ViewForm(map_)), "View");
     tabs->addTab(scrollWrap(new GeotiffConvertForm), "Convert");
     tabs->addTab(scrollWrap(new LczForm), "LCZ");
+    tabs->addTab(scrollWrap(new ReprojectForm), "Reproject");
     // Only the active tab's redraw should recenter the shared map - without
     // this, e.g. every Domains-tab field edit would yank the camera back
     // while the user is looking at View-tab raster layers.

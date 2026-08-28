@@ -33,16 +33,20 @@ constexpr int kMaxWarpDimension = 4096;
 // Cheap (no resampling) query for the pixel size GDALWarp would naturally
 // pick for a plain "-t_srs <destWkt>" warp with no -ts/-tr override -
 // mirrors what the gdalwarp CLI itself computes internally before running
-// the actual warp. Returns false (leaving outWidth/outHeight untouched) if
-// GDAL can't suggest one, in which case the caller falls back to letting
+// the actual warp. Returns false (leaving the outputs untouched) if GDAL
+// can't suggest one, in which case the caller falls back to letting
 // GDALWarp decide on its own.
-bool suggestedWarpSize(GDALDatasetH source, const char* destWkt, int& outWidth, int& outHeight) {
+bool suggestedWarpGrid(GDALDatasetH source, const char* destWkt, double outGeoTransform[6], int& outWidth, int& outHeight) {
     void* transformer = GDALCreateGenImgProjTransformer(source, nullptr, nullptr, destWkt, FALSE, 0.0, 1);
     if (!transformer) return false;
-    double geoTransform[6];
-    const bool ok = GDALSuggestedWarpOutput(source, GDALGenImgProjTransform, transformer, geoTransform, &outWidth, &outHeight) == CE_None;
+    const bool ok = GDALSuggestedWarpOutput(source, GDALGenImgProjTransform, transformer, outGeoTransform, &outWidth, &outHeight) == CE_None;
     GDALDestroyGenImgProjTransformer(transformer);
     return ok;
+}
+
+bool suggestedWarpSize(GDALDatasetH source, const char* destWkt, int& outWidth, int& outHeight) {
+    double geoTransform[6];
+    return suggestedWarpGrid(source, destWkt, geoTransform, outWidth, outHeight);
 }
 
 // Shared body of warpToWebMercator and warpToCrs - both let GDAL discover
@@ -198,6 +202,32 @@ std::vector<float> warpToGrid(std::span<const float> values, int width, int heig
     for (auto& value : result)
         if (std::abs(value - kNodataSentinel) <= 1e-5f * std::max(1.0f, std::abs(kNodataSentinel))) value = std::numeric_limits<float>::quiet_NaN();
     return result;
+}
+
+DestinationGrid suggestWarpGrid(
+    int width, int height, const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform, const std::string& destWkt) {
+    GDALAllRegister();
+    auto* memDriver = GetGDALDriverManager()->GetDriverByName("MEM");
+    if (!memDriver) throw UserError("GDAL's MEM driver is unavailable.");
+    // Only georeferencing matters for GDALSuggestedWarpOutput - no pixel
+    // data is ever written to or read from this dataset.
+    std::unique_ptr<GDALDataset, void (*)(GDALDataset*)> source(
+        memDriver->Create("", width, height, 0, GDT_Float32, nullptr), [](GDALDataset* d) { if (d) GDALClose(d); });
+    if (!source) throw UserError("Could not create an in-memory raster to derive the destination grid.");
+    source->SetProjection(sourceWkt.c_str());
+    source->SetGeoTransform(const_cast<double*>(sourceGeotransform.data()));
+
+    double geoTransform[6];
+    int width_ = 0, height_ = 0;
+    if (!suggestedWarpGrid(GDALDataset::ToHandle(source.get()), destWkt.c_str(), geoTransform, width_, height_) || width_ <= 0 || height_ <= 0)
+        throw UserError("GDAL could not derive an output grid for the requested CRS from this domain - the domain may lie outside the CRS's area of use.");
+
+    DestinationGrid grid;
+    grid.wkt = destWkt;
+    std::copy(std::begin(geoTransform), std::end(geoTransform), grid.geotransform.begin());
+    grid.width = width_;
+    grid.height = height_;
+    return grid;
 }
 
 }  // namespace wrftools

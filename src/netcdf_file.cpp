@@ -100,6 +100,18 @@ NetcdfFile NetcdfFile::open(const std::filesystem::path& path, Mode mode) {
     return NetcdfFile(ncid, path, mode);
 }
 
+NetcdfFile NetcdfFile::create(const std::filesystem::path& path, Format format) {
+    int createMode = NC_CLOBBER;
+    switch (format) {
+        case Format::Netcdf4: createMode |= NC_NETCDF4; break;
+        case Format::Netcdf4Classic: createMode |= NC_NETCDF4 | NC_CLASSIC_MODEL; break;
+        case Format::Classic: break;
+    }
+    int ncid = -1;
+    checkNc(nc_create(path.string().c_str(), createMode, &ncid), "nc_create " + path.string());
+    return NetcdfFile(ncid, path, Mode::ReadWrite);
+}
+
 NetcdfFile::~NetcdfFile() { close(); }
 
 NetcdfFile::NetcdfFile(NetcdfFile&& other) noexcept : ncid_(other.ncid_), path_(std::move(other.path_)), mode_(other.mode_) { other.ncid_ = -1; }
@@ -246,6 +258,13 @@ NetcdfFile::Attribute NetcdfFile::getAttribute(const std::string& variableName, 
     return attribute;
 }
 
+std::vector<NetcdfFile::Attribute> NetcdfFile::attributes(const std::string& variableName) const {
+    const int varid = varidFor(ncid_, variableName);
+    std::vector<Attribute> result;
+    for (const auto& name : attributeNames(ncid_, varid)) result.push_back(getAttribute(variableName, name));
+    return result;
+}
+
 void NetcdfFile::putAttribute(const std::string& variableName, const Attribute& attribute) {
     if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::putAttribute: file was not opened read-write: " + path_.string());
     const int varid = varidFor(ncid_, variableName);
@@ -272,7 +291,17 @@ void NetcdfFile::defineDimension(const std::string& name, std::size_t length) {
     checkNc(nc_enddef(ncid_), "nc_enddef");
 }
 
-void NetcdfFile::defineVariable(const std::string& name, NcType type, const std::vector<std::string>& dimensionNames) {
+void NetcdfFile::defineUnlimitedDimension(const std::string& name) {
+    if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::defineUnlimitedDimension: file was not opened read-write: " + path_.string());
+    const int redefStatus = nc_redef(ncid_);
+    if (redefStatus != NC_NOERR && redefStatus != NC_EINDEFINE) checkNc(redefStatus, "nc_redef");
+    int dimid = -1;
+    checkNc(nc_def_dim(ncid_, name.c_str(), NC_UNLIMITED, &dimid), "nc_def_dim " + name);
+    checkNc(nc_enddef(ncid_), "nc_enddef");
+}
+
+void NetcdfFile::defineVariable(const std::string& name, NcType type, const std::vector<std::string>& dimensionNames,
+    const std::vector<std::size_t>& chunkSizes, int deflateLevel, std::optional<float> fillValue) {
     if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::defineVariable: file was not opened read-write: " + path_.string());
     std::vector<int> dimids;
     dimids.reserve(dimensionNames.size());
@@ -285,7 +314,95 @@ void NetcdfFile::defineVariable(const std::string& name, NcType type, const std:
     if (redefStatus != NC_NOERR && redefStatus != NC_EINDEFINE) checkNc(redefStatus, "nc_redef");
     int varid = -1;
     checkNc(nc_def_var(ncid_, name.c_str(), type, static_cast<int>(dimids.size()), dimids.data(), &varid), "nc_def_var " + name);
+
+    int format = 0;
+    checkNc(nc_inq_format(ncid_, &format), "nc_inq_format");
+    if (format == NC_FORMAT_NETCDF4 || format == NC_FORMAT_NETCDF4_CLASSIC) {
+        if (!chunkSizes.empty()) checkNc(nc_def_var_chunking(ncid_, varid, NC_CHUNKED, chunkSizes.data()), "nc_def_var_chunking " + name);
+        if (deflateLevel >= 0) checkNc(nc_def_var_deflate(ncid_, varid, /*shuffle=*/0, /*deflate=*/1, deflateLevel), "nc_def_var_deflate " + name);
+    }
+    if (fillValue) {
+        const float value = *fillValue;
+        checkNc(nc_put_att_float(ncid_, varid, "_FillValue", type, 1, &value), "nc_put_att_float _FillValue " + name);
+    }
     checkNc(nc_enddef(ncid_), "nc_enddef");
+}
+
+std::string NetcdfFile::readText(const std::string& variableName) const {
+    int varid = -1;
+    checkNc(nc_inq_varid(ncid_, variableName.c_str(), &varid), "nc_inq_varid " + variableName);
+    std::string data(productOf(shape(variableName)), '\0');
+    if (!data.empty()) checkNc(nc_get_var_text(ncid_, varid, data.data()), "nc_get_var_text " + variableName);
+    return data;
+}
+
+void NetcdfFile::writeText(const std::string& variableName, const std::string& data) {
+    if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::writeText: file was not opened read-write: " + path_.string());
+    int varid = -1;
+    checkNc(nc_inq_varid(ncid_, variableName.c_str(), &varid), "nc_inq_varid " + variableName);
+    const auto expected = productOf(shape(variableName));
+    if (data.size() != expected)
+        throw UserError("NetcdfFile: data size " + std::to_string(data.size()) + " does not match variable " + variableName + "'s shape (" +
+                         std::to_string(expected) + " elements)");
+    checkNc(nc_put_var_text(ncid_, varid, data.data()), "nc_put_var_text " + variableName);
+}
+
+namespace {
+// `shape[i]` for an unlimited dimension is the file's CURRENT record count,
+// which nc_put_vara_* is free to grow past (that's the entire point of an
+// unlimited dimension) - so that one dimension is exempted from the
+// out-of-bounds check below, both for reads (an out-of-range read against
+// it still fails inside netCDF-C itself, with a netCDF error) and writes.
+void checkSliceShape(const std::string& variableName, const std::vector<std::size_t>& shape, bool firstDimensionUnlimited,
+    const std::vector<std::size_t>& start, const std::vector<std::size_t>& count, std::size_t dataSize) {
+    if (start.size() != shape.size() || count.size() != shape.size())
+        throw UserError("NetcdfFile: start/count rank does not match variable " + variableName + "'s rank (" + std::to_string(shape.size()) + ")");
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+        if (firstDimensionUnlimited && i == 0) continue;
+        if (start[i] + count[i] > shape[i])
+            throw UserError("NetcdfFile: slice out of bounds for variable " + variableName + " on dimension " + std::to_string(i));
+    }
+    if (dataSize != productOf(count))
+        throw UserError("NetcdfFile: data size " + std::to_string(dataSize) + " does not match requested slice (" + std::to_string(productOf(count)) +
+                         " elements) for variable " + variableName);
+}
+
+bool variableStartsWithUnlimitedDimension(int ncid, int varid) {
+    int unlimDimid = -1;
+    checkNc(nc_inq_unlimdim(ncid, &unlimDimid), "nc_inq_unlimdim");
+    if (unlimDimid == -1) return false;
+    int ndims = 0;
+    checkNc(nc_inq_varndims(ncid, varid, &ndims), "nc_inq_varndims");
+    if (ndims == 0) return false;
+    std::vector<int> dimids(static_cast<std::size_t>(ndims));
+    checkNc(nc_inq_vardimid(ncid, varid, dimids.data()), "nc_inq_vardimid");
+    return dimids.front() == unlimDimid;
+}
+}  // namespace
+
+std::vector<float> NetcdfFile::readFloatSlice(const std::string& variableName, const std::vector<std::size_t>& start, const std::vector<std::size_t>& count) const {
+    int varid = -1;
+    checkNc(nc_inq_varid(ncid_, variableName.c_str(), &varid), "nc_inq_varid " + variableName);
+    checkSliceShape(variableName, shape(variableName), variableStartsWithUnlimitedDimension(ncid_, varid), start, count, productOf(count));
+    std::vector<float> data(productOf(count));
+    if (!data.empty()) checkNc(nc_get_vara_float(ncid_, varid, start.data(), count.data(), data.data()), "nc_get_vara_float " + variableName);
+    return data;
+}
+
+void NetcdfFile::writeFloatSlice(const std::string& variableName, const std::vector<std::size_t>& start, const std::vector<std::size_t>& count, const std::vector<float>& data) {
+    if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::writeFloatSlice: file was not opened read-write: " + path_.string());
+    int varid = -1;
+    checkNc(nc_inq_varid(ncid_, variableName.c_str(), &varid), "nc_inq_varid " + variableName);
+    checkSliceShape(variableName, shape(variableName), variableStartsWithUnlimitedDimension(ncid_, varid), start, count, data.size());
+    checkNc(nc_put_vara_float(ncid_, varid, start.data(), count.data(), data.data()), "nc_put_vara_float " + variableName);
+}
+
+void NetcdfFile::writeDoubleSlice(const std::string& variableName, const std::vector<std::size_t>& start, const std::vector<std::size_t>& count, const std::vector<double>& data) {
+    if (mode_ != Mode::ReadWrite) throw UserError("NetcdfFile::writeDoubleSlice: file was not opened read-write: " + path_.string());
+    int varid = -1;
+    checkNc(nc_inq_varid(ncid_, variableName.c_str(), &varid), "nc_inq_varid " + variableName);
+    checkSliceShape(variableName, shape(variableName), variableStartsWithUnlimitedDimension(ncid_, varid), start, count, data.size());
+    checkNc(nc_put_vara_double(ncid_, varid, start.data(), count.data(), data.data()), "nc_put_vara_double " + variableName);
 }
 
 std::vector<float> NetcdfFile::readFloat(const std::string& variableName) const {
