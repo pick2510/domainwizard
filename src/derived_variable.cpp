@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <set>
 
 namespace wrftools {
 
@@ -128,11 +129,13 @@ std::vector<Token> tokenize(const std::string& src) {
 
 class Parser {
 public:
-    Parser(const std::string& script, std::map<std::string, VariableShape> shapes) : shapes_(std::move(shapes)), tokens_(tokenize(script)) {}
+    Parser(const std::string& script, std::map<std::string, VariableShape> shapes)
+        : sourceShapes_(shapes), shapes_(std::move(shapes)), tokens_(tokenize(script)) {}
 
     std::vector<DerivedVariableDef> parseScript() {
         std::vector<DerivedVariableDef> defs;
         std::map<std::string, std::size_t> indexByName;
+        std::set<std::string> definedNames;  // every name assigned so far IN THIS SCRIPT - at most one assignment per name
         while (!atEnd()) {
             const auto nameToken = expectIdentToken("a variable name");
             if (isPunct("@")) {
@@ -151,13 +154,22 @@ public:
                 else error(attrToken, "unsupported attribute '" + attrToken.text + "' (only 'units' and 'long_name' are supported)");
             } else {
                 expectPunct("=");
-                if (shapes_.count(nameToken.text))
-                    error(nameToken, "'" + nameToken.text + "' is already defined (a source variable, or an earlier statement in this script)");
+                if (definedNames.count(nameToken.text))
+                    error(nameToken, "'" + nameToken.text + "' is already defined earlier in this script");
+                // A source variable's own name may be reassigned exactly
+                // once (e.g. `T2 = T2 - 273.15;`, matching ncap2) - the RHS
+                // below still sees the ORIGINAL source shape for `T2`
+                // (shapes_ isn't updated until after parseExpr() returns),
+                // so this is a replacement, not a self-reference. A name
+                // that's already an earlier DERIVED definition (source or
+                // not) is caught by definedNames above instead.
                 auto expression = parseExpr();
                 DerivedVariableDef def;
                 def.name = nameToken.text;
                 def.expression = expression;
+                def.overridesSourceVariable = sourceShapes_.count(nameToken.text) > 0;
                 shapes_[nameToken.text] = expression->shape;
+                definedNames.insert(nameToken.text);
                 indexByName[nameToken.text] = defs.size();
                 defs.push_back(std::move(def));
             }
@@ -167,7 +179,8 @@ public:
     }
 
 private:
-    std::map<std::string, VariableShape> shapes_;
+    const std::map<std::string, VariableShape> sourceShapes_;  // never mutated - the original source-variable shapes, for the override check
+    std::map<std::string, VariableShape> shapes_;               // sourceShapes_ plus every name assigned so far (source shape overwritten by an override's own shape)
     std::vector<Token> tokens_;
     std::size_t pos_{};
 

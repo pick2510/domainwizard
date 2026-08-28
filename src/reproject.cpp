@@ -480,6 +480,18 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
         sourceShapes.emplace(variable.name, VariableShape{variable.extraDimension.value_or(""), variable.levelCount});
     const auto derivedVariables = parseDerivedVariables(options.derivedVariablesScript, sourceShapes);
 
+    // A derived variable that overrides a source variable's own name (e.g.
+    // `T2 = T2 - 273.15;`) supersedes any pass-through copy of that name -
+    // drop it from selectedVariables here so it's defined/written exactly
+    // once (by the derived-variable path below), never twice, whether or
+    // not the user also happened to tick it in the variable list.
+    selectedVariables.erase(std::remove_if(selectedVariables.begin(), selectedVariables.end(),
+                                 [&](const WrfVariable& variable) {
+                                     return std::any_of(derivedVariables.begin(), derivedVariables.end(),
+                                         [&](const DerivedVariableDef& def) { return def.overridesSourceVariable && def.name == variable.name; });
+                                 }),
+        selectedVariables.end());
+
     const TargetCrsInfo target = describeTargetCrs(options.targetEpsg);
     const DestinationGrid grid =
         computeDestinationGrid(firstFile.size()[0], firstFile.size()[1], firstFile.projectionWkt(), firstFile.geotransform(), target, options.grid);
@@ -672,8 +684,27 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
                 if (variable.categoryScheme) out.putAttribute(variable.name, {"wrf_category_scheme", NC_CHAR, *variable.categoryScheme, {}});
             }
             for (const auto& def : derivedVariables) {
-                if (!def.longName.empty()) out.putAttribute(def.name, {"long_name", NC_CHAR, def.longName, {}});
-                if (!def.units.empty()) out.putAttribute(def.name, {"units", NC_CHAR, def.units, {}});
+                // An override (def.name reassigns a source variable, e.g.
+                // `T2 = T2 - 273.15;`) falls back to the ORIGINAL variable's
+                // own long_name/units when the script doesn't set them
+                // itself - closest to "still logically named T2, so still
+                // looks like T2 unless told otherwise". This is exactly the
+                // gotcha ncap2 itself has too when a transformed variable's
+                // units genuinely change (K -> degC here) but the script
+                // never overrides @units: the attribute would then be
+                // stale/wrong, not a bug in this fallback - the script has
+                // to say so explicitly.
+                std::string longName = def.longName, units = def.units;
+                if (def.overridesSourceVariable && (longName.empty() || units.empty())) {
+                    const auto found = std::find_if(
+                        firstFile.variables().begin(), firstFile.variables().end(), [&](const WrfVariable& v) { return v.name == def.name; });
+                    if (found != firstFile.variables().end()) {
+                        if (longName.empty()) longName = found->description;
+                        if (units.empty()) units = found->units;
+                    }
+                }
+                if (!longName.empty()) out.putAttribute(def.name, {"long_name", NC_CHAR, longName, {}});
+                if (!units.empty()) out.putAttribute(def.name, {"units", NC_CHAR, units, {}});
                 out.putAttribute(def.name, {"grid_mapping", NC_CHAR, "crs", {}});
                 out.putAttribute(def.name, {"missing_value", NC_FLOAT, "", {static_cast<double>(kWrfFillValue)}});
             }

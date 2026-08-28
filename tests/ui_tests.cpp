@@ -1954,6 +1954,9 @@ TEST_CASE("ReprojectForm's derived-variables status updates live as the script c
 
     form.derivedVariablesScriptEdit()->setPlainText("LVLHT = PH + NOT_A_REAL_VARIABLE;\n");
     CHECK(form.derivedVariablesStatusLabel()->text().contains("unknown identifier"));
+
+    form.derivedVariablesScriptEdit()->setPlainText("T2 = T2 - 273.15;\n");
+    CHECK(form.derivedVariablesStatusLabel()->text().contains("T2 (replaces source)"));
 }
 
 TEST_CASE("an invalid derived-variables script throws UserError from runReproject") {

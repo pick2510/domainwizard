@@ -26,6 +26,15 @@ struct DerivedVariableDef {
     std::string units;
     std::string longName;
     std::shared_ptr<const Expr> expression;
+    // true when `name` is also a source variable's own name (e.g.
+    // `T2 = T2 - 273.15;`) - the expression's own operand reference to
+    // `name` on the RHS still resolves to the ORIGINAL source variable
+    // (see parseDerivedVariables), so this is a replacement, not a
+    // self-referencing loop. The caller (reproject.cpp) uses this to skip
+    // writing a separate pass-through copy of `name` even if it was also
+    // checked/selected, and to fall back units/longName to the source
+    // variable's own when this def doesn't set them itself.
+    bool overridesSourceVariable{false};
 };
 
 // A small ncap2-like arithmetic-processor grammar for the Reproject tab's
@@ -68,14 +77,24 @@ struct DerivedVariableDef {
 // (chaining) - accepted names accumulate as parsing proceeds, seeded from
 // sourceShapes.
 //
+// An assignment target may reuse an existing SOURCE variable's own name
+// exactly once - e.g. `T2 = T2 - 273.15;` - matching ncap2's own "variables
+// can be reassigned" behaviour; the resulting DerivedVariableDef has
+// overridesSourceVariable set. The RHS's own reference to `T2` resolves to
+// the ORIGINAL source variable, not the new definition (shapes_/known-names
+// only gain the new entry once the whole RHS has been parsed), so this is a
+// replacement, not infinite self-reference.
+//
 // Throws UserError (naming the offending line/column) on:
 //  - a syntax error (unexpected token, unmatched paren, wrong argument
 //    count to a builtin, ...);
 //  - a reference to a name that is neither a source variable nor an
 //    earlier statement's own name in this script, or an unknown function
 //    name;
-//  - an assignment whose target name collides with an existing source
-//    variable;
+//  - an assignment target name already assigned earlier IN THIS SCRIPT -
+//    whether that earlier assignment was itself a source-variable override
+//    or a brand-new name; only ONE assignment per name is allowed, so a
+//    source variable can be overridden but not reassigned twice;
 //  - an `@attr` statement targeting a name not yet defined by an
 //    assignment in this same script;
 //  - an expression combining two operands (directly, or through a function

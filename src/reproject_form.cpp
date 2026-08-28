@@ -403,7 +403,8 @@ void ReprojectForm::updateDerivedVariablesStatus() {
     try {
         const auto defs = parseDerivedVariables(script, sourceShapes_);
         QStringList names;
-        for (const auto& def : defs) names << QString::fromStdString(def.name);
+        for (const auto& def : defs)
+            names << (def.overridesSourceVariable ? QString::fromStdString(def.name) + " (replaces source)" : QString::fromStdString(def.name));
         derivedVariablesStatus_->setText(QString("%1 derived variable(s): %2").arg(defs.size()).arg(names.join(", ")));
         derivedVariablesStatus_->setStyleSheet("color: green;");
     } catch (const std::exception& error) {

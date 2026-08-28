@@ -2536,6 +2536,54 @@ TEST_CASE("runReproject with a derived-variables script combined with a pass-thr
     CHECK(out.variable("PTOT").dimensionNames == std::vector<std::string>{"time", "bottom_top", "lat", "lon"});
 }
 
+TEST_CASE("runReproject: a derived variable overriding a source variable's name replaces it, even when also checked as pass-through") {
+    const auto dir = reprojectOutputDir("derived-override");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.outputDirectory = dir;
+    options.variables = {"T2"};  // also checked as pass-through - the override must still win, not double-define "T2"
+    options.derivedVariablesScript = "T2 = T2 - 273.15;\nT2@units = \"degC\";\n";
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+
+    // Exactly one T2 variable (defineVariable() would have thrown on a
+    // duplicate definition if the override hadn't superseded the
+    // pass-through copy).
+    CHECK(out.variable("T2").dimensionNames == std::vector<std::string>{"time", "lat", "lon"});
+    CHECK(out.getAttribute("T2", "units").text == "degC");  // explicit @units wins over the source's own "K"
+    CHECK(out.getAttribute("T2", "long_name").text == "TEMP at 2 M");  // not set by the script - falls back to the source's own description
+
+    WrfFile source("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    const auto sourceT2 = source.read("T2", 0, 0);
+    float sourceMin = std::numeric_limits<float>::infinity(), sourceMax = -std::numeric_limits<float>::infinity();
+    for (float v : sourceT2) if (std::isfinite(v)) { sourceMin = std::min(sourceMin, v); sourceMax = std::max(sourceMax, v); }
+    const auto outT2 = out.readFloat("T2");
+    bool sawFinite = false;
+    for (float v : outT2) {
+        if (v > 1e30f) continue;
+        sawFinite = true;
+        CHECK(v >= sourceMin - 273.15f - 0.5f);
+        CHECK(v <= sourceMax - 273.15f + 0.5f);
+    }
+    CHECK(sawFinite);
+}
+
+TEST_CASE("runReproject: an override with no explicit @units/@long_name falls back to the source variable's own") {
+    const auto dir = reprojectOutputDir("derived-override-fallback");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.outputDirectory = dir;
+    options.derivedVariablesScript = "T2 = T2 + 0;\n";  // no @units/@long_name at all
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    CHECK(out.getAttribute("T2", "units").text == "K");
+    CHECK(out.getAttribute("T2", "long_name").text == "TEMP at 2 M");
+}
+
 TEST_CASE("runReproject propagates a derived-variables script error and requires at least one output variable") {
     const auto dir = reprojectOutputDir("derived-errors");
     ReprojectOptions base;
@@ -2797,9 +2845,32 @@ TEST_CASE("parseDerivedVariables rejects an @attr statement with no matching ass
     CHECK_THROWS_AS(parseDerivedVariables("NOPE@units = \"m\";\n", shapes), UserError);
 }
 
-TEST_CASE("parseDerivedVariables rejects a name colliding with an existing source variable") {
+TEST_CASE("parseDerivedVariables allows reassigning a source variable's own name exactly once, marking it as an override") {
     const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
-    CHECK_THROWS_AS(parseDerivedVariables("A = 1;\n", shapes), UserError);
+    const auto defs = parseDerivedVariables("A = A + 1;\n", shapes);
+    REQUIRE(defs.size() == 1);
+    CHECK(defs[0].name == "A");
+    CHECK(defs[0].overridesSourceVariable);
+
+    // The RHS's own "A" resolves to the ORIGINAL source variable, not the
+    // new definition - a replacement, not infinite self-reference.
+    TestResolver resolver;
+    resolver.defs = &defs;
+    resolver.raw = {{"A@0", {5.0f}}};
+    CHECK(evaluate(defs[0], 0, std::ref(resolver))[0] == Catch::Approx(6.0f));
+}
+
+TEST_CASE("parseDerivedVariables rejects reassigning the same name twice, whether a source override or a plain derived name") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    CHECK_THROWS_AS(parseDerivedVariables("A = 1;\nA = 2;\n", shapes), UserError);
+    CHECK_THROWS_AS(parseDerivedVariables("X = 1;\nX = 2;\n", shapes), UserError);
+}
+
+TEST_CASE("a derived variable that does not override a source variable is not marked as an override") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    const auto defs = parseDerivedVariables("X = A + 1;\n", shapes);
+    REQUIRE(defs.size() == 1);
+    CHECK_FALSE(defs[0].overridesSourceVariable);
 }
 
 TEST_CASE("parseDerivedVariables rejects combining two operands on different vertical dimensions") {
