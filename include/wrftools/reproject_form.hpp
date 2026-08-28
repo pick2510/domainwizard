@@ -1,8 +1,10 @@
 #pragma once
 
 #include "wrftools/crs.hpp"
+#include "wrftools/derived_variable.hpp"
 
 #include <atomic>
+#include <map>
 #include <optional>
 #include <QWidget>
 
@@ -82,6 +84,8 @@ public:
     [[nodiscard]] QLineEdit* extentMaxXField() const noexcept { return extentMaxX_; }
     [[nodiscard]] QLineEdit* extentMaxYField() const noexcept { return extentMaxY_; }
     [[nodiscard]] QListWidget* variablesList() const noexcept { return variables_; }
+    [[nodiscard]] QPlainTextEdit* derivedVariablesScriptEdit() const noexcept { return derivedVariablesScript_; }
+    [[nodiscard]] QLabel* derivedVariablesStatusLabel() const noexcept { return derivedVariablesStatus_; }
     [[nodiscard]] QComboBox* resamplingCombo() const noexcept { return resampling_; }
     [[nodiscard]] QCheckBox* mergeSeriesCheck() const noexcept { return mergeSeries_; }
     [[nodiscard]] QCheckBox* nearestForCategoricalCheck() const noexcept { return nearestForCategorical_; }
@@ -100,6 +104,13 @@ private:
     void browseInputFiles();
     void browseOutputDirectory();
     void refreshVariables();
+    // Re-parses derivedVariablesScript_'s current text against
+    // sourceShapes_ (rebuilt by refreshVariables()) and shows either "N
+    // derived variable(s): ..." or the UserError's message in
+    // derivedVariablesStatus_ - called on every edit, so purely a live
+    // preview; the actual validation that blocks a run happens again in
+    // runReproject() itself via the same parseDerivedVariables() call.
+    void updateDerivedVariablesStatus();
     void setRunning(bool running);
     void logLine(const QString& line);
     void cancel();
@@ -157,6 +168,14 @@ private:
     QLineEdit* variableFilter_{};
     QPushButton* selectAllButton_{};
     QPushButton* selectNoneButton_{};
+
+    // Every currently-open input file's own RAW (undestaggered) variable
+    // shapes, by name - rebuilt by refreshVariables(), fed to
+    // parseDerivedVariables() by both updateDerivedVariablesStatus() (live
+    // preview) and runReproject() (the real validation).
+    std::map<std::string, VariableShape> sourceShapes_;
+    QPlainTextEdit* derivedVariablesScript_{};
+    QLabel* derivedVariablesStatus_{};
 
     QComboBox* resampling_{};
     QCheckBox* mergeSeries_{};

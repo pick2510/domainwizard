@@ -52,6 +52,7 @@ wrftools::ReprojectOptions readJob(const QString& jobPath) {
                           : resampling == "mode"     ? wrftools::ResampleMethod::Mode
                                                       : wrftools::ResampleMethod::Bilinear;
     options.nearestForCategorical = root.value("nearestForCategorical").toBool(true);
+    options.derivedVariablesScript = root.value("derivedVariables").toString().toStdString();
 
     const auto gridObject = root.value("grid").toObject();
     if (gridObject.contains("pixelSizeX")) options.grid.pixelSizeX = gridObject.value("pixelSizeX").toDouble();

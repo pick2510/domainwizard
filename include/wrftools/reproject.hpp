@@ -37,6 +37,12 @@ struct ReprojectOptions {
     ResampleMethod resampling{ResampleMethod::Bilinear};
     bool nearestForCategorical{true};
     GridOverride grid;
+    // An ncap2-like arithmetic-processor script (see derived_variable.hpp)
+    // defining additional output variables computed from the selected
+    // source variables - "" (the default) defines none. Every name the
+    // script assigns is automatically included in the output, the same way
+    // ncap2 itself writes every variable a script defines.
+    std::string derivedVariablesScript;
 };
 
 // Everything the CF writer needs about the destination EPSG code, resolved

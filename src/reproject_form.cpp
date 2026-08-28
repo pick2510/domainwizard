@@ -1,5 +1,6 @@
 #include "wrftools/reproject_form.hpp"
 
+#include "wrftools/derived_variable.hpp"
 #include "wrftools/error.hpp"
 #include "wrftools/reproject.hpp"
 #include "wrftools/tile_map_widget.hpp"
@@ -213,6 +214,27 @@ ReprojectForm::ReprojectForm(TileMapWidget* map, QWidget* parent) : QWidget(pare
     variablesGroup->setLayout(variablesLayout);
     layout->addWidget(variablesGroup);
 
+    auto* derivedGroup = new QGroupBox("Derived Variables (optional)", this);
+    auto* derivedLayout = new QVBoxLayout;
+    derivedVariablesScript_ = new QPlainTextEdit(this);
+    derivedVariablesScript_->setPlaceholderText(
+        "LVLHT = (( PH + PHB ) / 9.81) - HGT;\n"
+        "LVLHT@units = \"m\";\n"
+        "LVLHT@long_name = \"Height above ground [m]\";\n"
+        "PTOT = (P + PB) * 0.01;\n"
+        "PTOT@long_name = \"Total Level Pressure\";\n"
+        "PTOT@units = \"mbar\";\n"
+        "TK = (PTOT/1000) ^ 0.2857 * (T + 300);\n"
+        "TK@units = \"Kelvin\";\n"
+        "TK@long_name = \"Level Temperature [K]\";");
+    derivedVariablesScript_->setMinimumHeight(100);
+    derivedLayout->addWidget(derivedVariablesScript_);
+    derivedVariablesStatus_ = new QLabel(this);
+    derivedVariablesStatus_->setWordWrap(true);
+    derivedLayout->addWidget(derivedVariablesStatus_);
+    derivedGroup->setLayout(derivedLayout);
+    layout->addWidget(derivedGroup);
+
     auto* optionsGroup = new QGroupBox("Options", this);
     auto* optionsForm = new QFormLayout;
     resampling_ = new QComboBox(this);
@@ -281,6 +303,7 @@ ReprojectForm::ReprojectForm(TileMapWidget* map, QWidget* parent) : QWidget(pare
         for (int i = 0; i < variables_->count(); ++i)
             if (!variables_->item(i)->isHidden()) variables_->item(i)->setCheckState(Qt::Unchecked);
     });
+    connect(derivedVariablesScript_, &QPlainTextEdit::textChanged, this, [this] { updateDerivedVariablesStatus(); });
     connect(resetAoiButton_, &QPushButton::clicked, this, [this] { resetAoiToFullDomain(); });
     // The Extent fields are in the TARGET CRS, so a changed EPSG makes the
     // previously-written values wrong even though the AOI rectangle itself
@@ -324,9 +347,11 @@ void ReprojectForm::refreshVariables() {
     variables_->clear();
     structureLabel_->clear();
 
+    sourceShapes_.clear();
     if (inputPaths_.isEmpty()) {
         domainBoundsLonLat_.reset();
         updateMapOverlays();
+        updateDerivedVariablesStatus();
         return;
     }
     std::vector<std::filesystem::path> paths;
@@ -355,11 +380,35 @@ void ReprojectForm::refreshVariables() {
             item->setData(Qt::UserRole, name);
             const auto previous = previousChecks.find(name);
             item->setCheckState(previous != previousChecks.end() ? previous->second : Qt::Unchecked);
+            // Raw (undestaggered) shape, exactly as parseDerivedVariables
+            // needs it - see reproject.cpp's own sourceShapes comment for
+            // why this must not go through verticalAxisFor's destagger.
+            sourceShapes_.emplace(variable.name, VariableShape{variable.extraDimension.value_or(""), variable.levelCount});
         }
     } catch (const std::exception& error) {
         domainBoundsLonLat_.reset();
         updateMapOverlays();
         logLine("Could not read input file(s): " + QString::fromUtf8(error.what()));
+    }
+    updateDerivedVariablesStatus();
+}
+
+void ReprojectForm::updateDerivedVariablesStatus() {
+    const auto script = derivedVariablesScript_->toPlainText().toStdString();
+    if (script.find_first_not_of(" \t\r\n") == std::string::npos) {
+        derivedVariablesStatus_->clear();
+        derivedVariablesStatus_->setStyleSheet({});
+        return;
+    }
+    try {
+        const auto defs = parseDerivedVariables(script, sourceShapes_);
+        QStringList names;
+        for (const auto& def : defs) names << QString::fromStdString(def.name);
+        derivedVariablesStatus_->setText(QString("%1 derived variable(s): %2").arg(defs.size()).arg(names.join(", ")));
+        derivedVariablesStatus_->setStyleSheet("color: green;");
+    } catch (const std::exception& error) {
+        derivedVariablesStatus_->setText(QString::fromUtf8(error.what()));
+        derivedVariablesStatus_->setStyleSheet("color: red;");
     }
 }
 
@@ -398,7 +447,14 @@ void ReprojectForm::runReproject() {
     std::vector<QString> selectedVariables;
     for (int i = 0; i < variables_->count(); ++i)
         if (variables_->item(i)->checkState() == Qt::Checked) selectedVariables.push_back(variables_->item(i)->data(Qt::UserRole).toString());
-    if (selectedVariables.empty()) throw UserError("Please select at least one variable.");
+    const auto derivedVariablesScript = derivedVariablesScript_->toPlainText();
+    if (selectedVariables.empty() && derivedVariablesScript.trimmed().isEmpty())
+        throw UserError("Please select at least one variable, or define one in Derived Variables.");
+    // Re-validates (parseDerivedVariables is cheap - a handful of short
+    // statements) rather than trusting updateDerivedVariablesStatus()'s own
+    // live preview, matching every other field's "throw here, not just show
+    // a status label" contract in this method.
+    if (!derivedVariablesScript.trimmed().isEmpty()) static_cast<void>(parseDerivedVariables(derivedVariablesScript.toStdString(), sourceShapes_));
 
     bool epsgOk = false;
     const int epsg = epsg_->text().toInt(&epsgOk);
@@ -431,6 +487,7 @@ void ReprojectForm::runReproject() {
     QJsonArray variablesArray;
     for (const auto& name : selectedVariables) variablesArray.append(name);
     job["variables"] = variablesArray;
+    job["derivedVariables"] = derivedVariablesScript;
     job["seriesMode"] = mergeSeries_->isChecked() ? "merge" : "perfile";
     job["outputDirectory"] = outputDirectory_->text();
     job["resampling"] = resampling_->currentText().toLower();

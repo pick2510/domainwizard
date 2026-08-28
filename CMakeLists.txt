@@ -150,6 +150,7 @@ add_library(wrftools_core
     src/netcdf_file.cpp
     src/lcz.cpp
     src/reproject.cpp
+    src/derived_variable.cpp
     src/stats.cpp
 )
 target_include_directories(wrftools_core PUBLIC include)

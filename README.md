@@ -24,8 +24,11 @@ Convert are plain file-in/file-out forms.
 - **Reproject** - convert wrfout files into plain CF-1.7 NetCDF on a
   regular grid in a chosen EPSG, for tools like QGIS, xarray/rioxarray, or
   CDO that don't understand WRF's native grid. Optionally crop to an AOI
-  rectangle drawn on the map. Runs in a separate worker process so the GUI
-  stays responsive.
+  rectangle drawn on the map, and optionally compute extra output variables
+  from an ncap2-like arithmetic-processor script (e.g.
+  `LVLHT = ((PH + PHB) / 9.81) - HGT;`, with arithmetic, comparisons,
+  `?:`, and a small math function library). Runs in a separate worker
+  process so the GUI stays responsive.
 - **LCZ** - applies Local Climate Zone urban-canopy parameters to a
   `geo_em` file from an LCZ classification GeoTIFF, for use with WRF's
   urban physics options.
@@ -122,6 +125,7 @@ src/point_inspector_dialog.cpp, chart_widget.cpp, stats.cpp
 src/lcz_form.cpp, lcz.cpp       LCZ tab + pipeline
 src/reproject_form.cpp, reproject.cpp, reproject_worker.cpp
                                  Reproject tab + out-of-process worker
+src/derived_variable.cpp        ncap2-like derived-variable script parser/evaluator
 src/netcdf_file.cpp             netCDF-C RAII wrapper (used by LCZ + Reproject)
 src/colormaps.cpp, units.cpp, colorbar.cpp
                                  color LUTs, unit conversion, legend rendering

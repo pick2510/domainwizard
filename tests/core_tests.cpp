@@ -12,6 +12,7 @@
 #include "wrftools/wps_binary_source.hpp"
 #include "wrftools/wrf_source.hpp"
 #include "wrftools/netcdf_file.hpp"
+#include "wrftools/derived_variable.hpp"
 #include "wrftools/lcz.hpp"
 #include "wrftools/reproject.hpp"
 #include "wrftools/stats.hpp"
@@ -2429,6 +2430,127 @@ TEST_CASE("runReproject to a target with a real (non-WGS84) datum, like EPSG:232
     CHECK(std::abs(actualY - expectedY) < 100.0);
 }
 
+TEST_CASE("runReproject with a derived-variables script writes LVLHT/PTOT/TK with correct shapes, attributes, and values") {
+    const auto dir = reprojectOutputDir("derived-variables");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.outputDirectory = dir;
+    // No pass-through options.variables at all - every output variable
+    // here comes from the script, matching how ncap2 itself writes every
+    // name a script assigns.
+    options.derivedVariablesScript =
+        "LVLHT = (( PH + PHB ) / 9.81) - HGT;\n"
+        "LVLHT@units = \"m\";\n"
+        "LVLHT@long_name = \"Height above ground [m]\";\n"
+        "PTOT = (P + PB) * 0.01;\n"
+        "PTOT@long_name = \"Total Level Pressure\";\n"
+        "PTOT@units = \"mbar\";\n"
+        "TK = (PTOT/1000) ^ 0.2857 * (T + 300);\n"
+        "TK@units = \"Kelvin\";\n"
+        "TK@long_name = \"Level Temperature [K]\";\n";
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+
+    // Shapes: LVLHT stays on the RAW (undestaggered) bottom_top_stag (5
+    // levels in this fixture) - unlike a pass-through-selected PH/PHB,
+    // which this app would instead destagger down to 4 levels under
+    // "bottom_top". PTOT/TK land on "bottom_top" since P/PB/T aren't
+    // staggered at all.
+    CHECK(out.variable("LVLHT").dimensionNames == std::vector<std::string>{"time", "bottom_top_stag", "lat", "lon"});
+    CHECK(out.variable("PTOT").dimensionNames == std::vector<std::string>{"time", "bottom_top", "lat", "lon"});
+    CHECK(out.variable("TK").dimensionNames == std::vector<std::string>{"time", "bottom_top", "lat", "lon"});
+    const auto dims = out.dimensions();
+    const auto stag = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "bottom_top_stag"; });
+    REQUIRE(stag != dims.end());
+    CHECK(stag->length == 5);
+    const auto unstag = std::find_if(dims.begin(), dims.end(), [](const auto& d) { return d.name == "bottom_top"; });
+    REQUIRE(unstag != dims.end());
+    CHECK(unstag->length == 4);
+
+    CHECK(out.getAttribute("LVLHT", "units").text == "m");
+    CHECK(out.getAttribute("LVLHT", "long_name").text == "Height above ground [m]");
+    CHECK(out.getAttribute("PTOT", "units").text == "mbar");
+    CHECK(out.getAttribute("PTOT", "long_name").text == "Total Level Pressure");
+    CHECK(out.getAttribute("TK", "units").text == "Kelvin");
+    CHECK(out.getAttribute("TK", "long_name").text == "Level Temperature [K]");
+    CHECK(out.getAttribute("LVLHT", "grid_mapping").text == "crs");
+
+    // Every finite output pixel must fall within the SAME formula computed
+    // directly from the source's own raw PH/PHB/HGT/P/PB/T, across every
+    // level (bilinear resampling can only interpolate within the source's
+    // own finite range, never invent values outside it - the same style of
+    // check the plain pass-through T2 test above uses).
+    WrfFile source("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    auto rangeOf = [](const std::vector<float>& values, float& minimum, float& maximum) {
+        for (float v : values) if (std::isfinite(v)) { minimum = std::min(minimum, v); maximum = std::max(maximum, v); }
+    };
+    float lvlhtMin = std::numeric_limits<float>::infinity(), lvlhtMax = -std::numeric_limits<float>::infinity();
+    for (int level = 0; level < 5; ++level) {
+        const auto ph = source.read("PH", 0, level), phb = source.read("PHB", 0, level), hgt = source.read("HGT", 0, 0);
+        std::vector<float> lvlht(ph.size());
+        for (std::size_t i = 0; i < ph.size(); ++i) lvlht[i] = ((ph[i] + phb[i]) / 9.81f) - hgt[i];
+        rangeOf(lvlht, lvlhtMin, lvlhtMax);
+    }
+    float ptotMin = std::numeric_limits<float>::infinity(), ptotMax = -std::numeric_limits<float>::infinity();
+    float tkMin = std::numeric_limits<float>::infinity(), tkMax = -std::numeric_limits<float>::infinity();
+    for (int level = 0; level < 4; ++level) {
+        const auto p = source.read("P", 0, level), pb = source.read("PB", 0, level), t = source.read("T", 0, level);
+        std::vector<float> ptot(p.size()), tk(p.size());
+        for (std::size_t i = 0; i < p.size(); ++i) {
+            ptot[i] = (p[i] + pb[i]) * 0.01f;
+            tk[i] = std::pow(ptot[i] / 1000.0f, 0.2857f) * (t[i] + 300.0f);
+        }
+        rangeOf(ptot, ptotMin, ptotMax);
+        rangeOf(tk, tkMin, tkMax);
+    }
+
+    const auto checkWithinRange = [](const std::vector<float>& outValues, float minimum, float maximum) {
+        bool sawFinite = false;
+        for (float v : outValues) {
+            if (v > 1e30f) continue;
+            sawFinite = true;
+            CHECK(v >= minimum - std::abs(minimum) * 0.01f - 1.0f);
+            CHECK(v <= maximum + std::abs(maximum) * 0.01f + 1.0f);
+        }
+        CHECK(sawFinite);
+    };
+    checkWithinRange(out.readFloat("LVLHT"), lvlhtMin, lvlhtMax);
+    checkWithinRange(out.readFloat("PTOT"), ptotMin, ptotMax);
+    checkWithinRange(out.readFloat("TK"), tkMin, tkMax);
+}
+
+TEST_CASE("runReproject with a derived-variables script combined with a pass-through variable shares the unstaggered dimension") {
+    const auto dir = reprojectOutputDir("derived-and-passthrough");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 4326;
+    options.outputDirectory = dir;
+    options.variables = {"T2"};
+    options.derivedVariablesScript = "PTOT = (P + PB) * 0.01;\n";
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    CHECK(out.variable("T2").dimensionNames == std::vector<std::string>{"time", "lat", "lon"});
+    CHECK(out.variable("PTOT").dimensionNames == std::vector<std::string>{"time", "bottom_top", "lat", "lon"});
+}
+
+TEST_CASE("runReproject propagates a derived-variables script error and requires at least one output variable") {
+    const auto dir = reprojectOutputDir("derived-errors");
+    ReprojectOptions base;
+    base.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    base.targetEpsg = 4326;
+    base.outputDirectory = dir;
+
+    auto badScript = base;
+    badScript.derivedVariablesScript = "X = PH + NOT_A_REAL_VARIABLE;\n";
+    CHECK_THROWS_AS(runReproject(badScript), UserError);
+
+    auto nothingSelected = base;  // no options.variables, no derivedVariablesScript
+    CHECK_THROWS_AS(runReproject(nothingSelected), UserError);
+}
+
 TEST_CASE("NetcdfFile::create makes a brand-new file and writeFloatSlice/readFloatSlice round-trip a hyperslab") {
     const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-create-test.nc";
     {
@@ -2531,4 +2653,168 @@ TEST_CASE("computeHistogram widens a zero-range input so it still gets one visib
     for (const auto count : histogram.binCounts) total += count;
     CHECK(total == values.size());
     CHECK(histogram.binWidth > 0.0f);
+}
+
+namespace {
+// A small resolver for derived-variable evaluate() tests: `raw` holds one
+// 1-pixel array per (source variable, level); a name not found there is
+// looked up among `defs` and evaluated recursively (memoized per (name,
+// level) via `cache`) - the same chaining behaviour runReproject's own
+// resolver closure provides for a later statement referencing an earlier
+// one's name.
+struct TestResolver {
+    std::map<std::string, std::vector<float>> raw;
+    const std::vector<DerivedVariableDef>* defs{};
+    std::map<std::string, std::map<int, std::vector<float>>> cache;
+
+    const std::vector<float>& operator()(const std::string& name, int level) {
+        const auto rawKey = name + "@" + std::to_string(level);
+        if (const auto found = raw.find(rawKey); found != raw.end()) return found->second;
+        auto& cacheForName = cache[name];
+        if (const auto cached = cacheForName.find(level); cached != cacheForName.end()) return cached->second;
+        const auto found = std::find_if(defs->begin(), defs->end(), [&](const auto& d) { return d.name == name; });
+        REQUIRE(found != defs->end());
+        return cacheForName.emplace(level, evaluate(*found, level, std::ref(*this))).first->second;
+    }
+};
+
+const std::map<std::string, VariableShape> kWrfLikeShapes{{"PH", {"bottom_top_stag", 3}}, {"PHB", {"bottom_top_stag", 3}}, {"HGT", {"", 1}},
+    {"P", {"bottom_top", 2}}, {"PB", {"bottom_top", 2}}, {"T", {"bottom_top", 2}}};
+
+constexpr const char* kMotivatingScript =
+    "LVLHT = (( PH + PHB ) / 9.81) - HGT;\n"
+    "LVLHT@units = \"m\";\n"
+    "LVLHT@long_name = \"Height above ground [m]\";\n"
+    "PTOT = (P + PB) * 0.01;\n"
+    "PTOT@long_name = \"Total Level Pressure\";\n"
+    "PTOT@units = \"mbar\";\n"
+    "TK = (PTOT/1000) ^ 0.2857 * (T + 300);\n"
+    "TK@units = \"Kelvin\";\n"
+    "TK@long_name = \"Level Temperature [K]\";\n";
+}  // namespace
+
+TEST_CASE("parseDerivedVariables parses the motivating script and infers each variable's shape") {
+    const auto defs = parseDerivedVariables(kMotivatingScript, kWrfLikeShapes);
+    REQUIRE(defs.size() == 3);
+    CHECK(defs[0].name == "LVLHT");
+    CHECK(defs[0].units == "m");
+    CHECK(defs[0].longName == "Height above ground [m]");
+    CHECK(shapeOf(defs[0]).dimensionName == "bottom_top_stag");
+    CHECK(shapeOf(defs[0]).levelCount == 3);
+    CHECK(defs[1].name == "PTOT");
+    CHECK(defs[1].units == "mbar");
+    CHECK(defs[1].longName == "Total Level Pressure");
+    CHECK(shapeOf(defs[1]).dimensionName == "bottom_top");
+    CHECK(shapeOf(defs[1]).levelCount == 2);
+    CHECK(defs[2].name == "TK");
+    CHECK(defs[2].units == "Kelvin");
+    CHECK(shapeOf(defs[2]).dimensionName == "bottom_top");
+    CHECK(shapeOf(defs[2]).levelCount == 2);
+}
+
+TEST_CASE("evaluate reproduces the motivating script's formulas, including 2D broadcast and chaining") {
+    const auto defs = parseDerivedVariables(kMotivatingScript, kWrfLikeShapes);
+    REQUIRE(defs.size() == 3);
+
+    TestResolver resolver;
+    resolver.defs = &defs;
+    resolver.raw = {{"PH@0", {1000.0f}}, {"PH@1", {2000.0f}}, {"PH@2", {3000.0f}}, {"PHB@0", {500.0f}}, {"PHB@1", {600.0f}}, {"PHB@2", {700.0f}},
+        {"HGT@0", {50.0f}}, {"P@0", {100000.0f}}, {"P@1", {90000.0f}}, {"PB@0", {500.0f}}, {"PB@1", {400.0f}}, {"T@0", {10.0f}}, {"T@1", {5.0f}}};
+
+    // LVLHT: HGT (2D) must broadcast across all 3 bottom_top_stag levels
+    // even though it's only ever recorded at "HGT@0" above - if broadcast
+    // weren't applied, level 1/2 would ask the resolver for a nonexistent
+    // "HGT@1"/"HGT@2" and REQUIRE(found != defs->end()) above would fail.
+    CHECK(evaluate(defs[0], 0, std::ref(resolver))[0] == Catch::Approx((1000.0f + 500.0f) / 9.81f - 50.0f));
+    CHECK(evaluate(defs[0], 1, std::ref(resolver))[0] == Catch::Approx((2000.0f + 600.0f) / 9.81f - 50.0f));
+    CHECK(evaluate(defs[0], 2, std::ref(resolver))[0] == Catch::Approx((3000.0f + 700.0f) / 9.81f - 50.0f));
+
+    const float expectedPtot0 = (100000.0f + 500.0f) * 0.01f;
+    const float expectedPtot1 = (90000.0f + 400.0f) * 0.01f;
+    CHECK(evaluate(defs[1], 0, std::ref(resolver))[0] == Catch::Approx(expectedPtot0));
+    CHECK(evaluate(defs[1], 1, std::ref(resolver))[0] == Catch::Approx(expectedPtot1));
+
+    // TK references PTOT (an earlier statement in the same script) - this
+    // is the chaining path, resolved recursively by TestResolver above.
+    // '^' must also be right-associative and bind tighter than the
+    // surrounding '*' for this to match.
+    CHECK(evaluate(defs[2], 0, std::ref(resolver))[0] == Catch::Approx(std::pow(expectedPtot0 / 1000.0f, 0.2857f) * (10.0f + 300.0f)));
+    CHECK(evaluate(defs[2], 1, std::ref(resolver))[0] == Catch::Approx(std::pow(expectedPtot1 / 1000.0f, 0.2857f) * (5.0f + 300.0f)));
+}
+
+TEST_CASE("comparison/logical operators and the ternary operator evaluate elementwise") {
+    const std::map<std::string, VariableShape> shapes{{"T2", {"", 1}}};
+    const auto defs = parseDerivedVariables("MASK = T2 > 273.15;\nCLAMPED = (T2 > 320) ? 320 : T2;\n", shapes);
+    REQUIRE(defs.size() == 2);
+
+    TestResolver resolver;
+    resolver.defs = &defs;
+    resolver.raw = {{"T2@0", {280.0f}}};
+    CHECK(evaluate(defs[0], 0, std::ref(resolver))[0] == Catch::Approx(1.0f));
+    CHECK(evaluate(defs[1], 0, std::ref(resolver))[0] == Catch::Approx(280.0f));
+
+    TestResolver belowFreezing;
+    belowFreezing.defs = &defs;
+    belowFreezing.raw = {{"T2@0", {260.0f}}};
+    CHECK(evaluate(defs[0], 0, std::ref(belowFreezing))[0] == Catch::Approx(0.0f));
+
+    TestResolver hot;
+    hot.defs = &defs;
+    hot.raw = {{"T2@0", {330.0f}}};
+    CHECK(evaluate(defs[1], 0, std::ref(hot))[0] == Catch::Approx(320.0f));
+}
+
+TEST_CASE("builtin functions match their std:: equivalents") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}, {"B", {"", 1}}};
+    const auto defs = parseDerivedVariables(
+        "S = sqrt(A);\nPW = pow(A, B);\nMN = min(A, B);\nMX = max(A, B);\nAT2 = atan2(A, B);\n", shapes);
+    REQUIRE(defs.size() == 5);
+
+    TestResolver resolver;
+    resolver.defs = &defs;
+    resolver.raw = {{"A@0", {9.0f}}, {"B@0", {2.0f}}};
+    CHECK(evaluate(defs[0], 0, std::ref(resolver))[0] == Catch::Approx(std::sqrt(9.0f)));
+    CHECK(evaluate(defs[1], 0, std::ref(resolver))[0] == Catch::Approx(std::pow(9.0f, 2.0f)));
+    CHECK(evaluate(defs[2], 0, std::ref(resolver))[0] == Catch::Approx(std::min(9.0f, 2.0f)));
+    CHECK(evaluate(defs[3], 0, std::ref(resolver))[0] == Catch::Approx(std::max(9.0f, 2.0f)));
+    CHECK(evaluate(defs[4], 0, std::ref(resolver))[0] == Catch::Approx(std::atan2(9.0f, 2.0f)));
+}
+
+TEST_CASE("parseDerivedVariables rejects an unknown function name and a wrong argument count") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    CHECK_THROWS_AS(parseDerivedVariables("X = notarealfunction(A);\n", shapes), UserError);
+    CHECK_THROWS_AS(parseDerivedVariables("X = sqrt(A, A);\n", shapes), UserError);
+    CHECK_THROWS_AS(parseDerivedVariables("X = pow(A);\n", shapes), UserError);
+}
+
+TEST_CASE("parseDerivedVariables rejects an unknown identifier") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    CHECK_THROWS_AS(parseDerivedVariables("X = A + NOPE;\n", shapes), UserError);
+}
+
+TEST_CASE("parseDerivedVariables rejects an @attr statement with no matching assignment") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    CHECK_THROWS_AS(parseDerivedVariables("NOPE@units = \"m\";\n", shapes), UserError);
+}
+
+TEST_CASE("parseDerivedVariables rejects a name colliding with an existing source variable") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    CHECK_THROWS_AS(parseDerivedVariables("A = 1;\n", shapes), UserError);
+}
+
+TEST_CASE("parseDerivedVariables rejects combining two operands on different vertical dimensions") {
+    const auto& shapes = kWrfLikeShapes;
+    CHECK_THROWS_AS(parseDerivedVariables("X = PH + T;\n", shapes), UserError);          // bottom_top_stag vs bottom_top
+    CHECK_THROWS_AS(parseDerivedVariables("X = min(PH, T);\n", shapes), UserError);       // same, inside a function call
+}
+
+TEST_CASE("parseDerivedVariables rejects a syntax error") {
+    const std::map<std::string, VariableShape> shapes{{"A", {"", 1}}};
+    CHECK_THROWS_AS(parseDerivedVariables("X = A\n", shapes), UserError);      // missing ';'
+    CHECK_THROWS_AS(parseDerivedVariables("X = (A + 1;\n", shapes), UserError);  // unmatched '('
+}
+
+TEST_CASE("parseDerivedVariables ignores an empty or whitespace-only script") {
+    CHECK(parseDerivedVariables("", {}).empty());
+    CHECK(parseDerivedVariables("   \n\t \n", {}).empty());
 }

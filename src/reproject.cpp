@@ -1,4 +1,5 @@
 #include "wrftools/reproject.hpp"
+#include "wrftools/derived_variable.hpp"
 #include "wrftools/error.hpp"
 #include "wrftools/netcdf_file.hpp"
 #include "wrftools/wrf_file.hpp"
@@ -95,6 +96,40 @@ void fillNanWithWrfFill(std::vector<float>& values) {
     for (auto& value : values)
         if (!std::isfinite(value)) value = kWrfFillValue;
 }
+
+// The OperandResolver a derived variable's evaluate() call needs, scoped to
+// one (file, timestep): resolves a plain source-variable name by reading it
+// RAW (WrfFile::read, no vertical destagger - see the comment on
+// sourceShapes in runReproject), or an earlier-defined derived variable's
+// own name by evaluating it recursively (self-referencing via std::ref, the
+// same pattern the parser/evaluator's own tests use). Both kinds memoize
+// per (name, level) so a name referenced more than once - within one
+// expression, or by more than one derived variable at the same timestep -
+// is only actually read/computed once; the cache is scoped to one timestep
+// (a fresh DerivedResolver per t), matching readAllLevels' own per-call
+// lifetime for pass-through variables.
+struct DerivedResolver {
+    WrfFile* file{};
+    int localTime{};
+    const std::vector<DerivedVariableDef>* defs{};
+    std::map<std::string, std::map<int, std::vector<float>>> rawCache;
+    std::map<std::string, std::map<int, std::vector<float>>> derivedCache;
+
+    const std::vector<float>& operator()(const std::string& name, int level) {
+        const auto& variables = file->variables();
+        if (std::any_of(variables.begin(), variables.end(), [&](const WrfVariable& v) { return v.name == name; })) {
+            auto& cacheForName = rawCache[name];
+            if (const auto found = cacheForName.find(level); found != cacheForName.end()) return found->second;
+            return cacheForName.emplace(level, file->read(name, localTime, level)).first->second;
+        }
+        auto& cacheForName = derivedCache[name];
+        if (const auto found = cacheForName.find(level); found != cacheForName.end()) return found->second;
+        const auto found = std::find_if(defs->begin(), defs->end(), [&](const auto& d) { return d.name == name; });
+        if (found == defs->end())
+            throw UserError("Internal error: derived variable script references unknown name '" + name + "'.");  // parseDerivedVariables already rejects this at parse time
+        return cacheForName.emplace(level, evaluate(*found, level, std::ref(*this))).first->second;
+    }
+};
 
 // Reads variable `name` at `timeIndex`, already vertically destaggered if
 // applicable - returns one mass-grid plane per OUTPUT level.
@@ -395,7 +430,12 @@ DestinationGrid computeDestinationGrid(int sourceWidth, int sourceHeight, const 
 
 std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options, const ReprojectProgressCallback& onProgress) {
     if (options.inputs.empty()) throw UserError("No input files were selected.");
-    if (options.variables.empty()) throw UserError("No variables were selected.");
+    // Not "options.variables.empty()" alone - a run defining only derived
+    // variables (options.variables empty, derivedVariablesScript non-empty)
+    // is valid; the real emptiness check is deferred until derivedVariables
+    // is parsed below, once both sources of output variables are known.
+    if (options.variables.empty() && options.derivedVariablesScript.find_first_not_of(" \t\r\n") == std::string::npos)
+        throw UserError("No variables were selected.");
     if (options.outputDirectory.empty()) throw UserError("No output directory was selected.");
     std::error_code dirError;
     if (!std::filesystem::is_directory(options.outputDirectory, dirError))
@@ -426,6 +466,19 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
         }
         selectedVariables.push_back(*info);
     }
+
+    // Every variable available across the opened input(s), by its RAW
+    // (undestaggered) dimension - exactly WrfVariable's own
+    // extraDimension/levelCount, no verticalAxisFor collapsing. A derived
+    // expression must see PH/PHB at their full staggered level count (see
+    // derived_variable.hpp's own note on why - the file this project was
+    // asked to reproduce, an ncap2 LVLHT/PTOT/TK script, only computes the
+    // right answer from PH/PHB's raw stack, not the destaggered one this
+    // file's own pass-through path would otherwise silently substitute).
+    std::map<std::string, VariableShape> sourceShapes;
+    for (const auto& variable : firstFile.variables())
+        sourceShapes.emplace(variable.name, VariableShape{variable.extraDimension.value_or(""), variable.levelCount});
+    const auto derivedVariables = parseDerivedVariables(options.derivedVariablesScript, sourceShapes);
 
     const TargetCrsInfo target = describeTargetCrs(options.targetEpsg);
     const DestinationGrid grid =
@@ -470,15 +523,31 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
         jobs.push_back({options.outputDirectory / mergedOutputName(orderedInputs, options.targetEpsg), orderedInputs});
     }
 
-    // Vertical axes needed by the selected variables, deduplicated by name.
+    // Vertical axes needed by the selected AND derived variables,
+    // deduplicated by name. A derived variable's axis uses its own RAW
+    // shape (shapeOf) directly - never verticalAxisFor's destagger - so it
+    // naturally lands on a different dimension name than a pass-through
+    // *_stag variable would (e.g. "bottom_top_stag"/65 for a derived LVLHT
+    // vs. the destaggered "bottom_top"/64 a pass-through-selected PH would
+    // use), with no name collision between the two paths; an UNstaggered
+    // dimension (e.g. "bottom_top" itself) is written identically by both
+    // paths and so is naturally shared, which is exactly what's wanted when
+    // e.g. a pass-through T and a derived PTOT both belong on it.
     std::vector<std::pair<std::string, VerticalAxis>> axes;  // name -> axis info (rawLevelCount/outputLevelCount as seen for THIS name)
+    auto addAxis = [&](const std::string& dimensionName, int outputLevelCount, const VerticalAxis& axis) {
+        if (dimensionName.empty()) return;
+        const auto found = std::find_if(axes.begin(), axes.end(), [&](const auto& entry) { return entry.first == dimensionName; });
+        if (found == axes.end()) axes.emplace_back(dimensionName, axis);
+        else if (found->second.outputLevelCount != outputLevelCount)
+            throw UserError("Vertical dimension '" + dimensionName + "' has inconsistent lengths across selected/derived variables.");
+    };
     for (const auto& variable : selectedVariables) {
         const auto axis = verticalAxisFor(variable);
-        if (axis.dimensionName.empty()) continue;
-        const auto found = std::find_if(axes.begin(), axes.end(), [&](const auto& entry) { return entry.first == axis.dimensionName; });
-        if (found == axes.end()) axes.emplace_back(axis.dimensionName, axis);
-        else if (found->second.outputLevelCount != axis.outputLevelCount)
-            throw UserError("Vertical dimension '" + axis.dimensionName + "' has inconsistent lengths across selected variables.");
+        addAxis(axis.dimensionName, axis.outputLevelCount, axis);
+    }
+    for (const auto& def : derivedVariables) {
+        const auto shape = shapeOf(def);
+        addAxis(shape.dimensionName, shape.levelCount, VerticalAxis{shape.dimensionName, shape.levelCount, shape.levelCount, false});
     }
 
     std::uint64_t totalSlices = 0;
@@ -486,6 +555,7 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
         std::uint64_t timeCount = 0;
         for (const auto& input : job.inputs) timeCount += readFileTimes(input).values.size();
         for (const auto& variable : selectedVariables) totalSlices += timeCount * static_cast<std::uint64_t>(verticalAxisFor(variable).outputLevelCount);
+        for (const auto& def : derivedVariables) totalSlices += timeCount * static_cast<std::uint64_t>(shapeOf(def).levelCount);
     }
     std::uint64_t completed = 0;
     std::vector<std::filesystem::path> written;
@@ -538,6 +608,18 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
                 chunk.push_back(static_cast<std::size_t>(grid.width));
                 out.defineVariable(variable.name, NC_FLOAT, dims, chunk, /*deflateLevel=*/4, kWrfFillValue);
             }
+            for (const auto& def : derivedVariables) {
+                const auto shape = shapeOf(def);
+                std::vector<std::string> dims{"time"};
+                if (!shape.dimensionName.empty()) dims.push_back(shape.dimensionName);
+                dims.push_back(target.yName);
+                dims.push_back(target.xName);
+                std::vector<std::size_t> chunk{1};
+                if (!shape.dimensionName.empty()) chunk.push_back(1);
+                chunk.push_back(static_cast<std::size_t>(grid.height));
+                chunk.push_back(static_cast<std::size_t>(grid.width));
+                out.defineVariable(def.name, NC_FLOAT, dims, chunk, /*deflateLevel=*/4, kWrfFillValue);
+            }
 
             // ---- attributes ----
             out.putAttribute(target.xName, {"standard_name", NC_CHAR, target.xStandardName, {}});
@@ -588,6 +670,12 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
                 out.putAttribute(variable.name, {"grid_mapping", NC_CHAR, "crs", {}});
                 out.putAttribute(variable.name, {"missing_value", NC_FLOAT, "", {static_cast<double>(kWrfFillValue)}});
                 if (variable.categoryScheme) out.putAttribute(variable.name, {"wrf_category_scheme", NC_CHAR, *variable.categoryScheme, {}});
+            }
+            for (const auto& def : derivedVariables) {
+                if (!def.longName.empty()) out.putAttribute(def.name, {"long_name", NC_CHAR, def.longName, {}});
+                if (!def.units.empty()) out.putAttribute(def.name, {"units", NC_CHAR, def.units, {}});
+                out.putAttribute(def.name, {"grid_mapping", NC_CHAR, "crs", {}});
+                out.putAttribute(def.name, {"missing_value", NC_FLOAT, "", {static_cast<double>(kWrfFillValue)}});
             }
 
             // Global attributes: copy the source's, except the
@@ -671,6 +759,37 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
                 }
                 if (!sawFiniteData)
                     report(onProgress, completed, totalSlices, "Warning: " + variable.name + " in " + job.path.filename().string() + " is entirely fill/nodata.");
+            }
+            for (const auto& def : derivedVariables) {
+                const auto shape = shapeOf(def);
+                bool sawFiniteData = false;
+                for (std::size_t t = 0; t < timeCount; ++t) {
+                    const auto& [path, localTime] = timeMap[t];
+                    auto& file = *opened.at(path.string());
+                    DerivedResolver resolver{&file, localTime, &derivedVariables, {}, {}};
+                    for (int level = 0; level < shape.levelCount; ++level) {
+                        auto values = evaluate(def, level, std::ref(resolver));
+                        const auto& size = file.size();
+                        auto warped = warpSlice(values, size[0], size[1], file.projectionWkt(), file.geotransform(), options.resampling);
+                        for (float value : warped)
+                            if (std::isfinite(value)) { sawFiniteData = true; break; }
+                        fillNanWithWrfFill(warped);
+
+                        std::vector<std::size_t> start{t};
+                        std::vector<std::size_t> count{1};
+                        if (!shape.dimensionName.empty()) { start.push_back(static_cast<std::size_t>(level)); count.push_back(1); }
+                        start.push_back(0);
+                        start.push_back(0);
+                        count.push_back(static_cast<std::size_t>(grid.height));
+                        count.push_back(static_cast<std::size_t>(grid.width));
+                        out.writeFloatSlice(def.name, start, count, warped);
+
+                        ++completed;
+                        report(onProgress, completed, totalSlices, job.path.filename().string() + ": " + def.name);
+                    }
+                }
+                if (!sawFiniteData)
+                    report(onProgress, completed, totalSlices, "Warning: " + def.name + " in " + job.path.filename().string() + " is entirely fill/nodata.");
             }
 
             out.close();

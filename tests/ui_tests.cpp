@@ -10,6 +10,7 @@
 #include "wrftools/lcz.hpp"
 #include "wrftools/lcz_form.hpp"
 #include "wrftools/main_window.hpp"
+#include "wrftools/netcdf_file.hpp"
 #include "wrftools/point_inspector_dialog.hpp"
 #include "wrftools/reproject_form.hpp"
 #include "wrftools/theme.hpp"
@@ -1939,6 +1940,60 @@ TEST_CASE("no output directory throws UserError") {
     form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
     form.variablesList()->item(0)->setCheckState(Qt::Checked);
     CHECK_THROWS_AS(form.runReproject(), UserError);
+}
+
+TEST_CASE("ReprojectForm's derived-variables status updates live as the script changes") {
+    TileMapWidget map;
+    ReprojectForm form(&map);
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    CHECK(form.derivedVariablesStatusLabel()->text().isEmpty());
+
+    form.derivedVariablesScriptEdit()->setPlainText("LVLHT = (( PH + PHB ) / 9.81) - HGT;\n");
+    CHECK(form.derivedVariablesStatusLabel()->text().contains("1 derived variable"));
+    CHECK(form.derivedVariablesStatusLabel()->text().contains("LVLHT"));
+
+    form.derivedVariablesScriptEdit()->setPlainText("LVLHT = PH + NOT_A_REAL_VARIABLE;\n");
+    CHECK(form.derivedVariablesStatusLabel()->text().contains("unknown identifier"));
+}
+
+TEST_CASE("an invalid derived-variables script throws UserError from runReproject") {
+    TileMapWidget map;
+    ReprojectForm form(&map);
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    form.setOutputDirectory(QDir::tempPath());
+    form.derivedVariablesScriptEdit()->setPlainText("LVLHT = PH +;\n");  // syntax error
+    CHECK_THROWS_AS(form.runReproject(), UserError);
+    CHECK_FALSE(form.isRunning());
+}
+
+TEST_CASE("a derived-variables-only reprojection run (no checked variables) writes LVLHT/PTOT/TK") {
+    QTemporaryDir outputDir;
+    REQUIRE(outputDir.isValid());
+
+    TileMapWidget map;
+    ReprojectForm form(&map);
+    form.setInputPaths({QString::fromStdString(std::filesystem::absolute("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc").string())});
+    form.setOutputDirectory(outputDir.path());
+    form.derivedVariablesScriptEdit()->setPlainText(
+        "LVLHT = (( PH + PHB ) / 9.81) - HGT;\n"
+        "PTOT = (P + PB) * 0.01;\n"
+        "TK = (PTOT/1000) ^ 0.2857 * (T + 300);\n");
+
+    form.runReproject();
+    CHECK(form.isRunning());
+    waitWhileRunning(form);
+
+    CHECK_FALSE(form.isRunning());
+    INFO(form.logView()->toPlainText().toStdString());
+    CHECK(form.logView()->toPlainText().contains("Reprojection complete."));
+    REQUIRE(form.resultsList()->count() == 1);
+    const auto outputPath = form.resultsList()->item(0)->text().toStdString();
+    REQUIRE(std::filesystem::exists(outputPath));
+
+    auto out = NetcdfFile::open(outputPath, NetcdfFile::Mode::ReadOnly);
+    CHECK(out.hasVariable("LVLHT"));
+    CHECK(out.hasVariable("PTOT"));
+    CHECK(out.hasVariable("TK"));
 }
 
 TEST_CASE("a full reprojection run against real fixtures writes a merged output file and reports completion") {
