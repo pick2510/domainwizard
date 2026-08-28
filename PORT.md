@@ -566,9 +566,10 @@ hold all the logic in `wrftools_core`, independent of Qt.
   filename, so it works for both a wrfout series and a multi-record single
   file), the verbatim `Times` char variable kept alongside it, and a `crs`
   grid-mapping variable built from `OGRSpatialReference::exportToCF1()` -
-  which required bumping `find_package(GDAL 3.6 REQUIRED)` to `3.7` (that
-  method landed in 3.7; every CI target already ships newer). One
-  non-obvious API detail: `exportToCF1`'s first out-parameter is GDAL's
+  which required bumping `find_package(GDAL 3.6 REQUIRED)` upward (see the
+  2026-08-28 CI follow-up below for the actual minimum and why Linux CI
+  needed a dependency-install fix, not just the CMake bump, to get there).
+  One non-obvious API detail: `exportToCF1`'s first out-parameter is GDAL's
   *recommended variable name* for the mapping ("crs"), not the
   `grid_mapping_name` attribute value itself - that comes back inside the
   key/value list instead, keyed literally `"grid_mapping_name"`. Getting
@@ -707,6 +708,33 @@ hold all the logic in `wrftools_core`, independent of Qt.
   clamped - shifted back just enough that the whole rectangle re-enters the
   domain, preserving its size - a wall the rectangle stops against rather
   than a rubber band that snaps its shape.
+- **Follow-up (2026-08-28): Linux CI build failure - `exportToCF1` actually
+  needs GDAL >= 3.9, not 3.7 as originally assumed**, plus two calls to a
+  GDAL API that needs newer still. CI's Linux job (`libgdal-dev` via plain
+  `apt-get` on `ubuntu-latest`/24.04 "noble") failed with `error: 'class
+  OGRSpatialReference' has no member named 'exportToCF1'` and `error: no
+  matching function for call to 'OGRSpatialReference::exportToWkt()'` -
+  Ubuntu 24.04's own packaged `libgdal-dev` is 3.8.4, and `exportToCF1`
+  only landed upstream on 2024-01-19 (commit `d0d5db642f`), which shipped in
+  GDAL 3.9.0 (2024-05) - after 3.8.4 branched off, so no Ubuntu 24.04 point
+  release will ever carry it via the plain archive. The earlier "3.7"
+  minimum (see the bullet above) was never actually verified against a real
+  build on that GDAL version; it happened to work locally and on macOS/
+  Windows CI (Homebrew and MSYS2 both ship far newer GDAL already) which
+  masked the gap until this branch first hit Linux CI. The zero-argument
+  `std::string OGRSpatialReference::exportToWkt()` convenience overload used
+  in two places (`wgs84PivotWkt()`, and building `TargetCrsInfo::crsWkt2`)
+  is *also* newer than 3.8.4's headers provide - fixed independently of the
+  version bump by switching both call sites to the plain `exportToWkt(char**
+  [, const char* const* options])` form, which has existed since GDAL 2.x
+  and needs no minimum-version reasoning at all (the `crsWkt2` call now also
+  passes `FORMAT=WKT2` explicitly, since the no-arg overload's actual
+  default format was never verified either - matching what that field's own
+  name always claimed). `CMakeLists.txt`'s `find_package(GDAL 3.6 REQUIRED)`
+  is now `find_package(GDAL 3.9 REQUIRED)` - the real, verified floor - and
+  `cpp.yml`'s Linux dependency step now adds the `ubuntugis-unstable` PPA
+  (3.11.x for noble) before `apt-get install`, so `libgdal-dev` resolves to
+  a new-enough version there too; macOS/Windows CI needed no change.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

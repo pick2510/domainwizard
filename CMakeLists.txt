@@ -34,7 +34,12 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(GDAL 3.7 REQUIRED)
+# 3.9, not 3.7: OGRSpatialReference::exportToCF1() (reproject.cpp's CF
+# grid-mapping construction) landed in GDAL 3.9.0 - Ubuntu 24.04's own
+# packaged libgdal-dev is only 3.8.4, which compiles but fails with "has no
+# member named 'exportToCF1'"; see cpp.yml's Linux dependency step, which
+# pulls a newer GDAL from the ubuntugis-unstable PPA specifically for this.
+find_package(GDAL 3.9 REQUIRED)
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 # NetCDF-C, linked directly (not through GDAL's netCDF driver) for

@@ -42,9 +42,19 @@ jobs:
       # PORT_W2W.MD Stage 0. Each package also pulls in its own HDF5
       # dependency automatically via the OS package manager - no separate
       # HDF5 install step needed on any of the three platforms.
+      # ubuntugis-unstable PPA: Ubuntu 24.04's own libgdal-dev is 3.8.4,
+      # older than the 3.9 CMakeLists.txt requires (OGRSpatialReference::
+      # exportToCF1(), used by reproject.cpp's CF grid-mapping construction,
+      # landed in GDAL 3.9.0) - the PPA carries 3.11.x for noble. Added
+      # before the plain apt-get install below, not as a separate pinned
+      # package, so apt just resolves libgdal-dev (and its libproj/libgeos/
+      # etc. dependencies) to the PPA's newer versions on its own.
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev libnetcdf-dev pkg-config catch2 patchelf
+        run: |
+          sudo add-apt-repository -y ppa:ubuntugis/ubuntugis-unstable
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev libnetcdf-dev pkg-config catch2 patchelf
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install cmake ninja qt gdal proj netcdf pkg-config catch2 dylibbundler

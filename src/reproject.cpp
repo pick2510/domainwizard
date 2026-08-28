@@ -232,7 +232,16 @@ std::string wgs84PivotWkt() {
     OGRSpatialReference wgs84;
     wgs84.importFromEPSG(4326);
     wgs84.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
-    return wgs84.exportToWkt();
+    // The zero-argument std::string-returning exportToWkt() overload is a
+    // newer convenience API than this project's own GDAL floor (see
+    // describeTargetCrs's exportToCF1 comment) - the char**-returning form
+    // used here has existed since GDAL 2.x, so it works on every GDAL this
+    // project targets, not just the ones new enough for the convenience one.
+    char* wktRaw = nullptr;
+    wgs84.exportToWkt(&wktRaw);
+    const std::string wkt = wktRaw ? wktRaw : "";
+    CPLFree(wktRaw);
+    return wkt;
 }
 
 // Ties suggestWarpGrid's own georeferencing-only query into the two-stage
@@ -283,18 +292,28 @@ TargetCrsInfo describeTargetCrs(int epsgCode) {
     if (srs.exportToWkt(&wktRaw) != OGRERR_NONE || !wktRaw) throw UserError("Could not build the target CRS for EPSG:" + std::to_string(epsgCode));
     info.wkt = wktRaw;
     CPLFree(wktRaw);
-    info.crsWkt2 = srs.exportToWkt();
+    // WKT2 (the default "options=nullptr" behaviour of the newer
+    // std::string-returning exportToWkt() overload) via the same portable
+    // char**-based call, requesting the FORMAT=WKT2 option explicitly -
+    // exportToWkt(char**) defaults to WKT1 without it.
+    char* wkt2Raw = nullptr;
+    const char* wkt2Options[] = {"FORMAT=WKT2", nullptr};
+    srs.exportToWkt(&wkt2Raw, wkt2Options);
+    info.crsWkt2 = wkt2Raw ? wkt2Raw : "";
+    CPLFree(wkt2Raw);
     info.isGeographic = srs.IsGeographic() != 0;
 
-    // exportToCF1's first out-param is GDAL's RECOMMENDED VARIABLE NAME for
-    // the grid mapping (e.g. "crs") - not the grid_mapping_name attribute
-    // value itself, which instead comes back as one entry inside the
-    // key/value list (confirmed empirically: for EPSG:4326 it returns
-    // name="crs" and keyValues containing "grid_mapping_name=
-    // latitude_longitude" separately). "crs_wkt" is excluded from
-    // gridMappingAttributes below because this function already builds its
-    // own (WKT2, via crsWkt2) - keeping GDAL's WKT1 one too would just be a
-    // silently-overwritten duplicate attribute name at write time.
+    // exportToCF1 requires GDAL >= 3.9 (see CMakeLists.txt's
+    // find_package(GDAL ...) minimum) - its first out-param is GDAL's
+    // RECOMMENDED VARIABLE NAME for the grid mapping (e.g. "crs"), not the
+    // grid_mapping_name attribute value itself, which instead comes back as
+    // one entry inside the key/value list (confirmed empirically: for
+    // EPSG:4326 it returns name="crs" and keyValues containing
+    // "grid_mapping_name=latitude_longitude" separately). "crs_wkt" is
+    // excluded from gridMappingAttributes below because this function
+    // already builds its own (WKT2, via crsWkt2) - keeping GDAL's WKT1 one
+    // too would just be a silently-overwritten duplicate attribute name at
+    // write time.
     char* recommendedVariableName = nullptr;
     char** keyValues = nullptr;
     char* units = nullptr;
