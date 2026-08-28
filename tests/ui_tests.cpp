@@ -506,6 +506,42 @@ TEST_CASE("an invalid range throws UserError") {
     CHECK_THROWS_AS(form.applyFieldsToSelectedLayer(), UserError);
 }
 
+TEST_CASE("computeSeriesRange scans every time step and fixes the range") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
+    REQUIRE(form.timeCombo()->count() > 1);  // a real multi-timestep fixture, or this test proves nothing
+
+    // Single-timestep auto range, for comparison below.
+    CHECK_FALSE(form.layers().front().settings.minimum.has_value());
+    form.applyFieldsToSelectedLayer();
+    const auto singleStepMinimum = form.layers().front().settings.minimum;
+    CHECK_FALSE(singleStepMinimum.has_value());  // still auto - applyFields alone doesn't fix it
+
+    form.computeSeriesRange();
+    REQUIRE(form.layers().front().settings.minimum.has_value());
+    REQUIRE(form.layers().front().settings.maximum.has_value());
+    CHECK(*form.layers().front().settings.maximum > *form.layers().front().settings.minimum);
+    CHECK_FALSE(form.autoRangeCheck()->isChecked());
+    CHECK(form.minimumSpin()->value() == Catch::Approx(*form.layers().front().settings.minimum));
+    CHECK(form.maximumSpin()->value() == Catch::Approx(*form.layers().front().settings.maximum));
+
+    // Re-enabling auto range clears it again, same as the manual-range case.
+    form.autoRangeCheck()->setChecked(true);
+    CHECK_FALSE(form.layers().front().settings.minimum.has_value());
+}
+
+TEST_CASE("computeSeriesRange throws UserError when nothing is selected") {
+    TileMapWidget map;
+    ViewForm form(&map);
+    form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
+    form.addLayer();
+    form.layerTreeWidget()->clearSelection();
+    CHECK_THROWS_AS(form.computeSeriesRange(), UserError);
+}
+
 TEST_CASE("removing the selected layer") {
     TileMapWidget map;
     ViewForm form(&map);

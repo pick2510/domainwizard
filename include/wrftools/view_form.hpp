@@ -82,6 +82,7 @@ public:
     [[nodiscard]] QCheckBox* autoRangeCheck() const noexcept { return autoRange_; }
     [[nodiscard]] QDoubleSpinBox* minimumSpin() const noexcept { return minimum_; }
     [[nodiscard]] QDoubleSpinBox* maximumSpin() const noexcept { return maximum_; }
+    [[nodiscard]] QPushButton* seriesRangeButton() const noexcept { return seriesRangeButton_; }
     [[nodiscard]] QCheckBox* interpolateCheck() const noexcept { return interpolate_; }
     [[nodiscard]] QCheckBox* playCheck() const noexcept { return play_; }
     [[nodiscard]] QTimer* playbackTimer() const noexcept { return playbackTimer_; }
@@ -110,10 +111,22 @@ public:
     // catch it via applyFieldsFromSignal() below instead.
     void applyFieldsToSelectedLayer();
 
+    // Reads the selected layer's variable (at its current vertical level)
+    // for every time step of its file/series, finds the finite min/max
+    // across all of them (in the currently selected display unit), and
+    // applies that as a fixed range - unlike autoRange_'s per-frame min/max,
+    // this gives a colorbar that stays stable across the whole series
+    // instead of rescaling on every playback tick. Public so tests can
+    // drive it directly, matching seriesRangeButton_'s wiring. Throws
+    // UserError if no layer is selected or every time step is entirely
+    // nodata.
+    void computeSeriesRange();
+
 private:
     void openFile();
     void openGeogDataset();
     void applyFieldsFromSignal();
+    void computeSeriesRangeFromSignal();
     void rebuildFileList(const std::optional<std::string>& selectPath = std::nullopt);
     [[nodiscard]] std::optional<std::string> selectedFilePath() const;
     [[nodiscard]] std::vector<std::string> openFilePaths() const;
@@ -169,6 +182,7 @@ private:
     QCheckBox* autoRange_{};
     QDoubleSpinBox* minimum_{};
     QDoubleSpinBox* maximum_{};
+    QPushButton* seriesRangeButton_{};
     QCheckBox* interpolate_{};
     QCheckBox* play_{};
     QTimer* playbackTimer_{};

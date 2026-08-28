@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <unordered_map>
 
 namespace wrftools {
@@ -95,6 +96,8 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     autoRange_ = new QCheckBox("Auto range", this); autoRange_->setChecked(true);
     minimum_ = new QDoubleSpinBox(this); maximum_ = new QDoubleSpinBox(this);
     for (auto* range : {minimum_, maximum_}) { range->setRange(-1e30, 1e30); range->setDecimals(4); range->setEnabled(false); }
+    seriesRangeButton_ = new QPushButton("Compute range over all time steps", this);
+    seriesRangeButton_->setToolTip("Scan every time step of this variable (at the current level) and use its min/max as a fixed range.");
     interpolate_ = new QCheckBox("Interpolate", this); interpolate_->setChecked(true);
     for (const auto& name : colormapNames()) colormap_->addItem(QString::fromStdString(name));
     colormap_->addItem(kCategoricalColormap);
@@ -118,6 +121,7 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     opacityRowLayout->addWidget(opacityLabel_);
     form->addRow("Opacity", opacityRow);
     form->addRow("", autoRange_); form->addRow("Minimum", minimum_); form->addRow("Maximum", maximum_);
+    form->addRow("", seriesRangeButton_);
     form->addRow("", interpolate_);
     propertiesGroup_->setLayout(form);
     layout->addWidget(propertiesGroup_);
@@ -187,6 +191,7 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     // the same way as Python's set_value() + on_range_changed().
     connect(minimum_, &QAbstractSpinBox::editingFinished, this, [this] { applyFieldsFromSignal(); });
     connect(maximum_, &QAbstractSpinBox::editingFinished, this, [this] { applyFieldsFromSignal(); });
+    connect(seriesRangeButton_, &QPushButton::clicked, this, [this] { computeSeriesRangeFromSignal(); });
     connect(interpolate_, &QCheckBox::toggled, this, [this] { applyFieldsFromSignal(); });
     connect(tickCount_, &QSpinBox::valueChanged, this, [this] { onTickSettingsChanged(); });
     connect(tickFormat_, &QComboBox::currentIndexChanged, this, [this](int) { tickDecimals_->setEnabled(tickFormat_->currentData().toString() != "auto"); onTickSettingsChanged(); });
@@ -503,6 +508,48 @@ void ViewForm::applyFieldsToSelectedLayer() {
         layer->settings.maximum = static_cast<float>(maximum_->value());
     }
     refreshMap();
+}
+
+void ViewForm::computeSeriesRange() {
+    auto* layer = selectedLayer();
+    if (!layer) throw UserError("No layer is selected.");
+    auto& source = renderer_.openFile({layer->filePath});
+    const auto found = std::find_if(source.variables().begin(), source.variables().end(),
+        [layer](const WrfVariable& v) { return v.name == layer->settings.variable; });
+    if (found == source.variables().end()) throw UserError("The selected layer's variable is not available.");
+
+    const auto* seriesTimes = source.seriesTimes();
+    const int timeCount = seriesTimes ? static_cast<int>(seriesTimes->size()) : found->timeCount;
+    const auto unit = findUnit(found->units, layer->settings.unitKey);
+
+    float globalMinimum = std::numeric_limits<float>::infinity(), globalMaximum = -std::numeric_limits<float>::infinity();
+    // Reads the raw (unwarped) grid per time step directly via
+    // WrfSource::read() rather than going through the render/warp pipeline -
+    // all that's needed here is a min/max over the values, so skipping the
+    // reprojection this variable would otherwise need for display is pure
+    // savings, not a shortcut that loses accuracy (a warp only resamples
+    // pixel placement, never invents values outside the source's own range).
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QCoreApplication::processEvents();
+    for (int timeIndex = 0; timeIndex < timeCount; ++timeIndex) {
+        auto values = source.read(layer->settings.variable, timeIndex, layer->settings.levelIndex);
+        convertInPlace(values, unit);
+        for (const auto value : values) if (std::isfinite(value)) { globalMinimum = std::min(globalMinimum, value); globalMaximum = std::max(globalMaximum, value); }
+        QCoreApplication::processEvents();
+    }
+    QApplication::restoreOverrideCursor();
+
+    if (!std::isfinite(globalMinimum)) throw UserError("Every time step of this variable is entirely nodata.");
+
+    autoRange_->blockSignals(true); autoRange_->setChecked(false); autoRange_->blockSignals(false);
+    minimum_->setEnabled(true); maximum_->setEnabled(true);
+    minimum_->blockSignals(true); minimum_->setValue(globalMinimum); minimum_->blockSignals(false);
+    maximum_->blockSignals(true); maximum_->setValue(globalMaximum); maximum_->blockSignals(false);
+    applyFieldsToSelectedLayer();
+}
+
+void ViewForm::computeSeriesRangeFromSignal() {
+    try { computeSeriesRange(); } catch (const std::exception& error) { QMessageBox::critical(this, "Could not compute series range", error.what()); }
 }
 
 void ViewForm::applyFieldsFromSignal() {
