@@ -92,14 +92,25 @@ void waitWhileRunning(LczForm& form) {
 // Same idea, for ReprojectForm - unlike the two above, this one's "worker"
 // is a genuinely separate QProcess (see reproject_form.hpp's class comment
 // for why), so isRunning() only goes false once that process's `finished`
-// signal has been delivered through the event loop. 90s, not 30s: on
-// Windows CI the process-spawn + fresh DLL load (Qt/GDAL/netCDF/PROJ, no
-// warm page cache) alone can eat a large chunk of a shorter budget before
-// the real GDAL work even starts - confirmed by CI, not guessed (see
-// cpp.yml's Test (Windows) step, whose own --timeout was raised alongside
-// this for the same reason).
+// signal has been delivered through the event loop.
+//
+// TEMPORARY DIAGNOSTIC (2026-08-28): on Windows CI this test hangs inside
+// the worker's final out.close() (a plain nc_close()) - the captured
+// progress log shows all 3 real timesteps already written before it goes
+// quiet, so the expensive GDAL work is done; something after that never
+// returns. Two prior fixes (raising this from 30s to 90s; excluding
+// $env:TEMP and the worker/test executables from Windows Defender) made no
+// observable difference - same hang, same spot, both times - which argues
+// against "just slow I/O" or AV interference and for a genuine deadlock in
+// the MinGW-built netCDF/HDF5 write path (chunked + deflate-compressed
+// variable on an unlimited dimension is the prime suspect). Bumped way up
+// once, deliberately, to settle which it is: if this passes, it really was
+// just slow and the timeout should come back down to something sane with a
+// root cause noted; if it still fails identically, that confirms a true
+// hang and this deadline stops being the right fix at all. See cpp.yml's
+// Test (Windows) step, raised alongside this for the same reason.
 void waitWhileRunning(ReprojectForm& form) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
     while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
     QCoreApplication::processEvents();
 }

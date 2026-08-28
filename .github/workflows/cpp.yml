@@ -139,7 +139,11 @@ jobs:
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: ctest --test-dir build-cpp --output-on-failure --timeout 240
+        # 420, temporarily: matches ui_tests.cpp's own diagnostic bump of
+        # waitWhileRunning(ReprojectForm&) to 300s - see that comment. Not a
+        # steady-state value; revisit once that diagnostic run answers
+        # whether the Windows hang there is real slowness or a true deadlock.
+        run: ctest --test-dir build-cpp --output-on-failure --timeout 420
       # Packaged separately from the Debug build/test above (its own fresh
       # Release, BUILD_TESTING=OFF configure+build) - only reached once
       # tests have actually passed, matching what build-portable-cpp.sh/
