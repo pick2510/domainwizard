@@ -734,7 +734,33 @@ hold all the logic in `wrftools_core`, independent of Qt.
   is now `find_package(GDAL 3.9 REQUIRED)` - the real, verified floor - and
   `cpp.yml`'s Linux dependency step now adds the `ubuntugis-unstable` PPA
   (3.11.x for noble) before `apt-get install`, so `libgdal-dev` resolves to
-  a new-enough version there too; macOS/Windows CI needed no change.
+  a new-enough version there too; macOS/Windows CI needed no GDAL-version
+  change (Homebrew/MSYS2 already ship newer than 3.9) - but getting Linux CI
+  green for the first time surfaced two more, unrelated, Windows-only
+  failures that this same push also fixes:
+  - Three of the new `NetcdfFile` tests (`create`/`writeFloatSlice`/
+    `readText`+`writeText`) failed with "cannot remove: The process cannot
+    access the file because it is being used by another process" - the same
+    open-handle-blocks-delete issue `9f90b83` already fixed elsewhere in
+    this file, just not yet applied to these three, added afterward on the
+    `reproject` branch. Same fix: scope the `NetcdfFile` in its own `{ }`
+    block so it closes via RAII before the trailing `std::filesystem::
+    remove`.
+  - The end-to-end `ReprojectForm` UI test (the one real `wrftools_
+    reproject_worker` subprocess run) hit `waitWhileRunning`'s internal 30s
+    deadline without finishing, even though the worker was genuinely still
+    working (its accumulated GDAL warnings, dumped as Catch2 `INFO` context
+    on the failure, show real per-file progress, not a stall) - Windows CI
+    process-spawn + fresh-DLL-load overhead (Qt/GDAL/netCDF/PROJ, no warm
+    page cache) plus three real GDAL warps just needs more than 30s there.
+    Raised to 90s, and `cpp.yml`'s Windows `Test` step's own `ctest
+    --timeout` raised 120 -> 240 to match - the whole `wrftools_ui_tests`
+    binary (one `add_test()`, not per-case `catch_discover_tests` - see
+    `CMakeLists.txt`) had already measured at ~115s on Windows even while
+    this one case was failing early, leaving 120s no real margin once it's
+    allowed to actually finish. The Windows-only "Full LCZ pipeline" timeout
+    seen in the same run needed no source change - it inherits the same
+    ctest `--timeout` and was very likely just as starved for margin.
 
 ## WPS_GEOG binary dataset visualization (exceeds Python)
 

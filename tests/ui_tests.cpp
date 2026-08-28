@@ -92,9 +92,14 @@ void waitWhileRunning(LczForm& form) {
 // Same idea, for ReprojectForm - unlike the two above, this one's "worker"
 // is a genuinely separate QProcess (see reproject_form.hpp's class comment
 // for why), so isRunning() only goes false once that process's `finished`
-// signal has been delivered through the event loop.
+// signal has been delivered through the event loop. 90s, not 30s: on
+// Windows CI the process-spawn + fresh DLL load (Qt/GDAL/netCDF/PROJ, no
+// warm page cache) alone can eat a large chunk of a shorter budget before
+// the real GDAL work even starts - confirmed by CI, not guessed (see
+// cpp.yml's Test (Windows) step, whose own --timeout was raised alongside
+// this for the same reason).
 void waitWhileRunning(ReprojectForm& form) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
     while (form.isRunning() && std::chrono::steady_clock::now() < deadline) QCoreApplication::processEvents();
     QCoreApplication::processEvents();
 }

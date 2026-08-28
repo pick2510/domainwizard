@@ -105,17 +105,29 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: cmake --build build-cpp
-      # --timeout caps each individual test case (locally the slowest, the
-      # whole UI suite as ONE ctest entry, takes ~3s) - generous headroom
-      # while still turning a genuine hang into a clear failure instead of
-      # silently consuming the job's multi-hour default timeout.
+      # --timeout caps each individual ctest entry - wrftools_ui_tests is
+      # the slowest single one (it's one add_test() wrapping the whole
+      # Catch2 binary, not per-case catch_discover_tests - see
+      # CMakeLists.txt), since the Reproject tab's UI tests do real GDAL
+      # work and one of them launches wrftools_reproject_worker as a genuine
+      # child QProcess. 120s is generous headroom on Linux/macOS (~95s
+      # there) while still turning an actual hang into a clear failure
+      # instead of silently consuming the job's multi-hour default timeout.
       - name: Test
         if: runner.os != 'Windows'
         run: ctest --test-dir build-cpp --output-on-failure --timeout 120
+      # Windows gets a higher ceiling than Linux/macOS: process spawn + DLL
+      # load (Qt/GDAL/netCDF/PROJ, all freshly loaded, no warm page cache)
+      # is markedly slower on a Windows CI runner, and wrftools_ui_tests
+      # already measured at ~115s there even while its own subprocess-based
+      # reprojection test was still hitting its internal wait deadline (see
+      # waitWhileRunning(ReprojectForm&) in ui_tests.cpp) rather than
+      # actually finishing - 120s left no margin at all once that deadline
+      # was raised to let it actually complete.
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: ctest --test-dir build-cpp --output-on-failure --timeout 120
+        run: ctest --test-dir build-cpp --output-on-failure --timeout 240
       # Packaged separately from the Debug build/test above (its own fresh
       # Release, BUILD_TESTING=OFF configure+build) - only reached once
       # tests have actually passed, matching what build-portable-cpp.sh/

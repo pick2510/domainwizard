@@ -2439,23 +2439,33 @@ TEST_CASE("NetcdfFile::create makes a brand-new file and writeFloatSlice/readFlo
         const std::vector<float> plane{1.0f, 2.0f, 3.0f, 4.0f};
         file.writeFloatSlice("v", {1, 0, 0}, {1, 2, 2}, plane);
     }
-    auto reopened = NetcdfFile::open(path, NetcdfFile::Mode::ReadOnly);
-    const auto slice = reopened.readFloatSlice("v", {1, 0, 0}, {1, 2, 2});
-    CHECK(slice == std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f});
-    const auto whole = reopened.readFloat("v");
-    CHECK(whole.size() == 12);
-    CHECK(whole[4] == 1.0f);  // (time=1, y=0, x=0)
+    {
+        // Scoped so `reopened` closes before the removal below - an open
+        // handle onto `path` makes std::filesystem::remove fail on Windows
+        // (unlike POSIX, where an open file can be unlinked freely) - see
+        // 9f90b83's identical fix for the other tests in this file.
+        auto reopened = NetcdfFile::open(path, NetcdfFile::Mode::ReadOnly);
+        const auto slice = reopened.readFloatSlice("v", {1, 0, 0}, {1, 2, 2});
+        CHECK(slice == std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f});
+        const auto whole = reopened.readFloat("v");
+        CHECK(whole.size() == 12);
+        CHECK(whole[4] == 1.0f);  // (time=1, y=0, x=0)
+    }
     std::filesystem::remove(path);
 }
 
 TEST_CASE("NetcdfFile::writeFloatSlice rejects a mismatched count and an out-of-bounds slice") {
     const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-slice-bounds-test.nc";
-    auto file = NetcdfFile::create(path);
-    file.defineDimension("y", 2);
-    file.defineDimension("x", 2);
-    file.defineVariable("v", NC_FLOAT, {"y", "x"});
-    CHECK_THROWS_AS(file.writeFloatSlice("v", {0, 0}, {2, 2}, std::vector<float>{1.0f}), UserError);
-    CHECK_THROWS_AS(file.writeFloatSlice("v", {1, 0}, {2, 2}, std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f}), UserError);
+    {
+        // Scoped so `file` closes before the removal below - see the
+        // comment on the test above.
+        auto file = NetcdfFile::create(path);
+        file.defineDimension("y", 2);
+        file.defineDimension("x", 2);
+        file.defineVariable("v", NC_FLOAT, {"y", "x"});
+        CHECK_THROWS_AS(file.writeFloatSlice("v", {0, 0}, {2, 2}, std::vector<float>{1.0f}), UserError);
+        CHECK_THROWS_AS(file.writeFloatSlice("v", {1, 0}, {2, 2}, std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f}), UserError);
+    }
     std::filesystem::remove(path);
 }
 
@@ -2472,12 +2482,16 @@ TEST_CASE("NetcdfFile::attributes enumerates every global attribute of a real fi
 
 TEST_CASE("NetcdfFile::readText/writeText round-trip a Times-shaped char variable") {
     const auto path = std::filesystem::temp_directory_path() / "wrftools-cpp-netcdf-file-text-test.nc";
-    auto file = NetcdfFile::create(path);
-    file.defineDimension("time", 2);
-    file.defineDimension("DateStrLen", 19);
-    file.defineVariable("Times", NC_CHAR, {"time", "DateStrLen"});
-    const std::string text = "2025-03-14_00:00:002025-03-14_00:30:00";
-    file.writeText("Times", text);
-    CHECK(file.readText("Times") == text);
+    {
+        // Scoped so `file` closes before the removal below - see the
+        // comment on the NetcdfFile::create test above.
+        auto file = NetcdfFile::create(path);
+        file.defineDimension("time", 2);
+        file.defineDimension("DateStrLen", 19);
+        file.defineVariable("Times", NC_CHAR, {"time", "DateStrLen"});
+        const std::string text = "2025-03-14_00:00:002025-03-14_00:30:00";
+        file.writeText("Times", text);
+        CHECK(file.readText("Times") == text);
+    }
     std::filesystem::remove(path);
 }
