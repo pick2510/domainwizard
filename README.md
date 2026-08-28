@@ -44,13 +44,13 @@ run.
 Debian/Ubuntu:
 
 ```sh
-sudo apt install cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev catch2
+sudo apt install cmake ninja-build g++ qt6-base-dev libgdal-dev libproj-dev libnetcdf-dev pkg-config catch2
 ```
 
 macOS (Homebrew):
 
 ```sh
-brew install cmake ninja qt gdal proj catch2
+brew install cmake ninja qt gdal proj netcdf pkg-config catch2
 ```
 
 Windows (inside an MSYS2 MINGW64 shell):
@@ -58,7 +58,8 @@ Windows (inside an MSYS2 MINGW64 shell):
 ```sh
 pacman -S mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja \
   mingw-w64-x86_64-qt6-base mingw-w64-x86_64-gdal mingw-w64-x86_64-proj \
-  mingw-w64-x86_64-libtiff mingw-w64-x86_64-libgeotiff mingw-w64-x86_64-catch
+  mingw-w64-x86_64-libtiff mingw-w64-x86_64-libgeotiff mingw-w64-x86_64-netcdf \
+  mingw-w64-x86_64-pkgconf mingw-w64-x86_64-catch
 ```
 
 > GDAL >= 3.9 is required (for `exportToCF1`, used by the Reproject tab).
