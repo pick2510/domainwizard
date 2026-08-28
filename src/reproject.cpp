@@ -185,6 +185,82 @@ std::filesystem::path mergedOutputName(const std::vector<std::filesystem::path>&
     return inputs.front().stem().string() + "_merged_epsg" + std::to_string(epsg) + ".nc";
 }
 
+// WrfFile/Crs build the source CRS on WRF's own modeling sphere
+// (a=b=6370000, see crs.hpp) with NO datum linkage to WGS84 at all -
+// deliberately, so the app's own internal geometry (map display, LCZ
+// pipeline) never picks up a spurious datum shift. The values that sphere
+// produces ARE, by WRF's own modeling convention, real-world WGS84 lat/lon
+// (confirmed elsewhere in this codebase to agree with geogrid.exe's own
+// XLAT_M/XLONG_M to within a few metres) - but PROJ has no way to know
+// that from the CRS alone, since it carries no datum identity.
+//
+// Warping straight from that undefined-datum sphere to an EXTERNAL target
+// CRS is fine when the target's own geographic base IS WGS84 (true of
+// EPSG:4326 itself, every UTM zone, Web Mercator, ...): PROJ falls back to
+// treating the numbers as an identity/no-shift, which is exactly correct
+// there, since no real shift is needed. It silently gives the WRONG answer
+// - by anywhere from tens to hundreds of metres, not a rounding error -
+// when the target uses a genuinely different (usually legacy/local) datum,
+// e.g. EPSG:2326 (Hong Kong 1980 Grid): PROJ has a real, published
+// WGS84->HK1980 transformation, but never finds it, because the source
+// CRS's datum was never asserted to BE WGS84 in the first place - it just
+// silently no-ops instead of erroring. Confirmed empirically: comparing a
+// direct sphere->EPSG:2326 point transform against WGS84->EPSG:2326 for
+// Hong Kong's own domain centre differs by ~300 m in easting/northing.
+//
+// Fixed with an explicit two-stage warp whenever the target's own
+// geographic base differs from real WGS84 (IsSameGeogCS false): first warp
+// from the source sphere to an intermediate grid on that SAME sphere in
+// geographic (lon/lat) space - an exact, distortion-free unprojection,
+// since source and intermediate share one identical GEOGCS - then RELABEL
+// that intermediate's CRS as literal EPSG:4326 (legitimate given the
+// accuracy note above: the numbers already ARE meant to be WGS84 degrees)
+// and warp AGAIN from that properly-labelled WGS84 raster to the real
+// target CRS, where PROJ now finds and applies the genuine datum
+// transformation. This costs one extra resampling pass, only when the
+// target's datum actually differs from WGS84 - the common case (UTM,
+// EPSG:4326, Web Mercator, ...) stays a single warp, unchanged.
+bool targetSharesWgs84Datum(const std::string& targetWkt) {
+    OGRSpatialReference target;
+    target.importFromWkt(targetWkt.c_str());
+    OGRSpatialReference wgs84;
+    wgs84.importFromEPSG(4326);
+    return target.IsSameGeogCS(&wgs84) != 0;
+}
+
+std::string wgs84PivotWkt() {
+    OGRSpatialReference wgs84;
+    wgs84.importFromEPSG(4326);
+    wgs84.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    return wgs84.exportToWkt();
+}
+
+// Ties suggestWarpGrid's own georeferencing-only query into the two-stage
+// datum-safe scheme above, so the SUGGESTED grid's position (used both to
+// size/place the final output grid and, via the SAME intermediate, to warp
+// every slice's actual data - see runReproject) is consistent throughout:
+// getting these out of sync would place the coordinate axes correctly but
+// warp the data onto the old (wrong) position, or vice versa.
+struct DatumSafeSuggestion {
+    bool targetSharesWgs84{};
+    DestinationGrid suggested;             // in target CRS, correctly positioned
+    DestinationGrid intermediateWgs84Grid;  // meaningful only if !targetSharesWgs84
+};
+
+DatumSafeSuggestion suggestWarpGridDatumSafe(
+    int sourceWidth, int sourceHeight, const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform, const std::string& targetWkt) {
+    if (targetSharesWgs84Datum(targetWkt))
+        return {true, suggestWarpGrid(sourceWidth, sourceHeight, sourceWkt, sourceGeotransform, targetWkt), {}};
+    const auto intermediate = suggestWarpGrid(sourceWidth, sourceHeight, sourceWkt, sourceGeotransform, Crs::lonLat().wkt());
+    // suggestWarpGrid only ever needs georeferencing, not real pixel data
+    // (see warp.cpp), so relabeling the intermediate's CRS as literal WGS84
+    // and asking again for the target's own suggested grid is exactly the
+    // same query the eventual data warp will make - no raster is touched
+    // here, this is purely a geotransform/extent computation.
+    const auto suggested = suggestWarpGrid(intermediate.width, intermediate.height, wgs84PivotWkt(), intermediate.geotransform, targetWkt);
+    return {false, suggested, intermediate};
+}
+
 void checkSameGrid(const WrfFile& first, const WrfFile& other, const std::filesystem::path& otherPath) {
     if (other.projectionWkt() != first.projectionWkt() || other.size() != first.size())
         throw UserError("Input files have incompatible grids: " + otherPath.string());
@@ -258,7 +334,7 @@ TargetCrsInfo describeTargetCrs(int epsgCode) {
 
 DestinationGrid computeDestinationGrid(int sourceWidth, int sourceHeight, const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform,
     const TargetCrsInfo& target, const GridOverride& override) {
-    auto grid = suggestWarpGrid(sourceWidth, sourceHeight, sourceWkt, sourceGeotransform, target.wkt);
+    auto grid = suggestWarpGridDatumSafe(sourceWidth, sourceHeight, sourceWkt, sourceGeotransform, target.wkt).suggested;
 
     double minX = grid.geotransform[0], maxY = grid.geotransform[3];
     double maxX = minX + grid.geotransform[1] * grid.width, minY = maxY + grid.geotransform[5] * grid.height;
@@ -335,6 +411,33 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
     const TargetCrsInfo target = describeTargetCrs(options.targetEpsg);
     const DestinationGrid grid =
         computeDestinationGrid(firstFile.size()[0], firstFile.size()[1], firstFile.projectionWkt(), firstFile.geotransform(), target, options.grid);
+
+    // Reuses the SAME datum-safe suggestion computeDestinationGrid already
+    // made internally (a cheap, data-free georeferencing query - see
+    // DatumSafeSuggestion's own comment) so the intermediate grid used to
+    // warp every slice's actual data below is consistent with the
+    // coordinate axes `grid` above already committed to.
+    const auto datumSafety =
+        suggestWarpGridDatumSafe(firstFile.size()[0], firstFile.size()[1], firstFile.projectionWkt(), firstFile.geotransform(), target.wkt);
+    const bool targetIsWgs84Compatible = datumSafety.targetSharesWgs84;
+    const std::string wgs84Wkt = targetIsWgs84Compatible ? std::string{} : wgs84PivotWkt();
+    const DestinationGrid& intermediateWgs84Grid = datumSafety.intermediateWgs84Grid;
+
+    // The single warp call every slice goes through - see
+    // targetSharesWgs84Datum's comment for why a datum-differing target
+    // needs the extra hop via a properly WGS84-labelled intermediate grid,
+    // rather than warping straight from the source's undefined-datum
+    // sphere to the target.
+    auto warpSlice = [&](const std::vector<float>& source, int sourceWidth, int sourceHeight, const std::string& sourceWkt,
+                          const std::array<double, 6>& sourceGeotransform, ResampleMethod resampling) -> std::vector<float> {
+        if (targetIsWgs84Compatible)
+            return warpToGrid(source, sourceWidth, sourceHeight, sourceWkt, sourceGeotransform, grid.wkt, grid.geotransform, grid.width, grid.height,
+                resampling);
+        const auto intermediate = warpToGrid(source, sourceWidth, sourceHeight, sourceWkt, sourceGeotransform, Crs::lonLat().wkt(),
+            intermediateWgs84Grid.geotransform, intermediateWgs84Grid.width, intermediateWgs84Grid.height, resampling);
+        return warpToGrid(intermediate, intermediateWgs84Grid.width, intermediateWgs84Grid.height, wgs84Wkt, intermediateWgs84Grid.geotransform, grid.wkt,
+            grid.geotransform, grid.width, grid.height, resampling);
+    };
 
     struct OutputJob {
         std::filesystem::path path;
@@ -529,8 +632,7 @@ std::vector<std::filesystem::path> runReproject(const ReprojectOptions& options,
                     for (int level = 0; level < axis.outputLevelCount; ++level) {
                         const auto& source = levels[static_cast<std::size_t>(level)];
                         const auto& size = file.size();
-                        auto warped = warpToGrid(source, size[0], size[1], file.projectionWkt(), file.geotransform(), grid.wkt, grid.geotransform,
-                            grid.width, grid.height, resampling);
+                        auto warped = warpSlice(source, size[0], size[1], file.projectionWkt(), file.geotransform(), resampling);
                         for (float value : warped)
                             if (std::isfinite(value)) { sawFiniteData = true; break; }
                         fillNanWithWrfFill(warped);

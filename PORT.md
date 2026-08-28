@@ -508,6 +508,58 @@ hold all the logic in `wrftools_core`, independent of Qt.
   `WrfFile` already tags with a `categoryScheme` (LU_INDEX, IVGTYP, ...),
   regardless of what the user picked - bilinear/average would blend
   category codes into meaningless fractional values.
+- **Follow-up (2026-08-28): a real datum-shift bug, found via a user
+  report** (a QGIS overlay of a reprojected EPSG:2326 - Hong Kong 1980 Grid
+  - file against OpenStreetMap tiles showed a visible offset). Root cause:
+  `WrfFile`'s own source CRS is built on WRF's modeling sphere
+  (`a=b=6370000`, see `crs.hpp`) with **no datum linkage to WGS84 at all** -
+  deliberate, so the app's own internal geometry (map display, LCZ
+  pipeline) never picks up a spurious shift, and the sphere's own lat/lon
+  values are, by WRF's modeling convention, real-world WGS84 coordinates
+  (already confirmed elsewhere in this codebase to agree with geogrid.exe's
+  own `XLAT_M`/`XLONG_M` to within a few metres). Warping straight from
+  that undefined-datum sphere to an external target CRS is harmless when
+  the target's own geographic base **is** WGS84 (true of EPSG:4326 itself,
+  every UTM zone, Web Mercator, ...) - PROJ falls back to an identity/
+  no-shift, which happens to be exactly correct there. It silently gives
+  the **wrong** answer, by hundreds of metres, when the target uses a
+  genuinely different (usually legacy/local) datum: PROJ has a real,
+  published WGS84->HK1980 transformation for EPSG:2326, but never finds it,
+  because the source CRS's datum was never asserted to *be* WGS84 - it just
+  no-ops instead of erroring. Confirmed empirically (point transform, not
+  guessed): the WRF domain centre transformed straight from the sphere to
+  EPSG:2326 landed ~300 m from the same point transformed through real
+  WGS84. A `+towgs84=0,0,0` "identity shift" hack on the sphere was tried
+  and rejected - it makes things *worse* (~15 km off), because a null
+  Helmert shift is done in geocentric XYZ space using the source ellipsoid's
+  own radius, and the sphere's radius (6370000 m) doesn't match WGS84's
+  (6378137 m) at all.
+  Fixed with an explicit **two-stage warp**, applied only when the target's
+  geographic base genuinely differs from WGS84 (`OGRSpatialReference::
+  IsSameGeogCS`, checked once per run in `targetSharesWgs84Datum`) - the
+  common case (UTM, EPSG:4326, Web Mercator, ...) stays a single warp,
+  unchanged: first warp from the source sphere to an intermediate grid on
+  that *same* sphere in geographic (lon/lat) space (an exact,
+  distortion-free unprojection, since source and intermediate share one
+  identical GEOGCS), then **relabel** that intermediate's CRS as literal
+  EPSG:4326 (legitimate given the accuracy note above) and warp again from
+  that properly-labelled WGS84 raster to the real target CRS, where PROJ
+  now finds and applies the genuine datum transformation
+  (`suggestWarpGridDatumSafe`/`DatumSafeSuggestion` in `reproject.cpp`).
+  Applied consistently to **both** the destination grid's own placement
+  (`computeDestinationGrid`) and the per-slice data warp (`runReproject`'s
+  `warpSlice` lambda) - the first attempt at this fix only corrected the
+  data warp and left the grid's own coordinate values computed via the old
+  single-stage (buggy) path, which would have positioned the CF coordinate
+  axes ~300 m away from the data actually resampled into them; both must
+  go through the same datum-safe suggestion or they silently disagree.
+  Pinned by a regression test (`core_tests.cpp`) comparing the reprojected
+  EPSG:2326 output's own NW corner against an independent, real WGS84->
+  EPSG:2326 point transform: measured directly against both code paths
+  while writing the test, the pre-fix warp lands ~170-222 m off and the
+  fixed one lands within ~30 m (residual pixel-corner/resampling noise) -
+  the test's 100 m threshold sits well clear of both, catching a
+  regression back to either failure mode.
 - **Output structure**: real `x`/`y` (projected) or `lon`/`lat` (geographic)
   coordinate variables, a CF `time` coordinate (`seconds since <first
   record>`, parsed from each input's own `Times` variable, not the

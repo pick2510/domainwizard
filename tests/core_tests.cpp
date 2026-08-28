@@ -34,6 +34,7 @@
 #include <sstream>
 
 #include <gdal_priv.h>
+#include <ogr_spatialref.h>
 
 using namespace wrftools;
 
@@ -2366,6 +2367,65 @@ TEST_CASE("runReproject rejects an empty variable list, no inputs, and a missing
     auto badVariable = base;
     badVariable.variables = {"NOT_A_REAL_VARIABLE"};
     CHECK_THROWS_AS(runReproject(badVariable), UserError);
+}
+
+TEST_CASE("runReproject to a target with a real (non-WGS84) datum, like EPSG:2326 Hong Kong 1980 Grid, lands within a "
+          "pixel of the true WGS84-anchored transform, not offset by the ~300m a naive sphere->target warp gives") {
+    // Regression test for a real bug found via a user report (a QGIS
+    // overlay against OpenStreetMap tiles showing a visible shift): warping
+    // straight from WRF's own undefined-datum modeling sphere to a target
+    // CRS whose geographic base genuinely differs from WGS84 silently
+    // produces PROJ's identity/no-shift fallback instead of the target's
+    // real WGS84->target datum transformation - see targetSharesWgs84Datum's
+    // comment in reproject.cpp for the full mechanism and the two-stage fix.
+    WrfFile file("tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc");
+    const auto bounds = file.geographicBounds();
+
+    // Ground truth: the NW corner's real WGS84 lon/lat, transformed to
+    // EPSG:2326 through PROJ's own published Hong Kong 1980 <-> WGS84
+    // transformation - independent of this codebase's reprojection code.
+    OGRSpatialReference wgs84;
+    wgs84.importFromEPSG(4326);
+    wgs84.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    OGRSpatialReference hk2326;
+    hk2326.importFromEPSG(2326);
+    hk2326.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+    auto* xform = OGRCreateCoordinateTransformation(&wgs84, &hk2326);
+    REQUIRE(xform);
+    double expectedX = bounds.west, expectedY = bounds.north;
+    const bool transformOk = xform->Transform(1, &expectedX, &expectedY);
+    OGRCoordinateTransformation::DestroyCT(xform);
+    REQUIRE(transformOk);
+
+    const auto dir = reprojectOutputDir("hk1980-datum");
+    ReprojectOptions options;
+    options.inputs = {"tests/fixtures/reproject/wrfout_d03_2025-03-14_00_00_00.nc"};
+    options.targetEpsg = 2326;
+    options.variables = {"T2"};
+    options.outputDirectory = dir;
+    const auto written = runReproject(options);
+    REQUIRE(written.size() == 1);
+    auto out = NetcdfFile::open(written.front(), NetcdfFile::Mode::ReadOnly);
+    const auto x = out.readDouble("x");
+    const auto y = out.readDouble("y");
+    REQUIRE(x.size() >= 2);
+    REQUIRE(y.size() >= 2);
+    // x/y are CELL CENTRES (see the writer's own comment); recover the
+    // NW pixel CORNER by backing off half a pixel, matching the corner
+    // `expectedX`/`expectedY` above.
+    const double actualX = x.front() - (x[1] - x[0]) / 2.0;
+    const double actualY = y.front() - (y[1] - y[0]) / 2.0;
+
+    // Measured directly against both code paths while writing this test:
+    // the pre-fix (single-stage, undatum-linked) warp lands ~170-222m off;
+    // the fixed two-stage warp lands within ~30m (residual resampling/
+    // pixel-corner noise, not the bug). 100m cleanly separates the two -
+    // it must stay well below the ~170m the bug reintroduces, not just
+    // "small", or a regression here would silently slip back under a
+    // looser threshold the way an earlier, too-loose 250m draft of this
+    // same test did.
+    CHECK(std::abs(actualX - expectedX) < 100.0);
+    CHECK(std::abs(actualY - expectedY) < 100.0);
 }
 
 TEST_CASE("NetcdfFile::create makes a brand-new file and writeFloatSlice/readFloatSlice round-trip a hyperslab") {
