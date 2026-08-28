@@ -143,8 +143,7 @@ projects:
   are ported from `gis4wrf.core` into this app's C++ implementation.
 - **[w2w](https://github.com/matthiasdemuzere/w2w)** (MIT, (c) Matthias
   Demuzere, 2021) - the LCZ tab's Stage 2-4 pipeline is a direct port of
-  `w2w.py`/`add_wrf_version`'s `main()`. See `PORT_W2W.MD` for the full
-  function-by-function mapping.
+  `w2w.py`/`add_wrf_version`'s `main()`.
 - **[convert_geotiff](https://github.com/jbeezley/convert_geotiff)**
   (public domain, by jbeezley) - vendored unmodified in
   `src/convert_geotiff/`/`include/convert_geotiff/` except for its GUI, where
@@ -168,10 +167,3 @@ projects:
   opens in this app's own View tab (by design - other tools read the CF
   grid mapping correctly).
 - Basemap uses OpenStreetMap's standard tile server.
-
-## History
-
-This app was ported from an earlier Python/PyQt6 implementation, since
-removed from the repository; see `PORT.md` and `PORT_W2W.MD` for the full
-porting history (the Python source is still recoverable from git history
-before removal).
