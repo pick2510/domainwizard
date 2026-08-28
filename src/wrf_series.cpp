@@ -1,5 +1,7 @@
 #include "wrftools/wrf_series.hpp"
 
+#include <QCoreApplication>
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -99,7 +101,19 @@ WrfFileSeries::WrfFileSeries(std::vector<std::filesystem::path> paths) : paths_(
         // real time map, and .variables() becomes the true cross-file
         // intersection.
         files_.emplace(0, std::move(first));
-        for (std::size_t i = 1; i < paths_.size(); ++i) fileAt(i);
+        // Opens every remaining file synchronously - can be slow for a
+        // long series. QCoreApplication::instance() is null in headless
+        // callers (core_tests, the reproject worker's own series opens
+        // outside a running event loop), so guard the call rather than
+        // hitting QCoreApplication's "must be constructed" warning there;
+        // when a GUI event loop IS running (ViewForm::openFiles), this
+        // keeps the window repaint-able and not "Not Responding" for the
+        // whole loop instead of only around it.
+        const bool hasEventLoop = QCoreApplication::instance() != nullptr;
+        for (std::size_t i = 1; i < paths_.size(); ++i) {
+            fileAt(i);
+            if (hasEventLoop) QCoreApplication::processEvents();
+        }
 
         std::vector<std::string> commonNames;
         for (const auto& variable : files_.at(0)->variables()) {

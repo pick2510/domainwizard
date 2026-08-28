@@ -117,6 +117,7 @@ src/layer_renderer.cpp, raster_layer.cpp, warp.cpp
 src/lcz_form.cpp, lcz.cpp       LCZ tab + pipeline
 src/reproject_form.cpp, reproject.cpp, reproject_worker.cpp
                                  Reproject tab + out-of-process worker
+src/netcdf_file.cpp             netCDF-C RAII wrapper (used by LCZ + Reproject)
 src/colormaps.cpp, units.cpp, colorbar.cpp
                                  color LUTs, unit conversion, legend rendering
 src/theme.cpp                   light/dark theme detection

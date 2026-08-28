@@ -8,8 +8,10 @@
 #include "wrftools/wrf_series.hpp"
 
 #include <QAbstractSpinBox>
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -227,10 +229,25 @@ void ViewForm::openFiles(const std::vector<std::string>& paths) {
     std::vector<std::filesystem::path> given(paths.begin(), paths.end());
     const auto grouped = groupWrfPaths(given);
     std::optional<std::string> lastOpened;
+    // renderer_.openFile() below can block for a while - a big WPS_GEOG
+    // dataset reads every tile up front, and a multi-file series whose
+    // filenames don't cleanly parse opens every file to build its time
+    // axis. Neither can be interrupted mid-call, but a wait cursor plus an
+    // upfront processEvents() flush at least shows the click landed and
+    // repaints the window instead of it going gray/"Not Responding" for
+    // the whole call.
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QCoreApplication::processEvents();
     try {
         for (const auto& group : grouped.groups) { static_cast<void>(renderer_.openFile(group)); lastOpened = group.front().string(); }
         for (const auto& single : grouped.singles) { static_cast<void>(renderer_.openFile({single})); lastOpened = single.string(); }
-    } catch (const std::exception& error) { QMessageBox::critical(this, "Could not open file", error.what()); }
+    } catch (const std::exception& error) {
+        QApplication::restoreOverrideCursor();
+        QMessageBox::critical(this, "Could not open file", error.what());
+        rebuildFileList(lastOpened);
+        return;
+    }
+    QApplication::restoreOverrideCursor();
     rebuildFileList(lastOpened);
 }
 
