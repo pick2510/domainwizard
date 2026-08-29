@@ -25,7 +25,7 @@ Convert are plain file-in/file-out forms.
   regular grid in a chosen EPSG, for tools like QGIS, xarray/rioxarray, or
   CDO that don't understand WRF's native grid. Optionally crop to an AOI
   rectangle drawn on the map, and optionally compute extra output variables
-  from an ncap2-like arithmetic-processor script (e.g.
+  from a small arithmetic-processor script (e.g.
   `LVLHT = ((PH + PHB) / 9.81) - HGT;`, with arithmetic, comparisons,
   `?:`, and a small math function library). Runs in a separate worker
   process so the GUI stays responsive.
@@ -125,7 +125,7 @@ src/point_inspector_dialog.cpp, chart_widget.cpp, stats.cpp
 src/lcz_form.cpp, lcz.cpp       LCZ tab + pipeline
 src/reproject_form.cpp, reproject.cpp, reproject_worker.cpp
                                  Reproject tab + out-of-process worker
-src/derived_variable.cpp        ncap2-like derived-variable script parser/evaluator
+src/derived_variable.cpp        derived-variable script parser/evaluator
 src/netcdf_file.cpp             netCDF-C RAII wrapper (used by LCZ + Reproject)
 src/colormaps.cpp, units.cpp, colorbar.cpp
                                  color LUTs, unit conversion, legend rendering
@@ -142,11 +142,11 @@ separate process instead.
 
 ## Derived variables (Reproject tab)
 
-The Reproject tab's "Derived Variables" box accepts a small ncap2-like
-script defining extra output variables computed from the selected wrfout
-fields. Every name a script assigns is automatically written to the output,
-the same way ncap2 itself writes every variable a script defines. Example
-(a real, commonly-used WRF post-processing snippet):
+The Reproject tab's "Derived Variables" box takes a small script (loosely
+inspired by NCO's `ncap2`) that computes extra output variables from the
+selected wrfout fields. Every name the script assigns is written to the
+output automatically. Example (a real, commonly-used WRF post-processing
+snippet):
 
 ```
 LVLHT = (( PH + PHB ) / 9.81) - HGT;
@@ -160,8 +160,7 @@ TK@units = "Kelvin";
 TK@long_name = "Level Temperature [K]";
 ```
 
-**Grammar** (standard C/ncap2-style operator precedence, lowest to
-highest):
+**Grammar** (standard operator precedence, lowest to highest):
 
 ```
 script          := (statement ';')*
@@ -185,10 +184,10 @@ primary         := NUMBER | IDENT | IDENT '(' expr (',' expr)* ')' | '(' expr ')
 
 Every statement must end with `;`, including the last one. Comparison/
 logical/`!` operators produce an elementwise 0.0/1.0 float array (so
-`T2 * (T2 > 273.15)` works as a mask, the same idiom as ncap2/numpy); `?:`
-elementwise-selects between its two branches per pixel using the
-condition's 0.0/1.0 array. `@units`/`@long_name` may only target a name
-already assigned earlier in the same script.
+`T2 * (T2 > 273.15)` works as a mask); `?:` elementwise-selects between its
+two branches per pixel using the condition's 0.0/1.0 array. `@units`/
+`@long_name` may only target a name already assigned earlier in the same
+script.
 
 **Builtin functions** (fixed arity, applied elementwise): `sqrt`, `exp`,
 `log` (natural log), `log10`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`,
@@ -207,31 +206,27 @@ operands come straight from the file exactly as stored. This is what makes
 one of them - the standard geopotential-height-at-layer-interfaces formula
 would be wrong on a destaggered `PH`/`PHB`. Combining two operands on
 different named vertical dimensions (e.g. a `bottom_top` field directly
-with a `bottom_top_stag` one) is rejected with a clear error, mirroring
-ncap2's own non-conformable-arrays error - any number of 2D/scalar operands
-broadcast freely against at most one named dimension.
+with a `bottom_top_stag` one) is rejected with a clear error; any number of
+2D/scalar operands broadcast freely against at most one named dimension.
 
-**A script can replace an original variable**, matching ncap2's own
-"variables can be reassigned" behaviour:
+**A script can replace an original variable** - a source variable's own
+name may be reassigned exactly once:
 
 ```
 T2 = T2 - 273.15;
 T2@units = "degC";
 ```
 
-Reassigning a source variable's own name is allowed exactly once; the RHS's
-own reference to `T2` still resolves to the ORIGINAL source variable (not
-the new definition), so this is a replacement, not a self-reference loop.
-The replacement supersedes any pass-through copy of that name in the
-output - so `T2` doesn't need to be (and if it is, harmlessly doesn't need
-to be) also ticked in the Variables list. If the script doesn't set
-`@units`/`@long_name` itself, they fall back to the ORIGINAL variable's own
-- which is exactly why `@units = "degC"` matters above: without it, the
-output would still carry the stale `"K"` from the source even though the
-values are now Celsius. (Real ncap2 has this same gotcha - it also
-propagates the old attributes forward on a reassignment unless told
-otherwise.) Reassigning the same name a second time, or reassigning an
-already-derived (non-source) name, is rejected as an error.
+The RHS's own reference to `T2` still resolves to the ORIGINAL source
+variable (not the new definition), so this is a replacement, not a
+self-reference loop. The replacement supersedes any pass-through copy of
+that name in the output - `T2` doesn't need to also be ticked in the
+Variables list. If the script doesn't set `@units`/`@long_name` itself,
+they fall back to the ORIGINAL variable's own - which is exactly why
+`@units = "degC"` matters above: without it, the output would still carry
+the stale `"K"` from the source even though the values are now Celsius.
+Reassigning the same name a second time, or reassigning an already-derived
+(non-source) name, is rejected as an error.
 
 ## Credits and license
 
