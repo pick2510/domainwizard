@@ -140,14 +140,23 @@ dylibbundler -od -b \
 # ANY rpath-relative dependency on a binary with a duplicate LC_RPATH,
 # reporting exactly the "Library not loaded ... (duplicate LC_RPATH ...)"
 # failure a real user hit, even though the referenced file is genuinely
-# present, correctly named, and correctly signed. Delete every existing
-# copy of the entry from every Mach-O in the bundle and add it back
-# exactly once.
+# present, correctly named, and correctly signed.
+#
+# Delete every existing copy of the entry and add it back exactly once.
+# install_name_tool -delete_rpath needs the EXACT literal string dylibbundler
+# wrote (a first attempt at this hardcoded "@executable_path/../libs" -
+# without the trailing slash dylibbundler actually appends, confirmed by
+# the error text itself: '@executable_path/../libs/' - so the delete call
+# silently matched nothing and just added a THIRD, differently-spelled
+# entry on top of the original duplicates). Read the real string back out
+# of `otool -l` instead of assuming its exact spelling.
 echo
 echo "Deduplicating LC_RPATH entries dylibbundler may have added more than once..."
 while IFS= read -r -d '' macho; do
-  while otool -l "$macho" | grep -q "path @executable_path/../libs ("; do
-    install_name_tool -delete_rpath "@executable_path/../libs" "$macho"
+  while true; do
+    existing=$(otool -l "$macho" | awk '$1=="path" && $2 ~ /^@executable_path\/\.\.\/libs\/?$/ {print $2; exit}')
+    [ -z "$existing" ] && break
+    install_name_tool -delete_rpath "$existing" "$macho"
   done
   install_name_tool -add_rpath "@executable_path/../libs" "$macho"
 done < <(find "$APP_PATH" -type f \( -name "*.dylib" -o -perm -u+x \) -print0)
