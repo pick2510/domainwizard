@@ -115,10 +115,18 @@ find "$APP_PATH/Contents/PlugIns" -name "*.dylib" -type f -print0 2>/dev/null | 
   # check exists to catch - which broke the app for actual launch far
   # more thoroughly than the bug being fixed.
   otool -L "$plugin" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^@(rpath|executable_path|loader_path)/.*\.framework/' | while read -r dep; do
-    framework_name="${dep#*/}"
-    framework_name="${framework_name%%.framework/*}"
-    if [ ! -d "$APP_PATH/Contents/Frameworks/${framework_name}.framework" ]; then
-      echo "Removing $plugin - references ${framework_name}.framework, which was never bundled."
+    # Extract just the "Foo.framework" path COMPONENT, not everything
+    # between the @-prefix and ".framework/" - some of Qt's own plugins
+    # use a reference like "@rpath/../../Frameworks/QtGui.framework/..."
+    # (an @rpath prefix, but with a literal "../.." navigating back out
+    # of it first), which the naive "strip up to first '/'" approach
+    # this replaced turned into a garbled, wrongly-resolving path -
+    # confirmed by CI: it deleted libqcocoa.dylib and libqmacstyle.dylib
+    # for "missing" QtGui.framework/QtWidgets.framework that were
+    # actually present the whole time, just checked at the wrong path.
+    framework_name=$(printf '%s\n' "$dep" | grep -oE '[^/]+\.framework' | head -1)
+    if [ -n "$framework_name" ] && [ ! -d "$APP_PATH/Contents/Frameworks/$framework_name" ]; then
+      echo "Removing $plugin - references $framework_name (via $dep), which was never bundled."
       rm -f "$plugin"
       break
     fi
