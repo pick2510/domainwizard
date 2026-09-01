@@ -114,6 +114,68 @@ if [ -d "$PROJ_DATA_DIR" ]; then cp -R "$PROJ_DATA_DIR" "$APP_PATH/Contents/shar
   echo "Warning: $PROJ_DATA_DIR not found - proj.db will not be bundled (CRS transforms will fail)." >&2
 fi
 
+# ---- verify the bundle is actually loadable before shipping it ----
+#
+# Nothing above this point ever launches the built .app - a silent
+# dylibbundler failure (a dependency it couldn't resolve/copy) previously
+# shipped straight through to a tagged release, only surfacing for a real
+# user as `dyld: Library not loaded: @executable_path/../libs/libgdal.*.dylib`
+# at launch. Two checks below catch that class of bug here instead:
+# statically, every @rpath/@executable_path/@loader_path reference in every
+# bundled Mach-O must resolve to a file that's actually present in the
+# bundle; then, as the most direct reproduction of the failure mode itself,
+# both executables are actually launched and checked for a dyld error.
+echo
+echo "Verifying every bundled library reference resolves..."
+missing=0
+while IFS= read -r -d '' macho; do
+  while IFS= read -r dep; do
+    case "$dep" in
+      @rpath/*|@executable_path/*|@loader_path/*)
+        name="${dep##*/}"
+        if ! find "$APP_PATH" -name "$name" -print -quit | grep -q .; then
+          echo "MISSING: $macho references '$dep', but no file named '$name' exists anywhere in the bundle." >&2
+          missing=1
+        fi
+        ;;
+    esac
+  done < <(otool -L "$macho" 2>/dev/null | tail -n +2 | awk '{print $1}')
+done < <(find "$APP_PATH" \( -name "*.dylib" -o -perm -u+x \) -type f -print0)
+if [ "$missing" -ne 0 ]; then
+  echo "Portable bundle is missing one or more required libraries - see MISSING lines above." >&2
+  exit 1
+fi
+echo "OK - every bundled library reference resolves to a file in the bundle."
+
+echo
+echo "Smoke-testing: launching the worker executable..."
+WORKER_OUTPUT=$("$WORKER_EXECUTABLE" 2>&1 || true)
+if echo "$WORKER_OUTPUT" | grep -qi "dyld\|Library not loaded"; then
+  echo "Smoke test FAILED - the worker executable couldn't even start:" >&2
+  echo "$WORKER_OUTPUT" >&2
+  exit 1
+fi
+echo "OK - worker executable started (output: ${WORKER_OUTPUT:-<none>})."
+
+echo
+echo "Smoke-testing: launching the main executable..."
+LAUNCH_LOG=$(mktemp)
+QT_QPA_PLATFORM=offscreen "$EXECUTABLE" >"$LAUNCH_LOG" 2>&1 &
+PID=$!
+sleep 3
+if kill -0 "$PID" 2>/dev/null; then
+  kill "$PID" 2>/dev/null || true
+  wait "$PID" 2>/dev/null || true
+  echo "OK - process launched and was still running after 3s."
+else
+  wait "$PID" 2>/dev/null || true
+  echo "Smoke test FAILED - the main executable exited immediately:" >&2
+  cat "$LAUNCH_LOG" >&2
+  rm -f "$LAUNCH_LOG"
+  exit 1
+fi
+rm -f "$LAUNCH_LOG"
+
 (cd "$DIST_DIR" && zip -r -y -q wrftools-macos.zip wrftools.app)
 
 echo
