@@ -87,6 +87,34 @@ cp "$BUILD_DIR/wrftools_reproject_worker" "$WORKER_EXECUTABLE"
 # worker's Qt6Core reference stays pointed at the build-time Homebrew path.
 "$MACDEPLOYQT" "$APP_PATH" "-executable=$WORKER_EXECUTABLE"
 
+# Recent macdeployqt (observed with Qt 6.11 on this CI's Homebrew) also
+# tries to relink/re-sign every non-Qt dylib the executables pull in
+# (GDAL's own now-large dependency tree - Arrow, the AWS SDK, OpenEXR,
+# ...), and can hit a codesign verification error partway through that
+# aborts its OWN later internal cleanup pass - observed leaving behind
+# image-format/icon-engine/input-method PlugIns whose corresponding Qt
+# framework (QtPdf/QtSvg/QtVirtualKeyboard - none of which this app
+# actually uses) was never copied to Contents/Frameworks. A plugin like
+# that is worse than simply absent: Qt will try to load it, get a
+# resolution failure, and that's a second - separate from GDAL's own -
+# reason a downloaded build could fail to start cleanly. Prune any
+# PlugIns/**/*.dylib whose own @rpath Frameworks reference doesn't
+# actually exist, rather than fighting macdeployqt's own incomplete
+# pruning.
+echo
+echo "Pruning any plugin left referencing a framework macdeployqt never copied..."
+find "$APP_PATH/Contents/PlugIns" -name "*.dylib" -type f -print0 2>/dev/null | while IFS= read -r -d '' plugin; do
+  otool -L "$plugin" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep '\.framework/' | while read -r dep; do
+    framework_name="${dep#*/}"
+    framework_name="${framework_name%%.framework/*}"
+    if [ ! -d "$APP_PATH/Contents/Frameworks/${framework_name}.framework" ]; then
+      echo "Removing $plugin - references ${framework_name}.framework, which was never bundled."
+      rm -f "$plugin"
+      break
+    fi
+  done
+done
+
 # Bundles every remaining non-system dylib the executable (transitively)
 # needs - GDAL/PROJ and everything under them - that macdeployqt doesn't
 # touch (it only knows about Qt itself). dylibbundler recognizes libraries
@@ -113,6 +141,23 @@ fi
 if [ -d "$PROJ_DATA_DIR" ]; then cp -R "$PROJ_DATA_DIR" "$APP_PATH/Contents/share/proj"; else
   echo "Warning: $PROJ_DATA_DIR not found - proj.db will not be bundled (CRS transforms will fail)." >&2
 fi
+
+# Both macdeployqt and dylibbundler rewrite install names/rpaths on
+# dylibs Homebrew already ships ad-hoc-signed, which invalidates those
+# original signatures (macdeployqt is supposed to re-sign what it
+# touches itself, but was observed hitting a codesign verification
+# error partway through its own run - see the PlugIns-pruning comment
+# above). A dylib with an invalid signature can fail to load even
+# though the file is physically present and otherwise correct,
+# independent of any missing-file bug - Apple Silicon enforces
+# signature validity at load time, not just at Gatekeeper/quarantine
+# time. Force a single fresh ad-hoc signature (--sign -, no real
+# identity needed for local/self-distributed use) over the ENTIRE
+# bundle now that both tools are done modifying it, so every Mach-O's
+# signature actually matches its final on-disk contents.
+echo
+echo "Re-signing the bundle (ad-hoc) now that all relinking is done..."
+codesign --force --deep --sign - "$APP_PATH"
 
 # ---- verify the bundle is actually loadable before shipping it ----
 #
