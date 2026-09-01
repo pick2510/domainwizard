@@ -104,7 +104,17 @@ cp "$BUILD_DIR/wrftools_reproject_worker" "$WORKER_EXECUTABLE"
 echo
 echo "Pruning any plugin left referencing a framework macdeployqt never copied..."
 find "$APP_PATH/Contents/PlugIns" -name "*.dylib" -type f -print0 2>/dev/null | while IFS= read -r -d '' plugin; do
-  otool -L "$plugin" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep '\.framework/' | while read -r dep; do
+  # Only RELOCATABLE references (@rpath/@executable_path/@loader_path) are
+  # ones this bundle is responsible for having copied - an absolute
+  # /System/Library/Frameworks/... reference (e.g. libqcocoa.dylib's own,
+  # entirely legitimate dependency on AppKit) resolves via the OS itself
+  # and must never be treated as "missing". An earlier version of this
+  # check didn't make that distinction and deleted the cocoa platform
+  # plugin - every real user's app is Qt's ESSENTIAL platform plugin,
+  # unlike the truly-unused QtPdf/QtSvg/QtVirtualKeyboard plugins this
+  # check exists to catch - which broke the app for actual launch far
+  # more thoroughly than the bug being fixed.
+  otool -L "$plugin" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -E '^@(rpath|executable_path|loader_path)/.*\.framework/' | while read -r dep; do
     framework_name="${dep#*/}"
     framework_name="${framework_name%%.framework/*}"
     if [ ! -d "$APP_PATH/Contents/Frameworks/${framework_name}.framework" ]; then
