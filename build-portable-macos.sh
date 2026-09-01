@@ -132,6 +132,26 @@ dylibbundler -od -b \
   -d "$APP_PATH/Contents/libs" \
   -p "@executable_path/../libs"
 
+# dylibbundler (observed: version 1.0.5) adds "@executable_path/../libs"
+# as an LC_RPATH entry once per dependency it relocates, not once per
+# binary - so a binary with more than one relocated dependency ends up
+# with the SAME rpath entry listed multiple times. Confirmed the hard
+# way that this isn't cosmetic: dyld on this runner refuses to resolve
+# ANY rpath-relative dependency on a binary with a duplicate LC_RPATH,
+# reporting exactly the "Library not loaded ... (duplicate LC_RPATH ...)"
+# failure a real user hit, even though the referenced file is genuinely
+# present, correctly named, and correctly signed. Delete every existing
+# copy of the entry from every Mach-O in the bundle and add it back
+# exactly once.
+echo
+echo "Deduplicating LC_RPATH entries dylibbundler may have added more than once..."
+while IFS= read -r -d '' macho; do
+  while otool -l "$macho" | grep -q "path @executable_path/../libs ("; do
+    install_name_tool -delete_rpath "@executable_path/../libs" "$macho"
+  done
+  install_name_tool -add_rpath "@executable_path/../libs" "$macho"
+done < <(find "$APP_PATH" -type f \( -name "*.dylib" -o -perm -u+x \) -print0)
+
 mkdir -p "$APP_PATH/Contents/share"
 GDAL_DATA_DIR="$(brew --prefix gdal)/share/gdal"
 PROJ_DATA_DIR="$(brew --prefix proj)/share/proj"
