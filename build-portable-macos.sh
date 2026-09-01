@@ -143,21 +143,27 @@ if [ -d "$PROJ_DATA_DIR" ]; then cp -R "$PROJ_DATA_DIR" "$APP_PATH/Contents/shar
 fi
 
 # Both macdeployqt and dylibbundler rewrite install names/rpaths on
-# dylibs Homebrew already ships ad-hoc-signed, which invalidates those
-# original signatures (macdeployqt is supposed to re-sign what it
-# touches itself, but was observed hitting a codesign verification
-# error partway through its own run - see the PlugIns-pruning comment
-# above). A dylib with an invalid signature can fail to load even
-# though the file is physically present and otherwise correct,
-# independent of any missing-file bug - Apple Silicon enforces
-# signature validity at load time, not just at Gatekeeper/quarantine
-# time. Force a single fresh ad-hoc signature (--sign -, no real
-# identity needed for local/self-distributed use) over the ENTIRE
-# bundle now that both tools are done modifying it, so every Mach-O's
-# signature actually matches its final on-disk contents.
+# dylibs Homebrew already ships ad-hoc-signed (install_name_tool prints
+# "warning: changes being made to the file will invalidate the code
+# signature" for every single one it touches), and a dylib with an
+# invalid signature can fail to load - as plain "Library not loaded"
+# with a "tried: ... (duplicate LC_RPATH ...)" reason, no distinct
+# codesign-specific error text - even though the file is physically
+# present and otherwise correct. This was confirmed the hard way: a
+# single `codesign --force --deep --sign -` pass over the whole .app
+# was NOT enough to fix it - `--deep` is documented by Apple as
+# unreliable for anything beyond standard nested .framework/.app
+# structure, which the loose dylibs dumped straight into Contents/libs
+# by dylibbundler are not. Signing every Mach-O individually first
+# (order doesn't matter for a plain ad-hoc signature - unlike a real
+# Developer ID signature, it doesn't cryptographically validate nested
+# code), then the outer .app bundle last, is what actually works.
 echo
-echo "Re-signing the bundle (ad-hoc) now that all relinking is done..."
-codesign --force --deep --sign - "$APP_PATH"
+echo "Re-signing every Mach-O in the bundle individually (ad-hoc)..."
+while IFS= read -r -d '' macho; do
+  codesign --force --sign - "$macho"
+done < <(find "$APP_PATH" -type f \( -name "*.dylib" -o -perm -u+x \) -print0)
+codesign --force --sign - "$APP_PATH"
 
 # ---- verify the bundle is actually loadable before shipping it ----
 #
