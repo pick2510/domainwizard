@@ -1718,7 +1718,7 @@ TEST_CASE("ReprojectForm defaults: EPSG 4326, bilinear resampling, merge checked
 TEST_CASE("ReprojectForm's projection search filters the EPSG catalog and clicking a result fills in the EPSG field") {
     TileMapWidget map;
     ReprojectForm form(&map);
-    CHECK(form.projectionListWidget()->count() == 0);  // empty query -> empty list, not all ~6000 entries
+    CHECK(form.projectionListWidget()->count() > 1000);  // fully populated by default, not just on a typed query
 
     form.projectionSearchField()->setText("WGS 84 / UTM zone 32N");
     REQUIRE(form.projectionListWidget()->count() > 0);
@@ -1742,7 +1742,7 @@ TEST_CASE("ReprojectForm's projection search filters the EPSG catalog and clicki
     CHECK(foundByCode);
 
     form.projectionSearchField()->setText("");
-    CHECK(form.projectionListWidget()->count() == 0);
+    CHECK(form.projectionListWidget()->count() > 1000);
 }
 
 TEST_CASE("ReprojectForm::setInputPaths populates the variable list from a real wrfout, sorted, with units shown") {

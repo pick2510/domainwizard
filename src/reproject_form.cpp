@@ -144,18 +144,19 @@ ReprojectForm::ReprojectForm(TileMapWidget* map, QWidget* parent) : QWidget(pare
     auto* crsGroup = new QGroupBox("Output CRS and grid", this);
     auto* crsForm = new QFormLayout;
 
-    // Searchable EPSG catalog (~6000+ entries, see listEpsgCrses) - typing
-    // filters projectionList_ by name/area/code; picking an entry just
+    // Searchable EPSG catalog (~6000+ entries, see listEpsgCrses) - starts
+    // fully populated (sorted by code, same order as listEpsgCrses); typing
+    // filters projectionList_ by name/area/code. Picking an entry just
     // writes its code into epsg_ below, so this is a convenience on top of
     // typing the code directly, not a separate code path (runReproject()
-    // only ever reads epsg_). The list starts empty rather than showing all
-    // ~6000 entries at once - see updateProjectionList.
+    // only ever reads epsg_).
     projectionSearch_ = new QLineEdit(this);
     projectionSearch_->setPlaceholderText("Search projections by name or EPSG code...");
     crsForm->addRow("Find projection", projectionSearch_);
     projectionList_ = new QListWidget(this);
     projectionList_->setMaximumHeight(160);
     crsForm->addRow("", projectionList_);
+    updateProjectionList();
 
     epsg_ = new QLineEdit("4326", this);
     crsForm->addRow("Target EPSG code", epsg_);
@@ -415,25 +416,19 @@ void ReprojectForm::refreshVariables() {
 void ReprojectForm::updateProjectionList() {
     projectionList_->clear();
     const QString query = projectionSearch_->text().trimmed();
-    if (query.isEmpty()) return;
-    // Capped rather than showing every match: the query is usually a
-    // handful of characters into a common name ("utm", "hong kong",
-    // "lambert"), and a match count in the hundreds isn't a useful list to
-    // scroll through anyway.
-    constexpr int kMaxResults = 200;
     int shown = 0;
     for (const auto& entry : listEpsgCrses()) {
         if (entry.deprecated) continue;
         const QString code = QString::number(entry.code);
         const QString name = QString::fromStdString(entry.name);
         const QString areaName = QString::fromStdString(entry.areaName);
-        const bool matches = code == query || name.contains(query, Qt::CaseInsensitive) || areaName.contains(query, Qt::CaseInsensitive);
+        const bool matches = query.isEmpty() || code == query || name.contains(query, Qt::CaseInsensitive) || areaName.contains(query, Qt::CaseInsensitive);
         if (!matches) continue;
         QString label = QString("EPSG:%1 - %2").arg(code, name);
         if (!areaName.isEmpty()) label += QString(" (%1)").arg(areaName);
         auto* item = new QListWidgetItem(label, projectionList_);
         item->setData(Qt::UserRole, code);
-        if (++shown >= kMaxResults) break;
+        ++shown;
     }
     if (shown == 0) {
         auto* item = new QListWidgetItem("No matching projections found.", projectionList_);
