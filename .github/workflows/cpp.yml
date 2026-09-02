@@ -156,6 +156,13 @@ jobs:
       - name: Package portable Linux bundle
         if: runner.os == 'Linux'
         run: ./build-portable-cpp.sh
+      # Wraps the same dist/wrftools-cpp/ bundle above into a single-file
+      # AppImage - see build-portable-appimage.sh's own header comment.
+      # Only needs curl (already on the runner image) beyond what the
+      # bundle step above already installed.
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        run: ./build-portable-appimage.sh
       - name: Package portable macOS app
         if: runner.os == 'macOS'
         run: ./build-portable-macos.sh
@@ -169,6 +176,12 @@ jobs:
         with:
           name: wrftools-linux
           path: dist/wrftools-cpp/
+      - name: Upload Linux AppImage artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrftools-linux-appimage
+          path: dist/WRFTOOLS-x86_64.AppImage
       - name: Upload macOS artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -204,6 +217,7 @@ jobs:
         with:
           files: |
             artifacts/wrftools-linux.zip
+            artifacts/wrftools-linux-appimage/WRFTOOLS-x86_64.AppImage
             artifacts/wrftools-macos/wrftools-macos.zip
             artifacts/wrftools-windows/wrftools-windows.zip
           generate_release_notes: true

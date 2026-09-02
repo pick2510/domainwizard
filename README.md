@@ -86,14 +86,15 @@ ctest --test-dir build-cpp --output-on-failure
 ## Packaging
 
 Every push/PR builds, tests, and packages the app for Linux, macOS, and
-Windows via GitHub Actions, uploading portable bundles as workflow
-artifacts. Tagged `v*` pushes publish a GitHub Release with all three
-attached.
+Windows via GitHub Actions, uploading portable bundles (plus a Linux
+AppImage) as workflow artifacts. Tagged `v*` pushes publish a GitHub
+Release with all of them attached.
 
 To build a portable bundle locally:
 
 ```sh
 ./build-portable-cpp.sh      # Linux -> dist/wrftools-cpp/
+./build-portable-appimage.sh # Linux AppImage (run after build-portable-cpp.sh) -> dist/WRFTOOLS-x86_64.AppImage
 ./build-portable-macos.sh    # macOS -> dist/wrftools.app, dist/wrftools-macos.zip
 ./build-portable-windows.sh  # Windows (MSYS2 MINGW64 shell) -> dist/wrftools-windows/, dist/wrftools-windows.zip
 ```
