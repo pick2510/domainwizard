@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <iomanip>
 #include <limits>
@@ -384,6 +385,29 @@ TargetCrsInfo describeTargetCrs(int epsgCode) {
     }
     CPLFree(units);
     return info;
+}
+
+const std::vector<EpsgCrsEntry>& listEpsgCrses() {
+    static const std::vector<EpsgCrsEntry> entries = [] {
+        std::vector<EpsgCrsEntry> result;
+        GDALAllRegister();
+        int count = 0;
+        OSRCRSInfo** list = OSRGetCRSInfoListFromDatabase("EPSG", nullptr, &count);
+        result.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            const OSRCRSInfo* item = list[i];
+            EpsgCrsEntry entry;
+            entry.code = item->pszCode ? std::atoi(item->pszCode) : 0;
+            entry.name = item->pszName ? item->pszName : "";
+            entry.areaName = item->pszAreaName ? item->pszAreaName : "";
+            entry.deprecated = item->bDeprecated != 0;
+            if (entry.code > 0) result.push_back(std::move(entry));
+        }
+        OSRDestroyCRSInfoList(list);
+        std::sort(result.begin(), result.end(), [](const EpsgCrsEntry& a, const EpsgCrsEntry& b) { return a.code < b.code; });
+        return result;
+    }();
+    return entries;
 }
 
 DestinationGrid computeDestinationGrid(int sourceWidth, int sourceHeight, const std::string& sourceWkt, const std::array<double, 6>& sourceGeotransform,

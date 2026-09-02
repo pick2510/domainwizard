@@ -23,10 +23,12 @@ Convert are plain file-in/file-out forms.
   a distribution histogram of the whole raster (a single-timestep file).
 - **Reproject** - convert wrfout files into plain CF-1.7 NetCDF on a
   regular grid in a chosen EPSG, for tools like QGIS, xarray/rioxarray, or
-  CDO that don't understand WRF's native grid. Optionally crop to an AOI
-  rectangle drawn on the map, and optionally compute extra output variables
-  from a small arithmetic-processor script (e.g.
-  `LVLHT = ((PH + PHB) / 9.81) - HGT;`, with arithmetic, comparisons,
+  CDO that don't understand WRF's native grid. A search box filters GDAL/
+  PROJ's own EPSG catalog by name, area of use, or code so the target
+  projection doesn't have to be looked up elsewhere and typed in by hand.
+  Optionally crop to an AOI rectangle drawn on the map, and optionally
+  compute extra output variables from a small arithmetic-processor script
+  (e.g. `LVLHT = ((PH + PHB) / 9.81) - HGT;`, with arithmetic, comparisons,
   `?:`, and a small math function library). Runs in a separate worker
   process so the GUI stays responsive.
 - **LCZ** - applies Local Climate Zone urban-canopy parameters to a
@@ -230,10 +232,9 @@ Reassigning the same name a second time, or reassigning an already-derived
 
 ## Credits and license
 
-WRF Tools itself is MIT licensed - see [LICENSE](LICENSE).
-
-Parts of it are ported from, or vendor code from, other open-source
-projects:
+WRF Tools itself is MIT licensed - see [LICENSE](LICENSE). This app was
+built using two other open-source projects as a template - geospatial
+logic and pipelines ported from their Python into this app's own C++:
 
 - **[gis4wrf](https://github.com/GIS4WRF/gis4wrf)** (MIT, (c) D. Meyer and
   M. Riechert, 2018) - this app's earlier Python/PyQt6 predecessor was
@@ -243,14 +244,18 @@ projects:
 - **[w2w](https://github.com/matthiasdemuzere/w2w)** (MIT, (c) Matthias
   Demuzere, 2021) - the LCZ tab's Stage 2-4 pipeline is a direct port of
   `w2w.py`/`add_wrf_version`'s `main()`.
-- **[convert_geotiff](https://github.com/jbeezley/convert_geotiff)**
-  (public domain, by jbeezley) - vendored unmodified in
-  `src/convert_geotiff/`/`include/convert_geotiff/` except for its GUI, where
-  the original FLTK interface was replaced with `GeotiffConvertForm`. The
-  index/tile-data reader (no TIFF/GEOTIFF dependency) is built as a
-  separate `convert_geotiff_reader` target so the View tab's
-  `WpsBinarySource` can reuse it without pulling libtiff/libgeotiff into
-  the core library.
+
+## Vendored code
+
+`src/convert_geotiff/`/`include/convert_geotiff/` embeds
+[convert_geotiff](https://github.com/jbeezley/convert_geotiff) (public
+domain, by jbeezley) - specifically the author's own C++ port of the
+original tool, which had already added an FLTK GUI. That GUI is what got
+replaced with `GeotiffConvertForm` here; the conversion logic itself is
+otherwise unmodified. The index/tile-data reader (no TIFF/GEOTIFF
+dependency) is built as a separate `convert_geotiff_reader` target so the
+View tab's `WpsBinarySource` can reuse it without pulling libtiff/libgeotiff
+into the core library.
 
 ## Known limitations
 

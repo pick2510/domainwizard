@@ -1715,6 +1715,36 @@ TEST_CASE("ReprojectForm defaults: EPSG 4326, bilinear resampling, merge checked
     CHECK_FALSE(form.isRunning());
 }
 
+TEST_CASE("ReprojectForm's projection search filters the EPSG catalog and clicking a result fills in the EPSG field") {
+    TileMapWidget map;
+    ReprojectForm form(&map);
+    CHECK(form.projectionListWidget()->count() == 0);  // empty query -> empty list, not all ~6000 entries
+
+    form.projectionSearchField()->setText("WGS 84 / UTM zone 32N");
+    REQUIRE(form.projectionListWidget()->count() > 0);
+    bool found = false;
+    for (int i = 0; i < form.projectionListWidget()->count(); ++i) {
+        auto* item = form.projectionListWidget()->item(i);
+        if (item->data(Qt::UserRole).toString() == "32632") {
+            found = true;
+            emit form.projectionListWidget()->itemClicked(item);
+            break;
+        }
+    }
+    CHECK(found);
+    CHECK(form.epsgField()->text() == "32632");
+
+    // Searching by bare EPSG code works too.
+    form.projectionSearchField()->setText("4326");
+    bool foundByCode = false;
+    for (int i = 0; i < form.projectionListWidget()->count(); ++i)
+        if (form.projectionListWidget()->item(i)->data(Qt::UserRole).toString() == "4326") foundByCode = true;
+    CHECK(foundByCode);
+
+    form.projectionSearchField()->setText("");
+    CHECK(form.projectionListWidget()->count() == 0);
+}
+
 TEST_CASE("ReprojectForm::setInputPaths populates the variable list from a real wrfout, sorted, with units shown") {
     TileMapWidget map;
     ReprojectForm form(&map);

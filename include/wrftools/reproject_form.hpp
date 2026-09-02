@@ -77,6 +77,8 @@ public:
     // Test-facing widget accessors only.
     [[nodiscard]] QLineEdit* inputSummaryField() const noexcept { return inputSummary_; }
     [[nodiscard]] QLineEdit* epsgField() const noexcept { return epsg_; }
+    [[nodiscard]] QLineEdit* projectionSearchField() const noexcept { return projectionSearch_; }
+    [[nodiscard]] QListWidget* projectionListWidget() const noexcept { return projectionList_; }
     [[nodiscard]] QLineEdit* pixelSizeXField() const noexcept { return pixelSizeX_; }
     [[nodiscard]] QLineEdit* pixelSizeYField() const noexcept { return pixelSizeY_; }
     [[nodiscard]] QLineEdit* extentMinXField() const noexcept { return extentMinX_; }
@@ -157,6 +159,9 @@ private:
     QStringList inputPaths_;
 
     QLineEdit* epsg_{};
+    QLineEdit* projectionSearch_{};
+    QListWidget* projectionList_{};
+    void updateProjectionList();
     QLineEdit* pixelSizeX_{};
     QLineEdit* pixelSizeY_{};
     QLineEdit* extentMinX_{};

@@ -67,6 +67,23 @@ struct TargetCrsInfo {
 // Throws UserError for an EPSG code GDAL cannot resolve.
 [[nodiscard]] TargetCrsInfo describeTargetCrs(int epsgCode);
 
+// One entry of the EPSG CRS catalog, for a searchable projection picker -
+// see listEpsgCrses.
+struct EpsgCrsEntry {
+    int code{};
+    std::string name;
+    std::string areaName;  // "" if the database has no area-of-use for this entry
+    bool deprecated{};
+};
+
+// Every (non-deprecated by default) CRS in GDAL/PROJ's own "EPSG" authority
+// database - projected and geographic alike, ~6000+ entries - sorted by
+// code. Queried once and cached for the process's lifetime: the underlying
+// OSRGetCRSInfoListFromDatabase call takes a noticeable fraction of a
+// second, and this list is only ever needed to populate a UI picker, never
+// on a hot path.
+[[nodiscard]] const std::vector<EpsgCrsEntry>& listEpsgCrses();
+
 // The destination grid computed ONCE per run: GDAL's own suggestion (see
 // warp.hpp's suggestWarpGrid) with any GridOverride fields substituted in
 // and width/height recomputed accordingly. Reused for every variable,
