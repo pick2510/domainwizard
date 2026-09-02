@@ -6,4 +6,5 @@ build-cpp/
 # build-portable-macos.sh's own build trees and dist/ output)
 build-portable-cpp/
 build-portable-macos/
+build-portable-appimage/
 dist/
