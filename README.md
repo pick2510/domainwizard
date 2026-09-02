@@ -94,7 +94,7 @@ To build a portable bundle locally:
 
 ```sh
 ./build-portable-cpp.sh      # Linux -> dist/wrftools-cpp/
-./build-portable-appimage.sh # Linux AppImage (run after build-portable-cpp.sh) -> dist/WRFTOOLS-x86_64.AppImage
+./build-portable-appimage.sh # Linux AppImage (run after build-portable-cpp.sh) -> dist/wrftools-x86_64.AppImage
 ./build-portable-macos.sh    # macOS -> dist/wrftools.app, dist/wrftools-macos.zip
 ./build-portable-windows.sh  # Windows (MSYS2 MINGW64 shell) -> dist/wrftools-windows/, dist/wrftools-windows.zip
 ```

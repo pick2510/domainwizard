@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 
 DIST_DIR=dist/wrftools-cpp
 WORK_DIR=build-portable-appimage
-APPDIR="$WORK_DIR/WRFTOOLS.AppDir"
+APPDIR="$WORK_DIR/wrftools.AppDir"
 OUT_DIR=dist
 APPIMAGETOOL="$WORK_DIR/appimagetool-x86_64.AppImage"
 
@@ -35,7 +35,7 @@ mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x2
 cat > "$APPDIR/usr/share/applications/wrftools.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=WRFTOOLS
+Name=wrftools
 Comment=WRF/WPS domain, view, reprojection, and LCZ toolkit
 Exec=wrftools
 Icon=wrftools
@@ -63,12 +63,12 @@ if [ ! -x "$APPIMAGETOOL" ]; then
 fi
 
 mkdir -p "$OUT_DIR"
-rm -f "$OUT_DIR/WRFTOOLS-x86_64.AppImage"
+rm -f "$OUT_DIR/wrftools-x86_64.AppImage"
 # --appimage-extract-and-run: appimagetool is itself an AppImage, which
 # normally mounts itself via FUSE - unavailable on most CI runners (no
 # /dev/fuse in the container). This extracts it to a temp dir and runs
 # the extracted binary directly instead, which needs no FUSE either way.
-ARCH=x86_64 "$APPIMAGETOOL" --appimage-extract-and-run "$APPDIR" "$OUT_DIR/WRFTOOLS-x86_64.AppImage"
+ARCH=x86_64 "$APPIMAGETOOL" --appimage-extract-and-run "$APPDIR" "$OUT_DIR/wrftools-x86_64.AppImage"
 
 echo
-echo "Built: $OUT_DIR/WRFTOOLS-x86_64.AppImage ($(du -sh "$OUT_DIR/WRFTOOLS-x86_64.AppImage" | cut -f1))"
+echo "Built: $OUT_DIR/wrftools-x86_64.AppImage ($(du -sh "$OUT_DIR/wrftools-x86_64.AppImage" | cut -f1))"

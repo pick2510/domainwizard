@@ -181,7 +181,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wrftools-linux-appimage
-          path: dist/WRFTOOLS-x86_64.AppImage
+          path: dist/wrftools-x86_64.AppImage
       - name: Upload macOS artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -217,7 +217,7 @@ jobs:
         with:
           files: |
             artifacts/wrftools-linux.zip
-            artifacts/wrftools-linux-appimage/WRFTOOLS-x86_64.AppImage
+            artifacts/wrftools-linux-appimage/wrftools-x86_64.AppImage
             artifacts/wrftools-macos/wrftools-macos.zip
             artifacts/wrftools-windows/wrftools-windows.zip
           generate_release_notes: true
