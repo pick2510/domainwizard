@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 project(wrftools VERSION 0.1.0 LANGUAGES CXX)
 
+if(WIN32)
+    # Needed to compile resources/wrftools.rc (the .exe's icon) via
+    # windres/rc.exe.
+    enable_language(RC)
+endif()
+
 # On Linux, when Homebrew/Linuxbrew is on this machine, prefer
 # system-installed libraries over what it exposes earlier on PATH. CMake's
 # find_package() Config-mode search checks PATH-derived prefixes (e.g.
@@ -209,6 +215,10 @@ elseif(WIN32)
     # subsystem app, so Windows always opens a console window behind the
     # Qt GUI on launch (Linux/macOS have no such distinction).
     set_target_properties(wrftools_cpp PROPERTIES WIN32_EXECUTABLE TRUE)
+    # Same source icon as the Linux AppImage/macOS bundle (resources/
+    # wrftools.png), converted to .ico and embedded via a .rc resource -
+    # that's the only way an .exe picks up an icon on Windows.
+    target_sources(wrftools_cpp PRIVATE resources/wrftools.rc)
 endif()
 
 # Headless worker the Reproject tab launches as a separate process (see
