@@ -232,16 +232,6 @@ ReprojectForm::ReprojectForm(TileMapWidget* map, QWidget* parent) : QWidget(pare
     auto* derivedGroup = new QGroupBox("Derived Variables (optional)", this);
     auto* derivedLayout = new QVBoxLayout;
     derivedVariablesScript_ = new QPlainTextEdit(this);
-    derivedVariablesScript_->setPlaceholderText(
-        "LVLHT = (( PH + PHB ) / 9.81) - HGT;\n"
-        "LVLHT@units = \"m\";\n"
-        "LVLHT@long_name = \"Height above ground [m]\";\n"
-        "PTOT = (P + PB) * 0.01;\n"
-        "PTOT@long_name = \"Total Level Pressure\";\n"
-        "PTOT@units = \"mbar\";\n"
-        "TK = (PTOT/1000) ^ 0.2857 * (T + 300);\n"
-        "TK@units = \"Kelvin\";\n"
-        "TK@long_name = \"Level Temperature [K]\";");
     derivedVariablesScript_->setMinimumHeight(100);
     derivedLayout->addWidget(derivedVariablesScript_);
     derivedVariablesStatus_ = new QLabel(this);
