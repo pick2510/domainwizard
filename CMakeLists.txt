@@ -187,7 +187,15 @@ target_link_libraries(wrftools_cpp PRIVATE wrftools_ui Qt6::Gui)
 target_compile_options(wrftools_cpp PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS wrftools_cpp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(APPLE)
-    set_target_properties(wrftools_cpp PROPERTIES MACOSX_BUNDLE TRUE)
+    # Without MACOSX_BUNDLE_GUI_IDENTIFIER, the bundle's CFBundleIdentifier
+    # is left blank. On macOS 26 (Tahoe), a blank bundle identifier makes
+    # NSOpenPanel/NSSavePanel silently fail to display - QFileDialog's
+    # native calls return with no dialog, no error, and no log output
+    # (https://forum.qt.io/topic/162825/).
+    set_target_properties(wrftools_cpp PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.wrftools.wrftools
+    )
 elseif(WIN32)
     # Without this, add_executable() links wrftools.exe as a console-
     # subsystem app, so Windows always opens a console window behind the
