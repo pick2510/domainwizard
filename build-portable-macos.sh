@@ -34,6 +34,7 @@ if ! command -v brew >/dev/null; then
 fi
 
 QT_PREFIX=$(brew --prefix qt)
+MINIZIP_LIB_DIR="$(brew --prefix minizip)/lib"
 MACDEPLOYQT="$QT_PREFIX/bin/macdeployqt"
 if [ ! -x "$MACDEPLOYQT" ]; then
   echo "macdeployqt not found at $MACDEPLOYQT - is the Homebrew qt formula installed?" >&2
@@ -141,14 +142,24 @@ done
 # at the same -d/-p destination, so a dependency needed by both (e.g.
 # libproj) is only actually copied once - dylibbundler detects it's already
 # present there on the worker's pass and just rewrites its reference.
+# -s "$MINIZIP_LIB_DIR": libfreexl (a GDAL dependency) references
+# libminizip via "@loader_path/../../../../opt/minizip/lib/libminizip.1.dylib"
+# - a keg-relative path that only resolves from freexl's ORIGINAL Homebrew
+# location, not from wherever dylibbundler copies freexl to inside the
+# bundle. Without this hint, dylibbundler can't resolve it, falls back to
+# its interactive "please specify the directory" prompt, and - since this
+# script has no attached tty - that prompt reads EOF forever and spins at
+# 100% CPU indefinitely instead of failing.
 dylibbundler -od -b \
   -x "$EXECUTABLE" \
   -d "$APP_PATH/Contents/libs" \
-  -p "@executable_path/../libs"
+  -p "@executable_path/../libs" \
+  -s "$MINIZIP_LIB_DIR"
 dylibbundler -od -b \
   -x "$WORKER_EXECUTABLE" \
   -d "$APP_PATH/Contents/libs" \
-  -p "@executable_path/../libs"
+  -p "@executable_path/../libs" \
+  -s "$MINIZIP_LIB_DIR"
 
 # dylibbundler (observed: version 1.0.5) adds "@executable_path/../libs"
 # as an LC_RPATH entry once per dependency it relocates, not once per
