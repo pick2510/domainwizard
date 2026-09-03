@@ -76,11 +76,16 @@ fi
 # wrftools_reproject_worker (see reproject_form.hpp) has to live right
 # beside the main executable in Contents/MacOS/ - that's where
 # QCoreApplication::applicationDirPath() resolves to at runtime, and where
-# workerExecutablePath() looks for it. Copied in BEFORE macdeployqt runs,
-# below, so its own -executable= pass can fix up this binary's Qt
-# references too, not just the main app's.
+# workerExecutablePath() looks for it. CMakeLists.txt's own POST_BUILD
+# step already copies it there as part of the plain build (so it's
+# already inside $APP_BUNDLE, and therefore $APP_PATH after the cp -R
+# above) - nothing to do here but point at it for macdeployqt's pass
+# below.
 WORKER_EXECUTABLE="$APP_PATH/Contents/MacOS/wrftools_reproject_worker"
-cp "$BUILD_DIR/wrftools_reproject_worker" "$WORKER_EXECUTABLE"
+if [ ! -x "$WORKER_EXECUTABLE" ]; then
+  echo "Expected worker executable not found at $WORKER_EXECUTABLE - did CMakeLists.txt's bundle-copy step run?" >&2
+  exit 1
+fi
 
 # -executable=: macdeployqt's own documented mechanism for an extra binary
 # inside the bundle beyond the main one (e.g. a helper subprocess) that

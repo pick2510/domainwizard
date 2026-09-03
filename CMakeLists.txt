@@ -230,6 +230,22 @@ target_link_libraries(wrftools_reproject_worker PRIVATE wrftools_core Qt6::Core)
 target_compile_options(wrftools_reproject_worker PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS wrftools_reproject_worker RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+if(APPLE)
+    # workerExecutablePath() (reproject_form.cpp) looks for this binary
+    # next to the main executable via QCoreApplication::applicationDirPath()
+    # - which resolves to Contents/MacOS/ inside a .app bundle, not the
+    # top-level build directory add_executable() links it into by default.
+    # Without this copy, the Reproject tab's "launch worker" call fails to
+    # find it in every plain `cmake --build` (only build-portable-macos.sh's
+    # separate packaging step did this copy before now).
+    add_custom_command(TARGET wrftools_cpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:wrftools_reproject_worker>"
+            "$<TARGET_BUNDLE_CONTENT_DIR:wrftools_cpp>/MacOS/$<TARGET_FILE_NAME:wrftools_reproject_worker>"
+        COMMENT "Copying wrftools_reproject_worker into the app bundle"
+    )
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     find_package(Catch2 3 REQUIRED)
