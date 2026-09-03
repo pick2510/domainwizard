@@ -218,14 +218,22 @@ ViewForm::ViewForm(TileMapWidget* map, QWidget* parent) : QWidget(parent), map_(
     connect(previousStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(-1); });
     connect(nextStepButton_, &QPushButton::clicked, this, [this] { stepPlayback(1); });
     connect(northArrow_, &QCheckBox::toggled, this, [this](bool checked) { map_->setShowNorthArrow(checked); });
-    map_->setHoverValueHandler([this](LonLat point) { return hoverValueAt(point); });
-    map_->setClickHandler([this](LonLat point) { onMapClicked(point); });
-
     updatePanelVisibility();
 }
 
 ViewForm::~ViewForm() {
     if (map_) { map_->setHoverValueHandler({}); map_->setClickHandler({}); }
+}
+
+void ViewForm::setActive(bool active) {
+    if (!map_) return;
+    if (active) {
+        map_->setHoverValueHandler([this](LonLat point) { return hoverValueAt(point); });
+        map_->setClickHandler([this](LonLat point) { onMapClicked(point); });
+    } else {
+        map_->setHoverValueHandler({});
+        map_->setClickHandler({});
+    }
 }
 
 void ViewForm::openFile() {

@@ -56,7 +56,9 @@ MainWindow::MainWindow() {
     auto* domainForm = new DomainForm(map_);
     auto* domainScroll = scrollWrap(domainForm);
     tabs->addTab(domainScroll, "Domains");
-    tabs->addTab(scrollWrap(new ViewForm(map_)), "View");
+    auto* viewForm = new ViewForm(map_);
+    auto* viewScroll = scrollWrap(viewForm);
+    tabs->addTab(viewScroll, "View");
     tabs->addTab(scrollWrap(new GeotiffConvertForm), "Convert");
     tabs->addTab(scrollWrap(new LczForm), "LCZ");
     auto* reprojectForm = new ReprojectForm(map_);
@@ -71,8 +73,9 @@ MainWindow::MainWindow() {
     // against the scroll-wrapping widget actually added to the tab bar
     // (tabs->widget(index)), not the form itself - addTab was given
     // scrollWrap(form), never form directly.
-    connect(tabs, &QTabWidget::currentChanged, this, [domainForm, domainScroll, reprojectForm, reprojectScroll, tabs](int index) {
+    connect(tabs, &QTabWidget::currentChanged, this, [domainForm, domainScroll, viewForm, viewScroll, reprojectForm, reprojectScroll, tabs](int index) {
         domainForm->setActive(tabs->widget(index) == domainScroll);
+        viewForm->setActive(tabs->widget(index) == viewScroll);
         reprojectForm->setActive(tabs->widget(index) == reprojectScroll);
     });
     auto* splitter = new QSplitter;

@@ -868,6 +868,7 @@ TEST_CASE("exportImage excludes the hover readout and restores it afterward") {
 TEST_CASE("view form's hover handler samples the topmost visible layer's value, falling back to lon/lat once it's hidden") {
     TileMapWidget map;
     ViewForm form(&map);
+    form.setActive(true);  // mirrors MainWindow activating the View tab
     map.resize(400, 400);
     form.openFiles({"tests/fixtures/geo_em_small.nc"});
     form.addLayer();
@@ -896,6 +897,7 @@ TEST_CASE("destroying the view form clears its hover handler so a later mouse-mo
     map.resize(300, 300);
     {
         ViewForm form(&map);
+        form.setActive(true);  // mirrors MainWindow activating the View tab
         form.openFiles({"tests/fixtures/geo_em_small.nc"});
         form.addLayer();
         form.layerTreeWidget()->setCurrentItem(form.layerTreeWidget()->topLevelItem(0));
@@ -951,6 +953,7 @@ TEST_CASE("inspectPoint returns nullopt when no visible layer covers the point")
 TEST_CASE("clicking a raster pixel opens a TimeSeriesDialog for a multi-timestep layer") {
     TileMapWidget map;
     ViewForm form(&map);
+    form.setActive(true);  // mirrors MainWindow activating the View tab
     map.resize(400, 400);
     form.openFiles({"tests/fixtures/wrfout_multitime.nc"});
     form.addLayer();
@@ -970,6 +973,7 @@ TEST_CASE("clicking a raster pixel opens a TimeSeriesDialog for a multi-timestep
 TEST_CASE("clicking a raster pixel opens a RasterStatsDialog for a single-timestep layer") {
     TileMapWidget map;
     ViewForm form(&map);
+    form.setActive(true);  // mirrors MainWindow activating the View tab
     map.resize(400, 400);
     form.openFiles({"tests/fixtures/geo_em_small.nc"});
     form.addLayer();

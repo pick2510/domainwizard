@@ -58,6 +58,19 @@ public:
     // not be left behind for a later mouse-move to call into.
     ~ViewForm() override;
 
+    // Claims/releases this tab's hover-value and click handlers on the
+    // shared map - without this, they stayed registered permanently (set
+    // once in the constructor, only ever cleared in the destructor), so
+    // switching to another tab (e.g. Domains, to drag a domain outline)
+    // still routed every map click through onMapClicked(): a click that
+    // missed the domain's own draggable overlay fell through to the
+    // shared map's plain-click path and popped a point-inspector dialog
+    // instead of doing nothing, which looked like "drag doesn't work".
+    // Mirrors DomainForm::setActive/ReprojectForm::setActive, which
+    // already scope their own handler registrations to their tab being
+    // active.
+    void setActive(bool active);
+
     // Opens files/series directly (bypassing the file-picker openFile()
     // uses) - the entry point both openFile() and tests use. Mirrors
     // DomainForm::setProject's role for the Domains tab.

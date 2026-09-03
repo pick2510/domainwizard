@@ -179,7 +179,14 @@ void DomainForm::setActive(bool active) {
             [this](std::size_t index, std::size_t handle, LonLat lonLat) { onDomainOverlayResizeMove(index, handle, lonLat); },
             [this] { onDomainOverlayResizeEnd(); });
     }
-    map_->setDraggableVectorOverlayGroup(active_ ? "domains" : QString());
+    // Only ever touch the shared slot to claim it or to release OUR OWN
+    // claim on it - never unconditionally clear it. MainWindow calls every
+    // tab's setActive() in sequence on each tab switch, so blindly writing
+    // QString() here when inactive could stomp whichever OTHER tab's
+    // setActive(true) call had just claimed it moments earlier in that
+    // same sequence.
+    if (active_) map_->setDraggableVectorOverlayGroup("domains");
+    else if (map_->draggableVectorOverlayGroup() == "domains") map_->setDraggableVectorOverlayGroup({});
 }
 
 void DomainForm::setProject(WpsProject project) { project_ = std::move(project); rebuildTree(); }

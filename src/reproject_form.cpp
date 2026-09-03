@@ -629,8 +629,29 @@ void ReprojectForm::setActive(bool active) {
             [this](std::size_t index, std::size_t handle, LonLat lonLat) { onAoiResizeStart(index, handle, lonLat); },
             [this](std::size_t index, std::size_t handle, LonLat lonLat) { onAoiResizeMove(index, handle, lonLat); },
             [this] { onAoiResizeEnd(); });
+        updateMapOverlays();
+    } else {
+        // Otherwise these sit on the shared map at kVectorOverlayZ/+1
+        // forever after the first reprojection - "reproject-aoi" in
+        // particular paints on top of DomainForm's own "domains" group
+        // (same kVectorOverlayZ), visually burying a freshly-imported
+        // domain outline under a stale, non-interactive AOI rectangle and
+        // making it look like dragging the new domain does nothing.
+        map_->clearVectorOverlayGroup("reproject-domain");
+        map_->clearVectorOverlayGroup("reproject-aoi");
     }
-    map_->setDraggableVectorOverlayGroup(active_ ? "reproject-aoi" : QString());
+    // Only ever touch the shared slot to claim it or to release OUR OWN
+    // claim on it - never unconditionally clear it. MainWindow calls every
+    // tab's setActive() in sequence on each tab switch (this one is not
+    // necessarily last), so blindly writing QString() here when inactive
+    // stomped whichever OTHER tab's setActive(true) call had just claimed
+    // it moments earlier in that same sequence - e.g. switching to the
+    // Domains tab called DomainForm::setActive(true) (claims "domains"),
+    // then this ran with active_ false and wrote QString() right over it,
+    // silently breaking domain-outline dragging on every single tab
+    // switch, regardless of which tab was visited before.
+    if (active_) map_->setDraggableVectorOverlayGroup("reproject-aoi");
+    else if (map_->draggableVectorOverlayGroup() == "reproject-aoi") map_->setDraggableVectorOverlayGroup({});
 }
 
 void ReprojectForm::updateMapOverlays() {
