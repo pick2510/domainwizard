@@ -6,17 +6,22 @@
 #include "wrftools/geotiff_convert_form.hpp"
 #include "wrftools/lcz_form.hpp"
 #include "wrftools/reproject_form.hpp"
+#include "wrftools/git_version.hpp"
 
 #include <QActionGroup>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QLabel>
 #include <QMenuBar>
+#include <QPixmap>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QVBoxLayout>
 // QStyleHints::colorScheme()/colorSchemeChanged only exist from Qt 6.5;
 // this project's CMake minimum stays at 6.4 (see theme.hpp's ColorScheme),
 // so live OS-theme tracking is only compiled in when actually available.
@@ -176,5 +181,46 @@ MainWindow::MainWindow() {
         });
     }
 #endif
+
+    // QAction::AboutRole (rather than relying on Qt's own text-based
+    // heuristic) is what makes macOS pull this out of the Help menu and
+    // into the application menu under the app name, where users expect
+    // it - the Help menu itself stays the right home for Windows/Linux,
+    // where no such relocation happens.
+    auto* helpMenu = menuBar()->addMenu("&Help");
+    auto* aboutAction = helpMenu->addAction("About WRF Tools");
+    aboutAction->setMenuRole(QAction::AboutRole);
+    connect(aboutAction, &QAction::triggered, this, &MainWindow::showAboutDialog);
+}
+
+void MainWindow::showAboutDialog() {
+    auto* dialog = new QDialog(this);
+    dialog->setWindowTitle("About WRF Tools");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto* logo = new QLabel;
+    logo->setPixmap(QPixmap(":/wrftools.png").scaled(96, 96, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    logo->setAlignment(Qt::AlignHCenter);
+
+    auto* title = new QLabel("WRF Tools");
+    auto titleFont = title->font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(titleFont.pointSize() + 2);
+    title->setFont(titleFont);
+    title->setAlignment(Qt::AlignHCenter);
+
+    auto* text = new QLabel(QString("by Dominik Strebel, ETHZ, %1\n%2").arg(WRFTOOLS_BUILD_DATE, WRFTOOLS_GIT_HASH));
+    text->setAlignment(Qt::AlignHCenter);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+
+    auto* layout = new QVBoxLayout(dialog);
+    layout->addWidget(logo);
+    layout->addWidget(title);
+    layout->addWidget(text);
+    layout->addWidget(buttons);
+
+    dialog->open();
 }
 }  // namespace wrftools

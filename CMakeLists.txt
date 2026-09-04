@@ -33,6 +33,21 @@ endif()
 
 include(GNUInstallDirs)
 
+# Generates include/wrftools/git_version.hpp's build-directory counterpart
+# (WRFTOOLS_GIT_HASH, shown in the Help > About dialog) fresh on every
+# build, not just on reconfigure - see cmake/GenerateGitVersion.cmake.
+set(WRFTOOLS_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
+add_custom_target(wrftools_git_version ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC_DIR=${CMAKE_SOURCE_DIR}
+        -DSRC=${CMAKE_SOURCE_DIR}/include/wrftools/git_version.hpp.in
+        -DDST=${WRFTOOLS_GENERATED_DIR}/wrftools/git_version.hpp
+        -P ${CMAKE_SOURCE_DIR}/cmake/GenerateGitVersion.cmake
+    BYPRODUCTS ${WRFTOOLS_GENERATED_DIR}/wrftools/git_version.hpp
+    COMMENT "Regenerating wrftools/git_version.hpp with the current git commit hash"
+    VERBATIM
+)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -182,10 +197,17 @@ add_library(wrftools_ui
     # here or it's silently never moc'd (an "undefined reference to vtable
     # for ..." link error, not a moc/compile error).
     include/wrftools/point_inspector_dialog.hpp
+    # AUTORCC compiles this into a qrc_resources.cpp - the About dialog's
+    # logo (wrftools.png) needs to be reachable at runtime identically
+    # across the installed, AppImage, macOS-bundle and Windows-portable
+    # layouts, so it's embedded in the binary instead of located relative
+    # to applicationDirPath() like the .icns/.ico app icons are.
+    resources/resources.qrc
 )
-target_include_directories(wrftools_ui PUBLIC include)
+target_include_directories(wrftools_ui PUBLIC include ${WRFTOOLS_GENERATED_DIR})
 target_link_libraries(wrftools_ui PUBLIC wrftools_core convert_geotiff_lib Qt6::Gui Qt6::Widgets Qt6::Network)
 target_compile_options(wrftools_ui PRIVATE -Wall -Wextra -Wpedantic)
+add_dependencies(wrftools_ui wrftools_git_version)
 
 add_executable(wrftools_cpp src/main.cpp)
 set_target_properties(wrftools_cpp PROPERTIES OUTPUT_NAME wrftools)

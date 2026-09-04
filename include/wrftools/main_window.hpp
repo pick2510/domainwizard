@@ -18,6 +18,8 @@ public:
     [[nodiscard]] QAction* darkThemeAction() const noexcept { return darkThemeAction_; }
 
 private:
+    void showAboutDialog();
+
     TileMapWidget* map_;
     QAction* systemThemeAction_{};
     QAction* lightThemeAction_{};

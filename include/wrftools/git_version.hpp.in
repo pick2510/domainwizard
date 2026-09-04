@@ -1,0 +1,8 @@
+#pragma once
+
+// Generated at build time by cmake/GenerateGitVersion.cmake - see the
+// wrftools_git_version custom target in CMakeLists.txt. Never edit the
+// generated header in the build directory directly, edit this .in template
+// instead.
+#define WRFTOOLS_GIT_HASH "@WRFTOOLS_GIT_HASH@"
+#define WRFTOOLS_BUILD_DATE "@WRFTOOLS_BUILD_DATE@"
