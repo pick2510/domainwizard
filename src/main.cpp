@@ -51,6 +51,14 @@ int main(int argc, char* argv[]) {
     // System/Light/Dark, not just the OS's own reported scheme.
     configureGdalData();
     GDALAllRegister();
+    // resources.qrc (the About dialog's logo) is compiled into wrftools_ui,
+    // a *static* library - its auto-generated resource-registration code
+    // is a translation unit nothing else references, so the linker drops
+    // it entirely unless something forces it in. Q_INIT_RESOURCE (the
+    // linker-visible symbol it expands to) is that force; it must run at
+    // global scope, not inside the wrftools namespace, or it names a
+    // wrftools::qInitResources_resources() that was never linked in either.
+    Q_INIT_RESOURCE(resources);
     wrftools::MainWindow window;
     window.show();
     return application.exec();
